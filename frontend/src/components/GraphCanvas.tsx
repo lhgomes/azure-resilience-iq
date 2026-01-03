@@ -110,19 +110,20 @@ const GraphCanvas: React.FC<Props> = ({
       layout: {
         name: "dagre",
         rankDir: "TB",
-        nodeSep: 60,
-        rankSep: 120,
-        padding: 50
+        nodeSep: 80,
+        rankSep: 150,
+        padding: 60,
+        minLen: (edge: any) => 1
       } as any,
       style: [
-        // Base node
+        // Base node - enhanced visual style
         {
           selector: "node[label]",
           style: {
             "label": "data(label)",
             "font-size": "11px",
             "font-family": "Segoe UI, system-ui, sans-serif",
-            "font-weight": 500,
+            "font-weight": 600,
             "text-wrap": "wrap",
             "text-max-width": "100px",
             "text-valign": "center",
@@ -130,11 +131,11 @@ const GraphCanvas: React.FC<Props> = ({
             "background-color": "#ffffff",
             "color": "#323130",
             "shape": "round-rectangle",
-            "min-width": "80px",
+            "min-width": "90px",
             "width": "label",
-            "height": "55px",
+            "height": "60px",
             "padding": "12px",
-            "border-width": 1.5,
+            "border-width": 1.8,
             "border-color": "#8a8886"
           }
         },
@@ -253,20 +254,21 @@ const GraphCanvas: React.FC<Props> = ({
           }
         },
 
-        // Edges
+        // Edges - enhanced with better visibility
         {
           selector: "edge[label]",
           style: {
             "curve-style": "bezier",
-            "width": 2,
+            "width": 2.2,
             "line-color": "#9AA0A6",
             "target-arrow-shape": "triangle",
             "target-arrow-color": "#9AA0A6",
+            "target-arrow-fill": "filled",
             "label": "data(label)",
-            "font-size": "7px",
+            "font-size": "8px",
             "text-rotation": "autorotate",
-            "text-margin-y": -5,
-            "opacity": 0.9
+            "text-margin-y": -8,
+            "opacity": 0.88
           }
         },
 
