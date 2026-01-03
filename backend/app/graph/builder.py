@@ -1,5 +1,7 @@
 import hashlib
 from .model import Node, Edge
+from app.intent.overrides import EdgeDecision
+from app.storage.overrides_store import load_overrides
 
 
 def edge_id(from_id: str, to_id: str, relationship: str) -> str:
@@ -36,8 +38,26 @@ class GraphBuilder:
                 evidence=evidence or [],
             )
 
-    def build(self):
+    def build(self, workload_id: str):
+        overrides = load_overrides(workload_id)
+
+        for edge_id, edge in self.edges.items():
+            override = overrides.get(edge_id)
+            if not override:
+                continue
+
+            if override.decision == EdgeDecision.accepted:
+                edge.status = "accepted"
+
+            elif override.decision == EdgeDecision.rejected:
+                edge.status = "rejected"
+
         return {
             "nodes": list(self.nodes.values()),
-            "edges": list(self.edges.values()),
+            # hide rejected edges by default
+            "edges": [
+                e for e in self.edges.values()
+                if e.status != "rejected"
+            ],
         }
+

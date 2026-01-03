@@ -70,15 +70,13 @@ const GraphCanvas: React.FC<Props> = ({
       ...visibleNodes.map(n => ({
         data: {
           id: n.id,
-          label: `${n.metadata?.icon || ""} ${n.name || n.id.split('/').pop() || 'unknown'}\n${n.metadata?.criticality_stars ? n.metadata.criticality_stars : ''}`,
+          label: `${n.metadata?.icon || ""} ${n.name || n.id.split('/').pop() || 'unknown'}`,
           type: n.type,
           parent: n.metadata?.parent_id,
           origin: (n as any).source ?? n.metadata?.source ?? "arg",
           synthetic: n.metadata?.synthetic ? "true" : "false",
           ai_annotation: n.metadata?.ai_annotation ? "true" : "false",
           ai_tooltip: n.metadata?.ai_tooltip,
-          criticality_score: n.metadata?.criticality_score,
-          criticality_stars: n.metadata?.criticality_stars,
             ...(n.metadata?.shape_override ? { shape_override: n.metadata.shape_override } : {}),
             ...(n.metadata?.color_override ? { color_override: n.metadata.color_override } : {}),
         }
@@ -132,7 +130,7 @@ const GraphCanvas: React.FC<Props> = ({
             "shape": "round-rectangle",
             "min-width": "80px",
             "width": "label",
-            "height": "55px",
+            "height": "40px",
             "padding": "12px",
             "border-width": 1.5,
             "border-color": "#8a8886"
@@ -183,36 +181,14 @@ const GraphCanvas: React.FC<Props> = ({
             "border-color": "#004578"
           }
         },
-
-        // VNet - Network Blue
-        {
-          selector: "node[type = 'vnet']",
-          style: {
-            "background-color": "#50e6ff",
-            "color": "#000000",
-            "border-color": "#0078d4",
-            "shape": "rectangle"
-          }
-        },
-
-        // Subnet - Lighter Network
-        {
-          selector: "node[type = 'subnet']",
-          style: {
-            "background-color": "#b3e0ff",
-            "color": "#000000",
-            "border-color": "#0078d4",
-            "shape": "rectangle"
-          }
-        },
-
+        
         // Network resources - Teal
         {
-          selector: "node[type = 'network'], node[type = 'nic'], node[type = 'nsg'], node[type = 'pip']",
+          selector: "node[type = 'vnet'], node[type = 'subnet'], node[type = 'network'], node[type = 'nic'], node[type = 'nsg'], node[type = 'pip']",
           style: {
-            "background-color": "#00bcf2",
+            "background-color": "#85a2c6ff",
             "color": "#000000",
-            "border-color": "#0078d4"
+            "border-color": "#6f839bff"
           }
         },
 
@@ -243,7 +219,7 @@ const GraphCanvas: React.FC<Props> = ({
           style: {
             "background-opacity": 0.08,
             "border-width": 1,
-            "border-color": "#5EA0EF",
+            "border-color": "#85a2c6ff",
             "padding": "20px",
             "label": "data(label)",
             "text-valign": "top",
@@ -319,8 +295,8 @@ const GraphCanvas: React.FC<Props> = ({
         {
           selector: "edge[origin = 'arg'][label]",
           style: {
-            "line-color": "#5EA0EF",
-            "target-arrow-color": "#5EA0EF",
+            "line-color": "#85a2c6ff",
+            "target-arrow-color": "#85a2c6ff",
             "width": 2.5
           }
         },
@@ -329,8 +305,8 @@ const GraphCanvas: React.FC<Props> = ({
         {
           selector: "edge[status = 'accepted'][origin != 'manual'][label]",
           style: {
-            "line-color": "#0078D4",
-            "target-arrow-color": "#0078D4",
+            "line-color": "#85a2c6ff",
+            "target-arrow-color": "#85a2c6ff",
             "width": 3
           }
         },
