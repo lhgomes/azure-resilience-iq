@@ -189,6 +189,11 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
               Priority: {node.aiAnnotation.priority}
             </div>
           )}
+          {node.aiAnnotation.criticality_score !== undefined && (
+            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
+              Criticality: {node.aiAnnotation.criticality_score ?? 0}
+            </div>
+          )}
           {node.aiAnnotation.confidence !== undefined && (
             <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
               Confidence: {Math.round((node.aiAnnotation.confidence ?? 0) * 100)}%

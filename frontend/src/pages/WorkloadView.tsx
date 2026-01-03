@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { ReactFlowProvider } from "reactflow";
 import GraphCanvas, {
   GraphNode,
   GraphEdge
-} from "../components/GraphCanvas";
+} from "../components/GraphCanvasReactflow";
 import EdgeDrawer, {
   EdgeData
 } from "../components/EdgeDrawer";
@@ -19,7 +20,8 @@ interface GraphSnapshot {
 
 interface LlmNodeAnnotationPayload {
   display_name?: string;
-  service_display_name?: string;
+  azure_service_category?: string;
+  azure_service_name?: string;
   criticality_score?: number;
   layer?: number;
   priority?: string;
@@ -122,12 +124,6 @@ const WorkloadView: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewLevel, setViewLevel] = useState<ViewLevel>("overview");
-  const [linkSource, setLinkSource] = useState("");
-  const [linkTarget, setLinkTarget] = useState("");
-  const [linkRelationship, setLinkRelationship] = useState("depends_on");
-  const [linkError, setLinkError] = useState<string | null>(null);
-  const [linkSubmitting, setLinkSubmitting] = useState(false);
-  const [linkMode, setLinkMode] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(320);
@@ -140,6 +136,7 @@ const WorkloadView: React.FC = () => {
   });
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
   const [serviceFilter, setServiceFilter] = useState<Set<string>>(new Set());
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [criticalityOverrides, setCriticalityOverrides] = useState<Map<string, number>>(new Map());
 
   const fetchGraph = useCallback(async () => {
@@ -193,8 +190,7 @@ const WorkloadView: React.FC = () => {
 
   const serviceOptions = useMemo(() => {
     if (!graph) return [];
-    const map = new Map<string, string>();
-
+    
     const annMap = new Map<string, LlmNodeAnnotationPayload>();
     (graph.llm_annotations?.nodes ?? []).forEach(entry => {
       if (entry?.node_id) {
@@ -202,23 +198,62 @@ const WorkloadView: React.FC = () => {
       }
     });
 
+    const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
+
+    // Group services by category, only including nodes visible at current view level
+    const categoryMap = new Map<string, Map<string, string>>();
+    
     (graph.nodes || []).forEach(n => {
       const key = canonicalTypeForNode(n);
       if (!key) return;
-      if (map.has(key)) return;
+      
       const ann = annMap.get(n.id);
-      const label = ann?.service_display_name || key;
-      map.set(key, label);
+      
+      // Calculate effective importance for this node
+      const baseImportance = n.metadata?.original_importance ?? n.metadata?.importance ?? 3;
+      let importance = baseImportance;
+      
+      // AI layer overlays on top of raw
+      if (aiLayerEnabled && ann?.layer !== undefined) {
+        importance = ann.layer;
+      }
+      
+      // User layer overrides on top of AI/raw (only if explicitly overridden)
+      if (userLayerEnabled && n.metadata?.override) {
+        importance = n.metadata?.importance ?? importance;
+      }
+      
+      // Only include nodes visible at current view level
+      if (importance > maxImportance) return;
+      
+      const category = ann?.azure_service_category || "Other";
+      const label = ann?.azure_service_name || key;
+      
+      if (!categoryMap.has(category)) {
+        categoryMap.set(category, new Map());
+      }
+      
+      const servicesInCategory = categoryMap.get(category)!;
+      if (!servicesInCategory.has(key)) {
+        servicesInCategory.set(key, label);
+      }
     });
 
-    return Array.from(map.entries())
-      .map(([key, label]) => ({ key, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [graph]);
+    // Convert to array structure with sorted categories and services
+    return Array.from(categoryMap.entries())
+      .map(([category, servicesMap]) => ({
+        category,
+        services: Array.from(servicesMap.entries())
+          .map(([key, label]) => ({ key, label }))
+          .sort((a, b) => a.label.localeCompare(b.label))
+      }))
+      .sort((a, b) => a.category.localeCompare(b.category));
+  }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
   useEffect(() => {
     if (serviceOptions.length && serviceFilter.size === 0) {
-      setServiceFilter(new Set(serviceOptions.map(s => s.key)));
+      const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+      setServiceFilter(new Set(allServices));
     }
   }, [serviceOptions, serviceFilter.size]);
 
@@ -234,23 +269,6 @@ const WorkloadView: React.FC = () => {
         }
       });
     }
-
-    const azureIconForType: Record<string, string> = {
-      vm: "💻",           // Virtual Machine
-      aks: "⎈",          // Kubernetes
-      vnet: "🌐",        // Virtual Network
-      subnet: "📡",      // Subnet
-      sql: "🗄️",         // SQL Database
-      storage: "📦",     // Storage Account
-      keyvault: "🔐",    // Key Vault
-      nsg: "🛡️",         // Network Security Group
-      pip: "🌍",         // Public IP
-      disk: "💾",        // Managed Disk
-      network: "🔌",     // Network Resource
-      nic: "🔗",         // Network Interface
-      resource: "📋",    // Generic Resource
-      private_endpoint: "🔒", // Private Endpoint
-    };
 
     const visibleNodes = graph.nodes
       .map(n => {
@@ -306,7 +324,6 @@ const WorkloadView: React.FC = () => {
             ai_annotation: ann,
             original_name: baseName,
             raw_type: n.type,
-            icon: azureIconForType[normalizedType] ?? azureIconForType.resource,
             ai_tooltip: tooltip,
             criticality_score: getEffectiveCriticalityScore(ann, criticalityOverrides, n.id),
             criticality_stars: renderStars(getEffectiveCriticalityScore(ann, criticalityOverrides, n.id) ?? 5)
@@ -443,29 +460,11 @@ const WorkloadView: React.FC = () => {
       );
     } catch (err) {
       console.error("Failed to delete edge", err);
-      setLinkError("Failed to delete link");
     }
   };
 
   const handleNodeSelected = async (nodeId: string | null) => {
     if (!nodeId || !viewGraph) return;
-
-    if (linkMode) {
-      setLinkError(null);
-
-      if (!linkSource) {
-        setLinkSource(nodeId);
-        return;
-      }
-
-      if (nodeId === linkSource) {
-        return;
-      }
-
-      setLinkTarget(nodeId);
-      await handleCreateManualLink(linkSource, nodeId);
-      return;
-    }
 
     const node = viewGraph.nodes.find(n => n.id === nodeId);
     if (!node) return;
@@ -489,32 +488,14 @@ const WorkloadView: React.FC = () => {
   };
 
   const handleDragCreateLink = async (sourceId: string, targetId: string) => {
-    if (!linkMode) return;
     await handleCreateManualLink(sourceId, targetId);
   };
 
-  const handleCreateManualLink = async (from?: string, to?: string) => {
-    setLinkError(null);
+  const handleCreateManualLink = async (fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return;
 
-    const fromId = from ?? linkSource;
-    const toId = to ?? linkTarget;
+    const relationship = "depends_on"; // Default relationship for drag-and-drop
 
-    if (!fromId || !toId) {
-      setLinkError("Select both source and target");
-      return;
-    }
-
-    if (fromId === toId) {
-      setLinkError("Source and target must differ");
-      return;
-    }
-
-    if (!linkRelationship.trim()) {
-      setLinkError("Relationship is required");
-      return;
-    }
-
-    setLinkSubmitting(true);
     try {
       const res = await fetch(
         `/api/workloads/${WORKLOAD_ID}/edges`,
@@ -524,7 +505,7 @@ const WorkloadView: React.FC = () => {
           body: JSON.stringify({
             from_id: fromId,
             to_id: toId,
-            relationship: linkRelationship.trim()
+            relationship
           })
         }
       );
@@ -540,7 +521,7 @@ const WorkloadView: React.FC = () => {
         id: created.id,
         source: created.from_id ?? created.source ?? fromId,
         target: created.to_id ?? created.target ?? toId,
-        relationship: created.relationship ?? linkRelationship.trim(),
+        relationship: created.relationship ?? relationship,
         confidence: created.confidence ?? 1,
         status: created.status ?? "accepted",
         origin: created.source ?? "manual"
@@ -558,16 +539,8 @@ const WorkloadView: React.FC = () => {
           : prev
       );
 
-      // reset selection after quick add
-      if (from && to) {
-        setLinkSource("");
-        setLinkTarget("");
-      }
-
     } catch (err: any) {
-      setLinkError(err.message ?? "Failed to create link");
-    } finally {
-      setLinkSubmitting(false);
+      console.error("Failed to create link:", err.message);
     }
   };
 
@@ -639,12 +612,10 @@ const WorkloadView: React.FC = () => {
       );
     } catch (err) {
       console.error("Failed to update node", err);
-      setLinkError("Failed to update node");
     }
   };
 
   const handleResetNode = async (nodeId: string) => {
-    setLinkError(null);
     try {
       const res = await fetch(
         `/api/workloads/${WORKLOAD_ID}/nodes/${nodeId}`,
@@ -659,7 +630,6 @@ const WorkloadView: React.FC = () => {
       setSelectedNode(null);
     } catch (err) {
       console.error("Failed to reset node", err);
-      setLinkError("Failed to reset node");
     }
   };
 
@@ -879,7 +849,10 @@ const WorkloadView: React.FC = () => {
                 Services
               </label>
               <button
-                onClick={() => setServiceFilter(new Set(serviceOptions.map(s => s.key)))}
+                onClick={() => {
+                  const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+                  setServiceFilter(new Set(allServices));
+                }}
                 style={{
                   background: "transparent",
                   border: "none",
@@ -892,150 +865,120 @@ const WorkloadView: React.FC = () => {
                 Select All
               </button>
             </div>
-            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #333", borderRadius: 4, padding: 8, background: "#181818" }}>
-              {serviceOptions.map(service => (
-                <label
-                  key={service.key}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "4px 0",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    color: "#eee"
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={serviceFilter.has(service.key)}
-                    onChange={e => {
-                      const newFilter = new Set(serviceFilter);
-                      if (e.target.checked) {
-                        newFilter.add(service.key);
-                      } else {
-                        newFilter.delete(service.key);
-                      }
-                      setServiceFilter(newFilter);
-                    }}
-                  />
-                  {service.label}
-                </label>
-              ))}
+            <div style={{ maxHeight: 400, overflowY: "auto", border: "1px solid #333", borderRadius: 4, padding: 8, background: "#181818" }}>
+              {serviceOptions.map(category => {
+                const allServicesInCategory = category.services.map(s => s.key);
+                const selectedServicesInCategory = allServicesInCategory.filter(key => serviceFilter.has(key));
+                const isExpanded = expandedCategories.has(category.category);
+                const allSelected = selectedServicesInCategory.length === allServicesInCategory.length;
+                const someSelected = selectedServicesInCategory.length > 0 && !allSelected;
+
+                return (
+                  <div key={category.category} style={{ marginBottom: 8 }}>
+                    {/* Category Header */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <button
+                        onClick={() => {
+                          const newExpanded = new Set(expandedCategories);
+                          if (isExpanded) {
+                            newExpanded.delete(category.category);
+                          } else {
+                            newExpanded.add(category.category);
+                          }
+                          setExpandedCategories(newExpanded);
+                        }}
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          color: "#9AA0A6",
+                          cursor: "pointer",
+                          fontSize: 14,
+                          padding: 0,
+                          width: 16,
+                          height: 16,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center"
+                        }}
+                      >
+                        {isExpanded ? "▼" : "▶"}
+                      </button>
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={el => {
+                          if (el) el.indeterminate = someSelected;
+                        }}
+                        onChange={e => {
+                          const newFilter = new Set(serviceFilter);
+                          if (e.target.checked) {
+                            allServicesInCategory.forEach(key => newFilter.add(key));
+                          } else {
+                            allServicesInCategory.forEach(key => newFilter.delete(key));
+                          }
+                          setServiceFilter(newFilter);
+                        }}
+                        style={{ cursor: "pointer" }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: "#eee",
+                          cursor: "pointer"
+                        }}
+                        onClick={() => {
+                          const newExpanded = new Set(expandedCategories);
+                          if (isExpanded) {
+                            newExpanded.delete(category.category);
+                          } else {
+                            newExpanded.add(category.category);
+                          }
+                          setExpandedCategories(newExpanded);
+                        }}
+                      >
+                        {category.category} ({category.services.length})
+                      </span>
+                    </div>
+
+                    {/* Services in Category */}
+                    {isExpanded && (
+                      <div style={{ marginLeft: 24 }}>
+                        {category.services.map(service => (
+                          <label
+                            key={service.key}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              padding: "4px 0",
+                              cursor: "pointer",
+                              fontSize: 12,
+                              color: "#ddd"
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={serviceFilter.has(service.key)}
+                              onChange={e => {
+                                const newFilter = new Set(serviceFilter);
+                                if (e.target.checked) {
+                                  newFilter.add(service.key);
+                                } else {
+                                  newFilter.delete(service.key);
+                                }
+                                setServiceFilter(newFilter);
+                              }}
+                            />
+                            {service.label}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </div>
-
-          {/* Manual Link Section */}
-          <div style={{ borderTop: "1px solid #333", paddingTop: 16 }}>
-            <h4 style={{ margin: "0 0 12px 0", color: "#eee", fontSize: 14 }}>Manual Link</h4>
-            
-            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 6 }}>
-              Source
-            </label>
-            <select
-              value={linkSource}
-              onChange={e => setLinkSource(e.target.value)}
-              style={{
-                width: "100%",
-                background: "#181818",
-                color: "#fff",
-                border: "1px solid #333",
-                padding: "8px",
-                borderRadius: 4,
-                marginBottom: 12
-              }}
-            >
-              <option value="">Select source</option>
-              {nodesForView.map(n => (
-                <option key={n.id} value={n.id}>{n.name}</option>
-              ))}
-            </select>
-
-            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 6 }}>
-              Target
-            </label>
-            <select
-              value={linkTarget}
-              onChange={e => setLinkTarget(e.target.value)}
-              style={{
-                width: "100%",
-                background: "#181818",
-                color: "#fff",
-                border: "1px solid #333",
-                padding: "8px",
-                borderRadius: 4,
-                marginBottom: 12
-              }}
-            >
-              <option value="">Select target</option>
-              {nodesForView.map(n => (
-                <option key={n.id} value={n.id}>{n.name}</option>
-              ))}
-            </select>
-
-            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 6 }}>
-              Relationship
-            </label>
-            <input
-              value={linkRelationship}
-              onChange={e => setLinkRelationship(e.target.value)}
-              placeholder="depends_on"
-              style={{
-                width: "100%",
-                background: "#181818",
-                color: "#fff",
-                border: "1px solid #333",
-                padding: "8px",
-                borderRadius: 4,
-                marginBottom: 12
-              }}
-            />
-
-            <button
-              onClick={() => void handleCreateManualLink()}
-              disabled={linkSubmitting}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                background: linkSubmitting ? "#2d2d2d" : "#2ea043",
-                color: "#fff",
-                border: "none",
-                borderRadius: 4,
-                cursor: linkSubmitting ? "not-allowed" : "pointer",
-                fontSize: 13,
-                marginBottom: 12
-              }}
-            >
-              {linkSubmitting ? "Adding…" : "Add link"}
-            </button>
-
-            <button
-              onClick={() => {
-                setLinkMode(m => !m);
-                setLinkSource("");
-                setLinkTarget("");
-                setLinkError(null);
-              }}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                background: linkMode ? "#0f172a" : "#1f2937",
-                color: linkMode ? "#22c55e" : "#fff",
-                border: linkMode ? "1px solid #22c55e" : "1px solid #333",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 13
-              }}
-              title="Link mode: click source then target to add an edge"
-            >
-              {linkMode ? "Link mode: ON" : "Enable link mode"}
-            </button>
-
-            {linkError && (
-              <div style={{ color: "#f44336", fontSize: 12, marginTop: 8 }}>
-                {linkError}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1099,30 +1042,31 @@ const WorkloadView: React.FC = () => {
         </div>
 
         {/* Graph canvas */}
-        <div style={{ flex: 1 }}>
-          <GraphCanvas
-            nodes={nodesForView}
-            edges={edgesForView}
-            maxImportance={maxImportance}
-            linkMode={linkMode}
-            onNodeSelected={handleNodeSelected}
-            onEdgeCreate={handleDragCreateLink}
-            onNodeRename={handleRenameNode}
-            onEdgeSelected={(e) => {
-              if (!e) return setSelectedEdge(null);
+        <div style={{ flex: 1, height: "100%" }}>
+          <ReactFlowProvider>
+            <GraphCanvas
+              nodes={nodesForView}
+              edges={edgesForView}
+              maxImportance={maxImportance}
+              onNodeSelected={handleNodeSelected}
+              onEdgeCreate={handleDragCreateLink}
+              onNodeRename={handleRenameNode}
+              onEdgeSelected={(e) => {
+                if (!e) return setSelectedEdge(null);
 
-              setSelectedEdge({
-                id: e.id,
-                source: e.source ?? (e as any).from_id,
-                target: e.target ?? (e as any).to_id,
-                relationship: e.relationship,
-                confidence: e.confidence,
+                setSelectedEdge({
+                  id: e.id,
+                  source: e.source ?? (e as any).from_id,
+                  target: e.target ?? (e as any).to_id,
+                  relationship: e.relationship,
+                  confidence: e.confidence,
                 status: (e.status as any),
                 origin: (e as any).origin,
                 raw: e
               });
             }}
-          />
+            />
+          </ReactFlowProvider>
         </div>
       </div>
 
