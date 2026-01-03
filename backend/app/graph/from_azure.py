@@ -25,19 +25,55 @@ def node_importance(azure_type: str) -> int:
 
 # Simple type mapping (expand later)
 def map_node_type(azure_type: str) -> str:
+    """Map Azure resource types to canonical node types used by the frontend for icon/theme selection."""
     t = (azure_type or "").lower()
+
+    # Compute
+    if t in {"microsoft.compute/virtualmachines", "microsoft.compute/virtualmachinescalesets"}:
+        return "vm"
+
+    # Containers
     if t == "microsoft.containerservice/managedclusters":
         return "aks"
-    if t.startswith("microsoft.sql/"):
-        return "sql"
+
+    # Networking
     if t == "microsoft.network/virtualnetworks":
         return "vnet"
-    if t == "microsoft.network/privateendpoints":
-        return "private_endpoint"
+    if t == "microsoft.network/subnets":
+        return "subnet"
+    if t == "microsoft.network/publicipaddresses":
+        return "pip"
+    if t == "microsoft.network/networksecuritygroups":
+        return "nsg"
     if t == "microsoft.network/networkinterfaces":
         return "nic"
+    if t == "microsoft.network/privateendpoints":
+        return "private_endpoint"
     if t.startswith("microsoft.network/"):
         return "network"
+
+    # Storage
+    if t.startswith("microsoft.storage/storageaccounts"):
+        return "storage"
+    if t == "microsoft.compute/disks":
+        return "disk"
+
+    # Databases
+    if t.startswith("microsoft.sql/"):
+        return "sql"
+
+    # Security
+    if t == "microsoft.keyvault/vaults":
+        return "keyvault"
+
+    # Azure OpenAI Service
+    if t == "microsoft.cognitiveservices/accounts":
+        return "aoai"
+
+    # Management + Governance
+    if t == "microsoft.devtestlab/schedules":
+        return "schd"
+
     return "resource"
 
 def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str) -> dict:
