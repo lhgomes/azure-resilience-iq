@@ -10,6 +10,7 @@
     "cytoscape": "^3.26.0",
     "cytoscape-dagre": "^2.5.0",
     "cytoscape-edgehandles": "^4.0.1",
+    "cytoscape-elk": "^2.3.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
