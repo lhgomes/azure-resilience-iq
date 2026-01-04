@@ -1,13 +1,14 @@
 import json
 import argparse
-from pathlib import Path
 from typing import List
 
 from azure.identity import AzureCliCredential
 from .arg import query_resources
 
+from app.config import COLLECTOR_DIR
 
-OUTPUT_DIR = Path("data/collector")
+
+OUTPUT_DIR = COLLECTOR_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

@@ -1,11 +1,10 @@
-import json
 from pathlib import Path
 from typing import List
 
 from app.intent.manual_edge import ManualEdge
+from app.storage._json_repo import DATA_DIR, read_json, write_json
 
-BASE = Path("data/manual_edges")
-BASE.mkdir(parents=True, exist_ok=True)
+BASE = DATA_DIR / "manual_edges"
 
 
 def _path(workload_id: str) -> Path:
@@ -13,12 +12,10 @@ def _path(workload_id: str) -> Path:
 
 
 def load_manual_edges(workload_id: str) -> List[ManualEdge]:
-    path = _path(workload_id)
-    if not path.exists():
+    raw = read_json(_path(workload_id), default=[])
+    if not isinstance(raw, list):
         return []
-
-    raw = json.loads(path.read_text())
-    return [ManualEdge(**item) for item in raw]
+    return [ManualEdge(**item) for item in raw if isinstance(item, dict)]
 
 
 def save_manual_edge(workload_id: str, edge: ManualEdge):
@@ -28,9 +25,7 @@ def save_manual_edge(workload_id: str, edge: ManualEdge):
     edges = [e for e in edges if e.id != edge.id]
     edges.append(edge)
 
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump([e.model_dump() for e in edges], f, indent=2)
+    write_json(_path(workload_id), [e.model_dump() for e in edges])
 
 
 def delete_manual_edge(workload_id: str, edge_id: str) -> bool:
@@ -40,8 +35,6 @@ def delete_manual_edge(workload_id: str, edge_id: str) -> bool:
     if len(new_edges) == len(edges):
         return False
 
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump([e.model_dump() for e in new_edges], f, indent=2)
+    write_json(_path(workload_id), [e.model_dump() for e in new_edges])
 
     return True

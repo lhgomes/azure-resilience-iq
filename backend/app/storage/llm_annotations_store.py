@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from app.llm.models import (
@@ -8,8 +7,9 @@ from app.llm.models import (
     EdgeSuggestionPayload,
 )
 
-BASE = Path("data/llm_annotations")
-BASE.mkdir(parents=True, exist_ok=True)
+from app.storage._json_repo import DATA_DIR, read_json, write_json
+
+BASE = DATA_DIR / "llm_annotations"
 
 
 def _path(workload_id: str) -> Path:
@@ -17,11 +17,9 @@ def _path(workload_id: str) -> Path:
 
 
 def load_llm_annotations(workload_id: str) -> LLMAnnotations:
-    path = _path(workload_id)
-    if not path.exists():
+    raw = read_json(_path(workload_id), default={})
+    if not isinstance(raw, dict):
         return LLMAnnotations(nodes=[], edges=[])
-
-    raw = json.loads(path.read_text())
     node_items = raw.get("nodes") or []
     edge_items = raw.get("edges") or []
 
@@ -40,7 +38,5 @@ def load_llm_annotations(workload_id: str) -> LLMAnnotations:
 
 
 def save_llm_annotations(workload_id: str, annotations: LLMAnnotations):
-    path = _path(workload_id)
     payload = annotations.model_dump()
-    with path.open("w") as f:
-        json.dump(payload, f, indent=2)
+    write_json(_path(workload_id), payload)

@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Any, Dict, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class NodeState(str, Enum):
@@ -19,7 +19,7 @@ class Node(BaseModel):
     id: str
     type: str
     name: str
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     source: str
     state: NodeState = NodeState.detected
 
@@ -31,7 +31,7 @@ class Edge(BaseModel):
     relationship: str
     confidence: float
     source: str
-    evidence: List[Dict[str, Any]] = []
+    evidence: List[Dict[str, Any]] = Field(default_factory=list)
     status: EdgeStatus = EdgeStatus.proposed
 
 
@@ -41,7 +41,7 @@ class Finding(BaseModel):
     severity: str
     title: str
     description: str
-    affected_nodes: List[str] = []
-    affected_edges: List[str] = []
+    affected_nodes: List[str] = Field(default_factory=list)
+    affected_edges: List[str] = Field(default_factory=list)
     recommendation: str
     source: str

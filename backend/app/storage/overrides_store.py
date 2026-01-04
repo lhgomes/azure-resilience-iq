@@ -1,9 +1,8 @@
-import json
 from pathlib import Path
 from app.intent.overrides import EdgeOverride
+from app.storage._json_repo import DATA_DIR, read_json, write_json
 
-BASE = Path("data/overrides")
-BASE.mkdir(parents=True, exist_ok=True)
+BASE = DATA_DIR / "overrides"
 
 
 def _path(workload_id: str) -> Path:
@@ -11,14 +10,13 @@ def _path(workload_id: str) -> Path:
 
 
 def load_overrides(workload_id: str) -> dict[str, EdgeOverride]:
-    path = _path(workload_id)
-    if not path.exists():
+    raw = read_json(_path(workload_id), default={})
+    if not isinstance(raw, dict):
         return {}
-
-    raw = json.loads(path.read_text())
     return {
         k: EdgeOverride(**v)
         for k, v in raw.items()
+        if isinstance(v, dict)
     }
 
 
@@ -26,10 +24,4 @@ def save_override(workload_id: str, override: EdgeOverride):
     overrides = load_overrides(workload_id)
     overrides[override.edge_id] = override
 
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump(
-            {k: v.model_dump() for k, v in overrides.items()},
-            f,
-            indent=2
-        )
+    write_json(_path(workload_id), {k: v.model_dump() for k, v in overrides.items()})

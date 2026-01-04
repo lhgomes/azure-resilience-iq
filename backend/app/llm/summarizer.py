@@ -1,7 +1,5 @@
 from typing import Any, Dict, List, Set
 
-from .models import LLMSummary, LLMSafeNode, LLMSafeEdge
-
 
 def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -102,80 +100,3 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         n["connections"] = sorted(connections.get(nid) or [])
 
     return {"nodes": safe_nodes, "edges": safe_edges}
-
-
-def _as_dict(item: Any) -> Dict[str, Any]:
-    if isinstance(item, dict):
-        return item
-    if hasattr(item, "model_dump"):
-        return item.model_dump()
-    if hasattr(item, "dict"):
-        # pydantic v1
-        return item.dict()
-    return getattr(item, "__dict__", {})
-
-
-def build_llm_safe_summary(snapshot: Dict[str, Any]) -> LLMSummary:
-    nodes_raw: List[Any] = snapshot.get("nodes", [])
-    edges_raw: List[Any] = snapshot.get("edges", [])
-
-    alias_to_node_id: Dict[str, str] = {}
-    safe_nodes: List[LLMSafeNode] = []
-
-    for idx, n in enumerate(nodes_raw):
-        nd = _as_dict(n)
-        node_id = nd.get("id") or ""
-        alias = f"n{idx + 1}"
-        alias_to_node_id[alias] = node_id
-
-        metadata = nd.get("metadata") or {}
-        safe_nodes.append(
-            LLMSafeNode(
-                alias=alias,
-                type=nd.get("type") or "unknown",
-                name=nd.get("name") or alias,
-                importance=metadata.get("importance"),
-                connections=[],
-            )
-        )
-
-    node_id_to_alias = {v: k for k, v in alias_to_node_id.items() if v}
-
-    connections = {n.alias: set() for n in safe_nodes}
-    safe_edges: List[LLMSafeEdge] = []
-
-    for e in edges_raw:
-        ed = _as_dict(e)
-        source = ed.get("from_id") or ed.get("source")
-        target = ed.get("to_id") or ed.get("target")
-        relationship = ed.get("relationship") or "related_to"
-
-        if not source or not target:
-            continue
-
-        s_alias = node_id_to_alias.get(source)
-        t_alias = node_id_to_alias.get(target)
-        if not s_alias or not t_alias:
-            continue
-
-        safe_edges.append(
-            LLMSafeEdge(
-                source=s_alias,
-                target=t_alias,
-                relationship=relationship,
-            )
-        )
-        connections[s_alias].add(t_alias)
-        connections[t_alias].add(s_alias)
-
-    patched_nodes: List[LLMSafeNode] = []
-    for n in safe_nodes:
-        conn = sorted(connections.get(n.alias) or [])
-        patched_nodes.append(n.copy(update={"connections": conn}))
-
-    return LLMSummary(
-        nodes=patched_nodes,
-        edges=safe_edges,
-        # keep alias map for post-processing only; do not share externally
-        alias_to_node_id=alias_to_node_id,
-    )

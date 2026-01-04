@@ -1,9 +1,9 @@
-import json
 from pathlib import Path
 from typing import Dict, Optional
 
-BASE = Path("data/criticality_overrides")
-BASE.mkdir(parents=True, exist_ok=True)
+from app.storage._json_repo import DATA_DIR, read_json, write_json
+
+BASE = DATA_DIR / "criticality_overrides"
 
 
 def _path(workload_id: str) -> Path:
@@ -12,15 +12,10 @@ def _path(workload_id: str) -> Path:
 
 def load_criticality_overrides(workload_id: str) -> Dict[str, int]:
     """Load node criticality score overrides. Returns {node_id: score}."""
-    path = _path(workload_id)
-    if not path.exists():
+    raw = read_json(_path(workload_id), default={})
+    if not isinstance(raw, dict):
         return {}
-
-    try:
-        raw = json.loads(path.read_text())
-        return {k: v for k, v in raw.items() if isinstance(v, int) and 1 <= v <= 10}
-    except Exception:
-        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, int) and 1 <= v <= 10}
 
 
 def get_criticality_override(workload_id: str, node_id: str) -> Optional[int]:
@@ -37,9 +32,7 @@ def save_criticality_override(workload_id: str, node_id: str, score: int) -> boo
     overrides = load_criticality_overrides(workload_id)
     overrides[node_id] = score
 
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump(overrides, f, indent=2)
+    write_json(_path(workload_id), overrides)
 
     return True
 
@@ -51,8 +44,6 @@ def delete_criticality_override(workload_id: str, node_id: str) -> bool:
         return False
 
     overrides.pop(node_id, None)
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump(overrides, f, indent=2)
+    write_json(_path(workload_id), overrides)
 
     return True

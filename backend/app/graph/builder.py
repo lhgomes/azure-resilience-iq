@@ -1,5 +1,5 @@
 import hashlib
-from .model import Node, Edge
+from .model import Edge, EdgeStatus, Node
 from app.intent.overrides import EdgeDecision
 from app.storage.overrides_store import load_overrides
 
@@ -47,17 +47,17 @@ class GraphBuilder:
                 continue
 
             if override.decision == EdgeDecision.accepted:
-                edge.status = "accepted"
+                edge.status = EdgeStatus.accepted
 
             elif override.decision == EdgeDecision.rejected:
-                edge.status = "rejected"
+                edge.status = EdgeStatus.rejected
 
         return {
             "nodes": list(self.nodes.values()),
             # hide rejected edges by default
             "edges": [
                 e for e in self.edges.values()
-                if e.status != "rejected"
+                if e.status != EdgeStatus.rejected
             ],
         }
 
