@@ -12,6 +12,7 @@ from app.relationships.extract_networking import extract_networking_relationship
 from app.relationships.extract_private_endpoints import extract_private_endpoint_relationships
 from app.storage.manual_edges_store import load_manual_edges
 from app.storage.node_overrides_store import load_node_overrides
+from app.storage.criticality_overrides_store import load_criticality_overrides
 
 def node_importance(azure_type: str) -> int:
     t = (azure_type or "").lower()
@@ -79,6 +80,7 @@ def map_node_type(azure_type: str) -> str:
 def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str) -> dict:
     gb = GraphBuilder()
     node_overrides = load_node_overrides(workload_id)
+    criticality_overrides = load_criticality_overrides(workload_id)
 
     # index resources by id
     by_id: Dict[str, Dict[str, Any]] = {}
@@ -110,6 +112,8 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "shape_override": override.shape if override and override.shape else None,
                 "color_override": override.color if override and override.color else None,
                 "layer_override": override.layer if override and override.layer is not None else None,
+                # User-authored criticality overrides feed the LLM; keep raw value for summarizer
+                "criticality_override": criticality_overrides.get(rid),
             }
         ))
 
