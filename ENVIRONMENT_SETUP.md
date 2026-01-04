@@ -44,6 +44,8 @@ python -m app.collector.run --subscription-id <your-subscription-id>
 
 This generates `backend/data/collector/resources.json`.
 
+If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
+
 ### Step 2: Run the LLM annotator
 ```bash
 cd backend

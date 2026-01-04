@@ -1,11 +1,10 @@
-import json
 from pathlib import Path
 from typing import Dict
 
 from app.intent.node_override import NodeOverride
+from app.storage._json_repo import DATA_DIR, read_json, write_json
 
-BASE = Path("data/node_overrides")
-BASE.mkdir(parents=True, exist_ok=True)
+BASE = DATA_DIR / "node_overrides"
 
 
 def _path(workload_id: str) -> Path:
@@ -13,21 +12,17 @@ def _path(workload_id: str) -> Path:
 
 
 def load_node_overrides(workload_id: str) -> Dict[str, NodeOverride]:
-    path = _path(workload_id)
-    if not path.exists():
+    raw = read_json(_path(workload_id), default={})
+    if not isinstance(raw, dict):
         return {}
-
-    raw = json.loads(path.read_text())
-    return {k: NodeOverride(**v) for k, v in raw.items()}
+    return {k: NodeOverride(**v) for k, v in raw.items() if isinstance(v, dict)}
 
 
 def save_node_override(workload_id: str, override: NodeOverride):
     overrides = load_node_overrides(workload_id)
     overrides[override.node_id] = override
 
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump({k: v.model_dump() for k, v in overrides.items()}, f, indent=2)
+    write_json(_path(workload_id), {k: v.model_dump() for k, v in overrides.items()})
 
 
 def delete_node_override(workload_id: str, node_id: str) -> bool:
@@ -36,8 +31,6 @@ def delete_node_override(workload_id: str, node_id: str) -> bool:
         return False
 
     overrides.pop(node_id, None)
-    path = _path(workload_id)
-    with path.open("w") as f:
-        json.dump({k: v.model_dump() for k, v in overrides.items()}, f, indent=2)
+    write_json(_path(workload_id), {k: v.model_dump() for k, v in overrides.items()})
 
     return True

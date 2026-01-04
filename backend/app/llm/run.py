@@ -5,26 +5,29 @@ Usage:
   python -m app.llm.run --workload-id demo
 
 This script:
-1. Loads the graph from data/collector/resources.json
+1. Loads the graph from the collector output (default: data/collector/resources.json)
 2. Runs the LLM annotator to generate architecture suggestions
 3. Saves annotations to data/llm_annotations/
 4. Reports success/failures
 
 Requires:
-- data/collector/resources.json (from app.collector.run)
+- collector output file (from app.collector.run)
 - AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT (in .env or environment)
 - USE_REAL_LLM=true (in .env or environment)
 - az login (for DefaultAzureCredential)
+
+Paths:
+- Override the base data directory with AZURE_WORKLOAD_GRAPH_DATA_DIR (default: data)
 """
 
 import json
 import logging
 import argparse
-from pathlib import Path
 
 from dotenv import load_dotenv
 
 from app.graph.from_azure import build_graph_from_resources
+from app.config import COLLECTOR_RESOURCES_PATH
 from app.llm.annotator import annotate_graph
 from app.storage.llm_annotations_store import save_llm_annotations
 
@@ -37,7 +40,7 @@ LOGGER = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
-COLLECTOR_RESOURCES = Path("data/collector/resources.json")
+COLLECTOR_RESOURCES = COLLECTOR_RESOURCES_PATH
 
 
 def main():

@@ -8,5 +8,16 @@ dependencies = [
   "uvicorn",
   "pydantic",
   "python-dotenv",
-  "httpx"
+  "httpx",
+
+  "azure-identity",
+  "azure-mgmt-resourcegraph",
+  "openai"
 ]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]

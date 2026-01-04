@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -41,29 +41,3 @@ class LLMAnnotations(BaseModel):
 
     nodes: List[NodeAnnotation] = Field(default_factory=list)
     edges: List[EdgeSuggestionPayload] = Field(default_factory=list)
-
-
-class LLMSafeNode(BaseModel):
-    """Internal safe node representation used for prompt construction."""
-
-    alias: str
-    type: str
-    name: str
-    importance: int | None = None
-    connections: List[str] = Field(default_factory=list)
-
-
-class LLMSafeEdge(BaseModel):
-    """Internal safe edge representation used for prompt construction."""
-
-    source: str
-    target: str
-    relationship: str
-
-
-class LLMSummary(BaseModel):
-    """Internal summary passed to the LLM; excludes noisy metadata."""
-
-    nodes: List[LLMSafeNode]
-    edges: List[LLMSafeEdge]
-    alias_to_node_id: Dict[str, str]

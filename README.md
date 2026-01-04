@@ -36,6 +36,10 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e .
 ```
 
+Notes:
+- `pip install -e .` is supported (the backend packages only the `app/` module).
+- `data/` contains runtime artifacts (collector output, overrides, annotations) and is intentionally not packaged.
+
 #### Configure Environment Variables
 
 Create a `.env` file in the `backend/` directory with the following content:
@@ -102,6 +106,8 @@ python -m app.collector.run \
 
 This creates `data/collector/resources.json` with the collected Azure resources.
 
+If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
+
 ### Step 2: Run LLM Annotations (Optional)
 
 If you configured Azure OpenAI and set `USE_REAL_LLM=true`, run the LLM annotator:
@@ -117,6 +123,8 @@ This analyzes the collected resources and generates:
 - Architecture improvement suggestions
 
 Results are saved to `data/llm_annotations/demo.json`.
+
+If `AZURE_WORKLOAD_GRAPH_DATA_DIR` is set, the annotations are saved under that directory.
 
 ### Step 3: Start the Backend Server
 
