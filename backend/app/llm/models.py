@@ -6,7 +6,8 @@ class NodeAnnotationPayload(BaseModel):
     """Advisory per-node annotations returned by an LLM (non-authoritative)."""
 
     display_name: Optional[str] = None
-    service_display_name: Optional[str] = None
+    azure_service_category: Optional[str] = None
+    azure_service_name: Optional[str] = None
     layer: Optional[int] = None
     priority: Optional[str] = None
     criticality_score: Optional[int] = Field(default=None, ge=1, le=10)
