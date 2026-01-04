@@ -43,6 +43,27 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   const [icon, setIcon] = useState<string>("");
   const [criticality, setCriticality] = useState<number | "">("");
 
+  const UiBadge = ({ title }: { title?: string }) => (
+    <span
+      title={title ?? "User input"}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "1px 6px",
+        borderRadius: 999,
+        background: "#1e4620",
+        color: "#ffffff",
+        fontSize: 11,
+        fontWeight: 700,
+        border: "1px solid #2ea043",
+        lineHeight: 1.2,
+      }}
+    >
+      Ui
+    </span>
+  );
+
   useEffect(() => {
     if (!node) return;
     setName(node.name ?? "");
@@ -73,14 +94,17 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   const userChanges: string[] = [];
   const aiChanges: string[] = [];
 
-  const rawName = rawMeta.raw_name as string | undefined;
   const nameOverride = rawMeta.name_override as string | undefined;
-  const nameUserOverridden =
-    (typeof nameOverride === "string" && nameOverride.length > 0) ||
-    (!!rawName && !!baselineName && rawName !== baselineName);
-  const layerUserOverridden = typeof rawMeta.layer_override === "number";
-  const colorUserOverridden = typeof rawMeta.color_override === "string" && rawMeta.color_override.length > 0;
-  const iconUserOverridden = typeof rawMeta.icon_override === "string" && rawMeta.icon_override.length > 0;
+  const layerOverride = rawMeta.layer_override as number | undefined;
+  const colorOverride = rawMeta.color_override as string | undefined;
+  const iconOverride = rawMeta.icon_override as string | undefined;
+  const criticalityOverride = rawMeta.criticality_override as number | undefined;
+
+  const nameUserOverridden = userLayerEnabled && (typeof nameOverride === "string" && nameOverride.length > 0);
+  const layerUserOverridden = userLayerEnabled && typeof layerOverride === "number";
+  const colorUserOverridden = userLayerEnabled && (typeof colorOverride === "string" && colorOverride.length > 0);
+  const iconUserOverridden = userLayerEnabled && (typeof iconOverride === "string" && iconOverride.length > 0);
+  const criticalityUserOverridden = userLayerEnabled && typeof criticalityOverride === "number";
 
   if (nameUserOverridden) userChanges.push("Name");
   if (layerUserOverridden) userChanges.push("Layer");
@@ -187,7 +211,7 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
             AI
           </span>
         )}
-        {(node.override || node.criticalityOverride) && (
+        {userLayerEnabled && (node.override || node.criticalityOverride) && (
           <span
             title="User input"
             style={{
@@ -208,55 +232,11 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
         )}
       </h3>
 
-      <div style={{ marginBottom: 12, fontSize: 12, color: "#9AA0A6" }}>
-        ID: {node.id}
-      </div>
-
-      {node.aiAnnotation && (
-        <div
-          style={{
-            marginBottom: 16,
-            padding: 12,
-            border: "1px dashed #444",
-            background: "#1b1b1b",
-            borderRadius: 4
-          }}
-          title="LLM suggestion; non-authoritative"
-        >
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>AI suggestion</div>
-          <div style={{ fontSize: 13, color: "#e5e5e5" }}>
-            Name: {node.aiAnnotation.display_name ?? node.name}
-          </div>
-          {node.originalName && (
-            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
-              Original: {node.originalName}
-            </div>
-          )}
-          {node.aiAnnotation.priority && (
-            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
-              Priority: {node.aiAnnotation.priority}
-            </div>
-          )}
-          {node.aiAnnotation.criticality_score !== undefined && (
-            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
-              Criticality: {node.aiAnnotation.criticality_score ?? 0}
-            </div>
-          )}
-          {node.aiAnnotation.confidence !== undefined && (
-            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 4 }}>
-              Confidence: {Math.round((node.aiAnnotation.confidence ?? 0) * 100)}%
-            </div>
-          )}
-          {node.aiAnnotation.reason && (
-            <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 6 }}>
-              Reason: {node.aiAnnotation.reason}
-            </div>
-          )}
-        </div>
-      )}
-
       <div style={{ marginBottom: 14 }}>
-        <div style={{ marginBottom: 6 }}><strong>Name</strong></div>
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <strong>Name</strong>
+          {nameUserOverridden && <UiBadge title="User input: Name" />}
+        </div>
         <input
           value={name}
           onChange={e => setName(e.target.value)}
@@ -272,7 +252,10 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       </div>
 
       <div style={{ marginBottom: 14 }}>
-        <div style={{ marginBottom: 6 }}><strong>Layer (importance)</strong></div>
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <strong>Layer (importance)</strong>
+          {layerUserOverridden && <UiBadge title="User input: Layer" />}
+        </div>
         <select
           value={layer === "" ? "" : String(layer)}
           onChange={e => setLayer(e.target.value === "" ? "" : Number(e.target.value))}
@@ -292,7 +275,10 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       </div>
 
       <div style={{ marginBottom: 14 }}>
-        <div style={{ marginBottom: 6 }}><strong>Icon</strong></div>
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <strong>Icon</strong>
+          {iconUserOverridden && <UiBadge title="User input: Icon" />}
+        </div>
         <select
           value={icon}
           onChange={e => setIcon(e.target.value)}
@@ -318,7 +304,10 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       </div>
 
       <div style={{ marginBottom: 14 }}>
-        <div style={{ marginBottom: 6 }}><strong>Color</strong></div>
+        <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <strong>Color</strong>
+          {colorUserOverridden && <UiBadge title="User input: Color" />}
+        </div>
         <input
           type="color"
           value={color || "#177ddc"}
@@ -334,7 +323,18 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
 
       <div style={{ marginBottom: 18 }}>
         <div style={{ marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <strong>Criticality (1-10)</strong>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <strong>Criticality (1-10)</strong>
+            {criticalityUserOverridden && (
+              <UiBadge
+                title={
+                  typeof aiCriticality === "number" && node.criticalityScore === aiCriticality
+                    ? "User override: Criticality (same as AI)"
+                    : "User input: Criticality"
+                }
+              />
+            )}
+          </div>
           {baselineCriticality !== null && (
             <span style={{ fontSize: 11, color: "#9AA0A6" }}>AI: {baselineCriticality}/10</span>
           )}
@@ -396,14 +396,10 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
         Save
       </button>
 
-      <div style={{ marginTop: 12, marginBottom: 8, fontSize: 12, color: "#9AA0A6" }}>
-        <div>User input: {userChanges.length ? userChanges.join(", ") : "None"}</div>
-        <div>AI suggestion: {aiChanges.length ? aiChanges.join(", ") : "None"}</div>
-      </div>
-
       <button
         onClick={() => onReset?.()}
         style={{
+          marginTop: 10,
           width: "100%",
           padding: "10px 12px",
           background: "#1f2937",
@@ -414,6 +410,45 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       >
         Reset to defaults
       </button>
+
+      {node.aiAnnotation && (
+        <div
+          style={{
+            marginTop: 16,
+            marginBottom: 16,
+            padding: 12,
+            border: "1px dashed #444",
+            background: "#1b1b1b",
+            borderRadius: 4
+          }}
+          title="LLM suggestion; non-authoritative"
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>AI suggestion</div>
+          <div style={{ fontSize: 13, color: "#9AA0A6" }}>
+            Name: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.display_name ?? node.name}</span>
+          </div>
+          {node.aiAnnotation.priority && (
+            <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 4 }}>
+              Priority: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.priority}</span>
+            </div>
+          )}
+          {node.aiAnnotation.criticality_score !== undefined && (
+            <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 4 }}>
+              Criticality: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.criticality_score ?? 0}</span>
+            </div>
+          )}
+          {node.aiAnnotation.confidence !== undefined && (
+            <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 4 }}>
+              Confidence: <span style={{ color: "#e5e5e5" }}>{Math.round((node.aiAnnotation.confidence ?? 0) * 100)}%</span>
+            </div>
+          )}
+          {node.aiAnnotation.reason && (
+            <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 6 }}>
+              Reason: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.reason}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {rawJson && (
         <details style={{ marginTop: 16 }}>

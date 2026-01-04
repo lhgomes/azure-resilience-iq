@@ -392,12 +392,31 @@ const WorkloadView: React.FC = () => {
                       ...n,
                       name: payload.name ?? n.name,
                       metadata: {
-                        ...n.metadata,
-                        importance: payload.layer === undefined ? n.metadata?.importance : payload.layer,
-                        color_override: payload.color === undefined ? n.metadata?.color_override : payload.color,
-                        icon_override: payload.icon === undefined ? (n.metadata as any)?.icon_override : payload.icon,
-                        icon: payload.icon === undefined ? (n.metadata as any)?.icon : payload.icon,
-                        override: true
+                        ...(n.metadata as any),
+                        importance: (() => {
+                          const meta = (n.metadata as any) ?? {};
+                          if (payload.layer === undefined) return meta.importance;
+                          if (payload.layer === null) {
+                            return typeof meta.original_importance === "number" ? meta.original_importance : meta.importance;
+                          }
+                          return payload.layer;
+                        })(),
+                        name_override: payload.name === undefined ? (n.metadata as any)?.name_override : payload.name,
+                        layer_override: payload.layer === undefined ? (n.metadata as any)?.layer_override : (payload.layer === null ? undefined : payload.layer),
+                        color_override: payload.color === undefined ? (n.metadata as any)?.color_override : (payload.color === null ? undefined : payload.color),
+                        icon_override: payload.icon === undefined ? (n.metadata as any)?.icon_override : (payload.icon === null ? undefined : payload.icon),
+                        override: (() => {
+                          const nextName = payload.name === undefined ? (n.metadata as any)?.name_override : payload.name;
+                          const nextLayer = payload.layer === undefined ? (n.metadata as any)?.layer_override : (payload.layer === null ? undefined : payload.layer);
+                          const nextColor = payload.color === undefined ? (n.metadata as any)?.color_override : (payload.color === null ? undefined : payload.color);
+                          const nextIcon = payload.icon === undefined ? (n.metadata as any)?.icon_override : (payload.icon === null ? undefined : payload.icon);
+                          return (
+                            (typeof nextName === "string" && nextName.length > 0) ||
+                            typeof nextLayer === "number" ||
+                            (typeof nextColor === "string" && nextColor.length > 0) ||
+                            (typeof nextIcon === "string" && nextIcon.length > 0)
+                          );
+                        })(),
                       }
                     }
                   : n
@@ -421,23 +440,54 @@ const WorkloadView: React.FC = () => {
         });
       }
 
-      setSelectedNode(prev => prev && prev.id === nodeId
-        ? {
-            ...prev,
-            name: payload.name ?? prev.name,
-            layer: payload.layer === undefined ? prev.layer : payload.layer ?? undefined,
-            color: payload.color === undefined ? prev.color : payload.color ?? undefined,
-            icon: payload.icon === undefined ? prev.icon : payload.icon ?? undefined,
-            override: true,
-            criticalityScore: payload.criticality === undefined
-              ? prev.criticalityScore
-              : (payload.criticality === null ? undefined : payload.criticality),
-            criticalityOverride: payload.criticality === undefined
-              ? prev.criticalityOverride
-              : payload.criticality !== null,
-          }
-        : prev
-      );
+      setSelectedNode(prev => {
+        if (!prev || prev.id !== nodeId) return prev;
+
+        const rawNode = (prev.raw as any) ?? undefined;
+        const rawMeta = rawNode?.metadata ?? {};
+
+        const nextNameOverride = payload.name === undefined ? rawMeta.name_override : payload.name;
+        const nextLayerOverride = payload.layer === undefined ? rawMeta.layer_override : (payload.layer === null ? undefined : payload.layer);
+        const nextColorOverride = payload.color === undefined ? rawMeta.color_override : (payload.color === null ? undefined : payload.color);
+        const nextIconOverride = payload.icon === undefined ? rawMeta.icon_override : (payload.icon === null ? undefined : payload.icon);
+
+        const nextOverride =
+          (typeof nextNameOverride === "string" && nextNameOverride.length > 0) ||
+          typeof nextLayerOverride === "number" ||
+          (typeof nextColorOverride === "string" && nextColorOverride.length > 0) ||
+          (typeof nextIconOverride === "string" && nextIconOverride.length > 0);
+
+        const nextRaw = rawNode
+          ? {
+              ...rawNode,
+              name: payload.name ?? rawNode.name,
+              metadata: {
+                ...rawMeta,
+                name_override: nextNameOverride,
+                layer_override: nextLayerOverride,
+                color_override: nextColorOverride,
+                icon_override: nextIconOverride,
+                override: nextOverride,
+              },
+            }
+          : undefined;
+
+        return {
+          ...prev,
+          name: payload.name ?? prev.name,
+          layer: payload.layer === undefined ? prev.layer : payload.layer ?? undefined,
+          color: payload.color === undefined ? prev.color : payload.color ?? undefined,
+          icon: payload.icon === undefined ? prev.icon : payload.icon ?? undefined,
+          override: nextOverride,
+          raw: nextRaw ?? prev.raw,
+          criticalityScore: payload.criticality === undefined
+            ? prev.criticalityScore
+            : (payload.criticality === null ? undefined : payload.criticality),
+          criticalityOverride: payload.criticality === undefined
+            ? prev.criticalityOverride
+            : payload.criticality !== null,
+        };
+      });
     } catch (err) {
       console.error("Failed to update node", err);
     }
@@ -632,6 +682,7 @@ const WorkloadView: React.FC = () => {
             <GraphCanvas
               nodes={nodesForView}
               edges={edgesForView}
+              userLayerEnabled={userLayerEnabled}
               maxImportance={maxImportance}
               onNodeSelected={handleNodeSelected}
               onEdgeCreate={handleDragCreateLink}
