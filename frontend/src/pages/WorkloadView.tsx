@@ -63,7 +63,17 @@ const WorkloadView: React.FC = () => {
       setError(null);
 
       const raw = await fetchWorkloadGraph(WORKLOAD_ID, aiLayerEnabled);
-      setGraph(normalizeGraph(raw));
+      const normalized = normalizeGraph(raw);
+      setGraph(normalized);
+
+      // Load persisted criticality overrides from backend node metadata.
+      const persisted = new Map<string, number>();
+      (normalized.nodes ?? []).forEach(n => {
+        const meta = (n as any)?.metadata ?? {};
+        const v = meta.criticality_override;
+        if (typeof v === "number") persisted.set(n.id, v);
+      });
+      setCriticalityOverrides(persisted);
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
@@ -239,8 +249,8 @@ const WorkloadView: React.FC = () => {
       name: node.name,
       type: node.type,
       layer: meta.importance as number | undefined,
-      shape: meta.shape_override as string | undefined,
       color: meta.color_override as string | undefined,
+      icon: (meta.icon_override as string | undefined) ?? (meta.icon as string | undefined),
       override: meta.override as boolean | undefined,
       criticalityScore: effectiveCriticality,
       criticalityOverride: isCriticalityOverride,
@@ -335,8 +345,8 @@ const WorkloadView: React.FC = () => {
       name: node.name,
       type: node.type,
       layer: meta.importance as number | undefined,
-      shape: meta.shape_override as string | undefined,
       color: meta.color_override as string | undefined,
+      icon: (meta.icon_override as string | undefined) ?? (meta.icon as string | undefined),
       override: meta.override as boolean | undefined,
       criticalityScore: effectiveCriticality,
       criticalityOverride: isCriticalityOverride,
@@ -345,9 +355,32 @@ const WorkloadView: React.FC = () => {
     });
   };
 
-  const handleSaveNode = async (nodeId: string, payload: { name?: string; layer?: number | null; shape?: string | null; color?: string | null; }) => {
+  const handleSaveNode = async (nodeId: string, payload: { name?: string; layer?: number | null; color?: string | null; icon?: string | null; criticality?: number | null }) => {
     try {
-      await patchNode(WORKLOAD_ID, nodeId, payload);
+      const nodePatch: Parameters<typeof patchNode>[2] = {
+        name: payload.name,
+        layer: payload.layer,
+        color: payload.color,
+        icon: payload.icon,
+      };
+
+      const shouldPatchNode =
+        payload.name !== undefined ||
+        payload.layer !== undefined ||
+        payload.color !== undefined ||
+        payload.icon !== undefined;
+
+      if (shouldPatchNode) {
+        await patchNode(WORKLOAD_ID, nodeId, nodePatch);
+      }
+
+      if (payload.criticality === null) {
+        if (criticalityOverrides.has(nodeId)) {
+          await resetNodeCriticality(WORKLOAD_ID, nodeId);
+        }
+      } else if (typeof payload.criticality === "number") {
+        await patchNodeCriticality(WORKLOAD_ID, nodeId, payload.criticality);
+      }
 
       setGraph(prev =>
         prev
@@ -361,8 +394,9 @@ const WorkloadView: React.FC = () => {
                       metadata: {
                         ...n.metadata,
                         importance: payload.layer === undefined ? n.metadata?.importance : payload.layer,
-                        shape_override: payload.shape === undefined ? n.metadata?.shape_override : payload.shape,
                         color_override: payload.color === undefined ? n.metadata?.color_override : payload.color,
+                        icon_override: payload.icon === undefined ? (n.metadata as any)?.icon_override : payload.icon,
+                        icon: payload.icon === undefined ? (n.metadata as any)?.icon : payload.icon,
                         override: true
                       }
                     }
@@ -372,14 +406,35 @@ const WorkloadView: React.FC = () => {
           : prev
       );
 
+      if (payload.criticality === null) {
+        setCriticalityOverrides(prev => {
+          if (!prev.has(nodeId)) return prev;
+          const next = new Map(prev);
+          next.delete(nodeId);
+          return next;
+        });
+      } else if (typeof payload.criticality === "number") {
+        setCriticalityOverrides(prev => {
+          const next = new Map(prev);
+          next.set(nodeId, payload.criticality as number);
+          return next;
+        });
+      }
+
       setSelectedNode(prev => prev && prev.id === nodeId
         ? {
             ...prev,
             name: payload.name ?? prev.name,
             layer: payload.layer === undefined ? prev.layer : payload.layer ?? undefined,
-            shape: payload.shape === undefined ? prev.shape : payload.shape ?? undefined,
             color: payload.color === undefined ? prev.color : payload.color ?? undefined,
+            icon: payload.icon === undefined ? prev.icon : payload.icon ?? undefined,
             override: true,
+            criticalityScore: payload.criticality === undefined
+              ? prev.criticalityScore
+              : (payload.criticality === null ? undefined : payload.criticality),
+            criticalityOverride: payload.criticality === undefined
+              ? prev.criticalityOverride
+              : payload.criticality !== null,
           }
         : prev
       );
@@ -392,44 +447,20 @@ const WorkloadView: React.FC = () => {
     try {
       await resetNode(WORKLOAD_ID, nodeId);
 
+      // Reset criticality override too (if present).
+      if (criticalityOverrides.has(nodeId)) {
+        await resetNodeCriticality(WORKLOAD_ID, nodeId);
+        setCriticalityOverrides(prev => {
+          const next = new Map(prev);
+          next.delete(nodeId);
+          return next;
+        });
+      }
+
       await fetchGraph();
       setSelectedNode(null);
     } catch (err) {
       console.error("Failed to reset node", err);
-    }
-  };
-
-  const handleSaveCriticalityScore = async (nodeId: string, score: number) => {
-    try {
-      await patchNodeCriticality(WORKLOAD_ID, nodeId, score);
-
-      const newOverrides = new Map(criticalityOverrides);
-      newOverrides.set(nodeId, score);
-      setCriticalityOverrides(newOverrides);
-
-      setSelectedNode(prev => prev && prev.id === nodeId
-        ? { ...prev, criticalityScore: score, criticalityOverride: true }
-        : prev
-      );
-    } catch (err) {
-      console.error("Failed to save criticality score", err);
-    }
-  };
-
-  const handleResetCriticalityScore = async (nodeId: string) => {
-    try {
-      await resetNodeCriticality(WORKLOAD_ID, nodeId);
-
-      const newOverrides = new Map(criticalityOverrides);
-      newOverrides.delete(nodeId);
-      setCriticalityOverrides(newOverrides);
-
-      setSelectedNode(prev => prev && prev.id === nodeId
-        ? { ...prev, criticalityScore: undefined, criticalityOverride: false }
-        : prev
-      );
-    } catch (err) {
-      console.error("Failed to reset criticality score", err);
     }
   };
 
@@ -638,10 +669,10 @@ const WorkloadView: React.FC = () => {
       {selectedNode && (
         <NodeDrawer
           node={selectedNode}
+          aiLayerEnabled={aiLayerEnabled}
+          userLayerEnabled={userLayerEnabled}
           onClose={() => setSelectedNode(null)}
           onSave={handleSaveNode}
-          onSaveCriticality={handleSaveCriticalityScore}
-          onResetCriticality={handleResetCriticalityScore}
           onReset={() => handleResetNode(selectedNode.id)}
         />
       )}

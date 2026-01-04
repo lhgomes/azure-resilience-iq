@@ -11,9 +11,10 @@ interface AzureNodeProps {
     type?: string;
     criticality_stars?: string;
     color_override?: string;
-    shape_override?: string;
     ai_annotation?: boolean;
+    user_customized?: boolean;
     ai_tooltip?: AiTooltip;
+    user_tooltip?: AiTooltip;
   };
   isConnectable: boolean;
   selected: boolean;
@@ -66,7 +67,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const isLightColor = ["#50e6ff", "#b3e0ff", "#00bcf2", "#5EA0EF", "#ffffff"].includes(nodeColor);
   const textColor = isLightColor ? "#000000" : "#ffffff";
   const borderColor = isLightColor ? "#0078d4" : "#333";
-  const iconUrl = getAzureIcon(data.type || "resource");
+  const iconUrl = data.icon || getAzureIcon(data.type || "resource");
 
   return (
     <>
@@ -92,7 +93,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           position: "relative"
         }}
       onMouseEnter={() => {
-        if (data.ai_tooltip) setShowTooltip(true);
+        if (data.ai_tooltip || data.user_tooltip) setShowTooltip(true);
       }}
       onMouseLeave={() => setShowTooltip(false)}
     >
@@ -112,6 +113,26 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           }}
         >
           AI
+        </div>
+      )}
+
+      {data.user_customized && (
+        <div
+          style={{
+            position: "absolute",
+            top: "-6px",
+            left: "-6px",
+            background: "#2ea043",
+            color: "#fff",
+            padding: "2px 5px",
+            borderRadius: "8px",
+            fontSize: "8px",
+            fontWeight: 700,
+            border: "2px solid #1a1a1a"
+          }}
+          title="User input"
+        >
+          Ui
         </div>
       )}
       
@@ -188,7 +209,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
       />
     </div>
 
-    {data.ai_tooltip && showTooltip && createPortal(
+    {(data.ai_tooltip || data.user_tooltip) && showTooltip && createPortal(
       <div
         style={{
           position: "fixed",
@@ -210,12 +231,27 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           lineHeight: 1.4
         }}
       >
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.ai_tooltip.title}</div>
-        {data.ai_tooltip.items.map((item, idx) => (
-          <div key={idx} style={{ marginBottom: 4 }}>
-            <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
+        {data.user_tooltip && (
+          <div style={{ marginBottom: data.ai_tooltip ? 10 : 0 }}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.user_tooltip.title}</div>
+            {data.user_tooltip.items.map((item, idx) => (
+              <div key={`u-${idx}`} style={{ marginBottom: 4 }}>
+                <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
+              </div>
+            ))}
           </div>
-        ))}
+        )}
+
+        {data.ai_tooltip && (
+          <div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.ai_tooltip.title}</div>
+            {data.ai_tooltip.items.map((item, idx) => (
+              <div key={`a-${idx}`} style={{ marginBottom: 4 }}>
+                <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
+              </div>
+            ))}
+          </div>
+        )}
       </div>,
       document.body
     )}

@@ -35,6 +35,7 @@ const EdgeDrawer: React.FC<Props> = ({
       : undefined;
 
   const aiSuggested = edge.origin === "llm";
+  const userCustomized = edge.origin === "manual" || edge.status === "accepted" || edge.status === "rejected";
   const rawJson = edge.raw ? JSON.stringify(edge.raw, null, 2) : null;
 
   return (
@@ -89,6 +90,25 @@ const EdgeDrawer: React.FC<Props> = ({
             }}
           >
             AI
+          </span>
+        )}
+        {userCustomized && (
+          <span
+            title="User input"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 6px",
+              borderRadius: 12,
+              background: "#1e4620",
+              color: "#ffffff",
+              fontSize: 11,
+              fontWeight: 600,
+              border: "1px solid #2ea043"
+            }}
+          >
+            Ui
           </span>
         )}
       </h3>
