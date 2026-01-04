@@ -55,6 +55,7 @@ AZURE_OPENAI_API_VERSION=2024-05-01-preview
 # Optional: Timeout and retry settings
 AZURE_OPENAI_TIMEOUT_SECONDS=60
 AZURE_OPENAI_MAX_ATTEMPTS=2
+AZURE_OPENAI_MAX_TOKENS=6000
 ```
 
 **Note**: If you don't have Azure OpenAI or want to skip LLM annotations, set `USE_REAL_LLM=false` or omit it entirely.
@@ -231,6 +232,7 @@ To update the graph with new Azure resources:
 | `AZURE_OPENAI_API_VERSION` | No | `2024-05-01-preview` | Azure OpenAI API version |
 | `AZURE_OPENAI_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
 | `AZURE_OPENAI_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
+| `AZURE_OPENAI_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
 
 ### Frontend Configuration
 
