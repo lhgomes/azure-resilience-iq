@@ -21,7 +21,7 @@ export interface GraphNode {
   id: string;
   name: string;
   type: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface GraphEdge {
@@ -30,7 +30,7 @@ export interface GraphEdge {
   target: string;
   relationship: string;
   confidence?: number;
-  status?: string;
+  status?: "proposed" | "accepted" | "rejected";
   origin?: string;
 }
 
@@ -45,7 +45,7 @@ interface Props {
 }
 
 const nodeTypes: NodeTypes = { azure: AzureNode };
-const edgeTypes: EdgeTypes = { azure: AzureEdge as any };
+const edgeTypes: EdgeTypes = { azure: AzureEdge };
 
 const GraphCanvas: React.FC<Props> = ({
   nodes: nodesProp,
@@ -60,7 +60,11 @@ const GraphCanvas: React.FC<Props> = ({
 
   // Filter nodes by importance
   const visibleNodes = useMemo(() => {
-    return nodesProp.filter(n => (n.metadata?.importance ?? 3) <= maxImportance);
+    return nodesProp.filter(n => {
+      const meta = n.metadata ?? {};
+      const importance = typeof meta["importance"] === "number" ? (meta["importance"] as number) : 3;
+      return importance <= maxImportance;
+    });
   }, [nodesProp, maxImportance]);
 
   const visibleNodeIds = useMemo(
@@ -78,16 +82,19 @@ const GraphCanvas: React.FC<Props> = ({
   const rfNodes: Node[] = useMemo(() => {
     return visibleNodes.map(n => ({
       id: n.id,
-      data: {
-        label: n.name || n.id.split("/").pop() || "unknown",
-        icon: n.metadata?.icon,
-        type: n.type,
-        criticality_stars: n.metadata?.criticality_stars,
-        color_override: n.metadata?.color_override,
-        shape_override: n.metadata?.shape_override,
-        ai_annotation: !!n.metadata?.ai_annotation,
-        ai_tooltip: n.metadata?.ai_tooltip,
-      },
+      data: (() => {
+        const meta = n.metadata ?? {};
+        return {
+          label: n.name || n.id.split("/").pop() || "unknown",
+          icon: typeof meta["icon"] === "string" ? (meta["icon"] as string) : undefined,
+          type: n.type,
+          criticality_stars: typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
+          color_override: typeof meta["color_override"] === "string" ? (meta["color_override"] as string) : undefined,
+          shape_override: typeof meta["shape_override"] === "string" ? (meta["shape_override"] as string) : undefined,
+          ai_annotation: !!meta["ai_annotation"],
+          ai_tooltip: meta["ai_tooltip"],
+        };
+      })(),
       type: "azure",
       position: { x: 0, y: 0 }, // Will be set by layout
       connectable: true,

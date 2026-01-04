@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Handle, Position } from "reactflow";
 import { getAzureIcon } from "../utils/azureIcons";
+import type { AiTooltip } from "../domain/graphView";
 
 interface AzureNodeProps {
   data: {
@@ -12,7 +13,7 @@ interface AzureNodeProps {
     color_override?: string;
     shape_override?: string;
     ai_annotation?: boolean;
-    ai_tooltip?: string;
+    ai_tooltip?: AiTooltip;
   };
   isConnectable: boolean;
   selected: boolean;
@@ -158,24 +159,28 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
       )}
       
       <Handle 
+        id="t"
         position={Position.Top} 
         type="target" 
         isConnectable={isConnectable}
         style={{ background: borderColor, width: "8px", height: "8px" }}
       />
       <Handle 
+        id="b"
         position={Position.Bottom} 
         type="source" 
         isConnectable={isConnectable}
         style={{ background: borderColor, width: "8px", height: "8px" }}
       />
       <Handle 
+        id="l"
         position={Position.Left} 
         type="target" 
         isConnectable={isConnectable}
         style={{ background: borderColor, width: "8px", height: "8px" }}
       />
       <Handle 
+        id="r"
         position={Position.Right} 
         type="source" 
         isConnectable={isConnectable}
@@ -202,11 +207,16 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           textAlign: "left",
           zIndex: 99999,
           pointerEvents: "none",
-          whiteSpace: "pre-wrap",
           lineHeight: 1.4
         }}
-        dangerouslySetInnerHTML={{ __html: data.ai_tooltip }}
-      />,
+      >
+        <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.ai_tooltip.title}</div>
+        {data.ai_tooltip.items.map((item, idx) => (
+          <div key={idx} style={{ marginBottom: 4 }}>
+            <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
+          </div>
+        ))}
+      </div>,
       document.body
     )}
     </>
