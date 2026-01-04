@@ -92,8 +92,11 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     # add nodes from resources
     for rid, r in by_id.items():
         override = node_overrides.get(rid)
-        display_name = (override.name if override and override.name else None) or (r.get("name") or rid.split("/")[-1])
-        importance_value = override.layer if override and override.layer is not None else node_importance(r.get("type"))
+        original_name = r.get("name") or rid.split("/")[-1]
+        original_importance = node_importance(r.get("type"))
+
+        display_name = (override.name if override and override.name else None) or original_name
+        importance_value = override.layer if override and override.layer is not None else original_importance
 
         gb.add_node(Node(
             id=rid,
@@ -108,10 +111,14 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "tags": r.get("tags") or {},
                 "importance": importance_value,
                 "display_name": display_name,
+                "original_name": original_name,
+                "original_importance": original_importance,
                 "override": bool(override),
-                "shape_override": override.shape if override and override.shape else None,
+                "name_override": override.name if override and override.name else None,
                 "color_override": override.color if override and override.color else None,
                 "layer_override": override.layer if override and override.layer is not None else None,
+                "icon_override": override.icon if override and override.icon else None,
+                "icon": override.icon if override and override.icon else None,
                 # User-authored criticality overrides feed the LLM; keep raw value for summarizer
                 "criticality_override": criticality_overrides.get(rid),
             }

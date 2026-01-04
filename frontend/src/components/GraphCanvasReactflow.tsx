@@ -84,15 +84,21 @@ const GraphCanvas: React.FC<Props> = ({
       id: n.id,
       data: (() => {
         const meta = n.metadata ?? {};
+        const isUserCustomized =
+          !!meta["override"] ||
+          typeof meta["criticality_override"] === "number";
         return {
           label: n.name || n.id.split("/").pop() || "unknown",
-          icon: typeof meta["icon"] === "string" ? (meta["icon"] as string) : undefined,
+          icon:
+            (typeof meta["icon_override"] === "string" ? (meta["icon_override"] as string) : undefined) ??
+            (typeof meta["icon"] === "string" ? (meta["icon"] as string) : undefined),
           type: n.type,
           criticality_stars: typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
           color_override: typeof meta["color_override"] === "string" ? (meta["color_override"] as string) : undefined,
-          shape_override: typeof meta["shape_override"] === "string" ? (meta["shape_override"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
+          user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
+          user_tooltip: meta["user_tooltip"],
         };
       })(),
       type: "azure",
@@ -112,6 +118,7 @@ const GraphCanvas: React.FC<Props> = ({
         origin: e.origin,
         status: e.status,
         confidence: e.confidence,
+        user_customized: e.origin === "manual" || e.status === "accepted" || e.status === "rejected",
       },
       markerEnd: { type: MarkerType.ArrowClosed },
     }));

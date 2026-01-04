@@ -35,6 +35,15 @@ const AzureEdge: React.FC<EdgeProps> = ({
       ? "3,3"
       : "none";
 
+  const labelTitleParts: string[] = [];
+  if (edgeData.user_customized) {
+    if (edgeData.origin === "manual") labelTitleParts.push("User input: manual edge");
+    if (edgeData.status === "accepted") labelTitleParts.push("User input: accepted");
+    if (edgeData.status === "rejected") labelTitleParts.push("User input: rejected");
+  }
+  if (edgeData.origin === "llm") labelTitleParts.push("AI suggested");
+  const labelTitle = labelTitleParts.join(" • ");
+
   const color = getEdgeColor();
 
   return (
@@ -71,8 +80,47 @@ const AzureEdge: React.FC<EdgeProps> = ({
               whiteSpace: "nowrap"
             }}
             className="nodrag nopan"
+            title={labelTitle || undefined}
           >
-            {edgeData.label}
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span>{edgeData.label}</span>
+              {edgeData.origin === "llm" && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "1px 5px",
+                    borderRadius: 999,
+                    background: "#2f1f08",
+                    color: "#f59e0b",
+                    border: "1px solid #f59e0b",
+                    fontSize: "8px",
+                    fontWeight: 700,
+                  }}
+                  title="AI suggested"
+                >
+                  AI
+                </span>
+              )}
+              {edgeData.user_customized && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "1px 5px",
+                    borderRadius: 999,
+                    background: "#1e4620",
+                    color: "#fff",
+                    border: "1px solid #2ea043",
+                    fontSize: "8px",
+                    fontWeight: 700,
+                  }}
+                  title="User input"
+                >
+                  Ui
+                </span>
+              )}
+            </span>
           </div>
         </EdgeLabelRenderer>
       )}

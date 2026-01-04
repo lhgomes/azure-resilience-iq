@@ -130,6 +130,72 @@ export function buildAiTooltip(
   return { title: "AI suggestion", items };
 }
 
+function formatLayer(layer: number): string {
+  if (layer === 1) return "L0";
+  if (layer === 2) return "L1";
+  if (layer === 3) return "L2";
+  return String(layer);
+}
+
+export function buildUserTooltip(args: {
+  originalName: string | undefined;
+  rawName: string | undefined;
+  nameOverride: string | undefined;
+  originalImportance: number | undefined;
+  layerOverride: number | undefined;
+  colorOverride: string | undefined;
+  iconOverride: string | undefined;
+  criticalityOverride: number | undefined;
+  aiCriticality: number | undefined;
+}): AiTooltip | undefined {
+  const {
+    originalName,
+    rawName,
+    nameOverride,
+    originalImportance,
+    layerOverride,
+    colorOverride,
+    iconOverride,
+    criticalityOverride,
+    aiCriticality,
+  } = args;
+
+  const items: Array<{ label: string; value: string }> = [];
+
+  const effectiveNameOverride = nameOverride || rawName;
+  if (effectiveNameOverride && originalName && effectiveNameOverride !== originalName) {
+    items.push({ label: "Name", value: `${effectiveNameOverride} (was ${originalName})` });
+  }
+
+  if (layerOverride !== undefined && layerOverride !== null) {
+    const suffix =
+      typeof originalImportance === "number" && originalImportance !== layerOverride
+        ? ` (was ${formatLayer(originalImportance)} / ${originalImportance})`
+        : "";
+    items.push({ label: "Layer", value: `${formatLayer(layerOverride)} (${layerOverride})${suffix}` });
+  }
+
+  if (colorOverride) {
+    items.push({ label: "Color", value: colorOverride });
+  }
+
+  if (iconOverride) {
+    const file = iconOverride.split("/").pop() || iconOverride;
+    items.push({ label: "Icon", value: file });
+  }
+
+  if (criticalityOverride !== undefined) {
+    // Only show as a user change if it differs from AI suggestion (when available).
+    if (aiCriticality === undefined || criticalityOverride !== aiCriticality) {
+      const suffix = aiCriticality !== undefined ? ` (AI ${aiCriticality}/10)` : "";
+      items.push({ label: "Criticality", value: `${criticalityOverride}/10${suffix}` });
+    }
+  }
+
+  if (items.length === 0) return undefined;
+  return { title: "User input", items };
+}
+
 export function normalizeGraph(raw: RawGraphSnapshot): GraphSnapshot {
   const edges: GraphEdge[] = (raw?.edges ?? []).map(e => ({
     id: e.id,
@@ -267,6 +333,8 @@ export function buildViewGraph(args: {
       const ann = annotationMap.get(n.id);
       const normalizedType = canonicalTypeForNode(n);
 
+      const rawName = n.name;
+
       const baseName = (n.metadata as any)?.original_name ?? n.name;
       const baseImportance = (n.metadata as any)?.original_importance ?? (n.metadata as any)?.importance ?? 3;
 
@@ -285,6 +353,20 @@ export function buildViewGraph(args: {
 
       const effectiveCriticality = getEffectiveCriticalityScore(ann, criticalityOverrides, n.id);
 
+      const meta = (n.metadata as any) ?? {};
+      const criticalityOverride = criticalityOverrides.get(n.id);
+      const user_tooltip = buildUserTooltip({
+        originalName: meta.original_name,
+        rawName,
+        nameOverride: typeof meta.name_override === "string" ? meta.name_override : undefined,
+        originalImportance: typeof meta.original_importance === "number" ? meta.original_importance : undefined,
+        layerOverride: typeof meta.layer_override === "number" ? meta.layer_override : undefined,
+        colorOverride: typeof meta.color_override === "string" ? meta.color_override : undefined,
+        iconOverride: typeof meta.icon_override === "string" ? meta.icon_override : undefined,
+        criticalityOverride,
+        aiCriticality: ann?.criticality_score,
+      });
+
       return {
         ...n,
         type: normalizedType,
@@ -294,8 +376,10 @@ export function buildViewGraph(args: {
           importance,
           ai_annotation: ann,
           original_name: baseName,
+          raw_name: rawName,
           raw_type: n.type,
           ai_tooltip: aiLayerEnabled ? buildAiTooltip(ann, baseName) : undefined,
+          user_tooltip,
           criticality_score: effectiveCriticality,
           criticality_stars: renderStars(effectiveCriticality ?? 5),
         } as Record<string, unknown>,

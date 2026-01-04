@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
+import { AZURE_ICON_MANIFEST } from "../utils/azureIconManifest";
 
 export interface NodeData {
   id: string;
   name: string;
   type?: string;
   layer?: number;
-  shape?: string;
   color?: string;
+  icon?: string;
   criticalityScore?: number;
   criticalityOverride?: boolean;
   override?: boolean;
@@ -28,42 +29,37 @@ interface AiAnnotation {
 
 interface Props {
   node: NodeData | null;
+  aiLayerEnabled: boolean;
+  userLayerEnabled: boolean;
   onClose?: () => void;
-  onSave?: (nodeId: string, payload: { name?: string; layer?: number | null; shape?: string | null; color?: string | null; }) => void;
-  onSaveCriticality?: (nodeId: string, score: number) => void;
-  onResetCriticality?: (nodeId: string) => void;
+  onSave?: (nodeId: string, payload: { name?: string; layer?: number | null; color?: string | null; icon?: string | null; criticality?: number | null }) => void;
   onReset?: () => void;
 }
 
-const SHAPES = [
-  { value: "round-rectangle", label: "Round rectangle" },
-  { value: "rectangle", label: "Rectangle" },
-  { value: "ellipse", label: "Ellipse" },
-  { value: "diamond", label: "Diamond" },
-];
-
-const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCriticality, onResetCriticality }) => {
+const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, onClose, onSave, onReset }) => {
   const [name, setName] = useState("");
   const [layer, setLayer] = useState<number | "">("");
-  const [shape, setShape] = useState<string>("");
   const [color, setColor] = useState<string>("");
+  const [icon, setIcon] = useState<string>("");
   const [criticality, setCriticality] = useState<number | "">("");
 
   useEffect(() => {
     if (!node) return;
     setName(node.name ?? "");
     setLayer(typeof node.layer === "number" ? node.layer : "");
-    setShape(node.shape ?? "");
     setColor(node.color ?? "");
+    setIcon(node.icon ?? "");
     setCriticality(typeof node.criticalityScore === "number" ? node.criticalityScore : "");
   }, [node]);
 
   if (!node) return null;
 
-  const baselineName = node.originalName ?? node.name;
-  const baselineLayer = (node.raw as any)?.metadata?.original_importance ?? (node.raw as any)?.metadata?.importance ?? node.layer;
-  const baselineShape = (node.raw as any)?.metadata?.shape_override ?? "";
+  const rawMeta = (node.raw as any)?.metadata ?? {};
+
+  const baselineName = rawMeta.original_name ?? node.originalName ?? node.name;
+  const baselineLayer = rawMeta.original_importance ?? rawMeta.importance ?? node.layer;
   const baselineColor = (node.raw as any)?.metadata?.color_override ?? "";
+  const baselineIcon = (node.raw as any)?.metadata?.icon_override ?? (node.raw as any)?.metadata?.icon ?? "";
   const baselineCriticality = node.aiAnnotation?.criticality_score ?? null;
   const effectiveCriticality = criticality === "" ? null : Number(criticality);
   const criticalityChanged = effectiveCriticality !== null
@@ -74,12 +70,49 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
     : Number(criticality);
   const hasCriticalityOverride = node.criticalityOverride ?? false;
 
-  const changes: string[] = [];
-  if (node.name !== baselineName) changes.push("Name");
-  if (node.layer !== baselineLayer) changes.push("Layer");
-  if ((node.shape ?? "") !== baselineShape) changes.push("Shape");
-  if ((node.color ?? "") !== baselineColor) changes.push("Color");
-  if (criticalityChanged) changes.push("Criticality");
+  const userChanges: string[] = [];
+  const aiChanges: string[] = [];
+
+  const rawName = rawMeta.raw_name as string | undefined;
+  const nameOverride = rawMeta.name_override as string | undefined;
+  const nameUserOverridden =
+    (typeof nameOverride === "string" && nameOverride.length > 0) ||
+    (!!rawName && !!baselineName && rawName !== baselineName);
+  const layerUserOverridden = typeof rawMeta.layer_override === "number";
+  const colorUserOverridden = typeof rawMeta.color_override === "string" && rawMeta.color_override.length > 0;
+  const iconUserOverridden = typeof rawMeta.icon_override === "string" && rawMeta.icon_override.length > 0;
+
+  if (nameUserOverridden) userChanges.push("Name");
+  if (layerUserOverridden) userChanges.push("Layer");
+  if (colorUserOverridden) userChanges.push("Color");
+  if (iconUserOverridden) userChanges.push("Icon");
+  const aiCriticality = node.aiAnnotation?.criticality_score;
+  const userCriticalityIsEffectiveChange =
+    node.criticalityOverride &&
+    (typeof aiCriticality !== "number" || node.criticalityScore !== aiCriticality);
+  if (userCriticalityIsEffectiveChange) userChanges.push("Criticality");
+
+  if (aiLayerEnabled && node.aiAnnotation) {
+    const ann = node.aiAnnotation;
+    const nameAiApplied =
+      !nameUserOverridden &&
+      typeof ann.display_name === "string" &&
+      ann.display_name.length > 0 &&
+      node.name === ann.display_name;
+
+    const layerAiApplied =
+      userLayerEnabled && !layerUserOverridden
+        ? (typeof ann.layer === "number" && node.layer === ann.layer)
+        : (typeof ann.layer === "number" && node.layer === ann.layer);
+
+    const criticalityAiApplied =
+      typeof ann.criticality_score === "number" &&
+      node.criticalityScore === ann.criticality_score;
+
+    if (nameAiApplied) aiChanges.push("Name");
+    if (layerAiApplied) aiChanges.push("Layer");
+    if (criticalityAiApplied) aiChanges.push("Criticality");
+  }
 
   const rawJson = node.raw ? JSON.stringify(node.raw, null, 2) : null;
 
@@ -87,14 +120,10 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
     onSave?.(node.id, {
       name: name.trim() || undefined,
       layer: layer === "" ? null : Number(layer),
-      shape: shape || null,
       color: color || null,
+      icon: icon || null,
+      criticality: effectiveCriticality,
     });
-  };
-
-  const handleSaveCriticality = () => {
-    if (criticality === "" || criticality < 1 || criticality > 10) return;
-    onSaveCriticality?.(node.id, Number(criticality));
   };
 
   const renderStars = (score: number): string => {
@@ -156,6 +185,25 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
             }}
           >
             AI
+          </span>
+        )}
+        {(node.override || node.criticalityOverride) && (
+          <span
+            title="User input"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "2px 6px",
+              borderRadius: 12,
+              background: "#1e4620",
+              color: "#ffffff",
+              fontSize: 11,
+              fontWeight: 600,
+              border: "1px solid #2ea043"
+            }}
+          >
+            Ui
           </span>
         )}
       </h3>
@@ -225,26 +273,9 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
 
       <div style={{ marginBottom: 14 }}>
         <div style={{ marginBottom: 6 }}><strong>Layer (importance)</strong></div>
-        <input
-          type="number"
-          value={layer}
-          onChange={e => setLayer(e.target.value === "" ? "" : Number(e.target.value))}
-          placeholder="1 (L0), 2 (L1), 3 (L2)"
-          style={{
-            width: "100%",
-            padding: "8px 10px",
-            background: "#1a1a1a",
-            color: "#fff",
-            border: "1px solid #333"
-          }}
-        />
-      </div>
-
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ marginBottom: 6 }}><strong>Shape</strong></div>
         <select
-          value={shape}
-          onChange={e => setShape(e.target.value)}
+          value={layer === "" ? "" : String(layer)}
+          onChange={e => setLayer(e.target.value === "" ? "" : Number(e.target.value))}
           style={{
             width: "100%",
             padding: "8px 10px",
@@ -254,8 +285,34 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
           }}
         >
           <option value="">Default</option>
-          {SHAPES.map(s => (
-            <option key={s.value} value={s.value}>{s.label}</option>
+          <option value="1">L0</option>
+          <option value="2">L1</option>
+          <option value="3">L2</option>
+        </select>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 6 }}><strong>Icon</strong></div>
+        <select
+          value={icon}
+          onChange={e => setIcon(e.target.value)}
+          style={{
+            width: "100%",
+            padding: "8px 10px",
+            background: "#1a1a1a",
+            color: "#fff",
+            border: "1px solid #333"
+          }}
+        >
+          <option value="">Default</option>
+          {Object.entries(AZURE_ICON_MANIFEST).map(([category, files]) => (
+            <optgroup key={category} label={category}>
+              {files.map(file => (
+                <option key={`${category}/${file}`} value={`/Icons/${category}/${file}`}>
+                  {file}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </div>
@@ -323,36 +380,6 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
         <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 6 }}>
           {hasCriticalityOverride ? "User override active" : "AI suggestion will be used if unset"}
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-          <button
-            onClick={handleSaveCriticality}
-            disabled={effectiveCriticality === null || effectiveCriticality < 1 || effectiveCriticality > 10}
-            style={{
-              flex: 1,
-              padding: "8px 10px",
-              background: "#2ea043",
-              color: "#fff",
-              border: "none",
-              cursor: effectiveCriticality === null ? "not-allowed" : "pointer"
-            }}
-          >
-            Save criticality
-          </button>
-          <button
-            onClick={() => onResetCriticality?.(node.id)}
-            style={{
-              flex: 1,
-              padding: "8px 10px",
-              background: "#1f2937",
-              color: "#fff",
-              border: "1px solid #333",
-              cursor: "pointer"
-            }}
-            title="Remove user-set criticality"
-          >
-            Reset
-          </button>
-        </div>
       </div>
 
       <button
@@ -370,7 +397,8 @@ const NodeDrawer: React.FC<Props> = ({ node, onClose, onSave, onReset, onSaveCri
       </button>
 
       <div style={{ marginTop: 12, marginBottom: 8, fontSize: 12, color: "#9AA0A6" }}>
-        Changes vs original: {changes.length ? changes.join(", ") : "None"}
+        <div>User input: {userChanges.length ? userChanges.join(", ") : "None"}</div>
+        <div>AI suggestion: {aiChanges.length ? aiChanges.join(", ") : "None"}</div>
       </div>
 
       <button

@@ -123,7 +123,7 @@ export async function createManualEdge(
 export async function patchNode(
   workloadId: WorkloadId,
   nodeId: string,
-  payload: { name?: string; layer?: number | null; shape?: string | null; color?: string | null }
+  payload: { name?: string; layer?: number | null; color?: string | null; icon?: string | null }
 ): Promise<void> {
   await apiNoBody(workloadPath(workloadId, `/nodes/${encodeURIComponent(nodeId)}`), {
     method: "PATCH",

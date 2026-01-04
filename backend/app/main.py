@@ -50,8 +50,8 @@ class CreateEdgeRequest(BaseModel):
 class UpdateNodeRequest(BaseModel):
     name: str | None = None
     layer: int | None = None
-    shape: str | None = None
     color: str | None = None
+    icon: str | None = None
 
 
 class UpdateCriticalityRequest(BaseModel):
@@ -107,22 +107,32 @@ def reset_criticality_score(workload_id: str, node_id: str):
 @app.patch("/api/workloads/{workload_id}/nodes/{node_id:path}")
 def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
     node_id_norm = norm_id(node_id)
-    if not any([payload.name, payload.layer is not None, payload.shape, payload.color]):
+    if not payload.model_fields_set:
         raise HTTPException(status_code=400, detail="at least one field is required")
 
     existing = load_node_overrides(workload_id).get(node_id_norm)
 
-    name = payload.name.strip() if payload.name is not None else (existing.name if existing else None)
-    layer = payload.layer if payload.layer is not None else (existing.layer if existing else None)
-    shape = payload.shape if payload.shape is not None else (existing.shape if existing else None)
-    color = payload.color if payload.color is not None else (existing.color if existing else None)
+    name = (
+        (payload.name.strip() if payload.name is not None else None)
+        if "name" in payload.model_fields_set
+        else (existing.name if existing else None)
+    )
+    if name == "":
+        name = None
+
+    layer = payload.layer if "layer" in payload.model_fields_set else (existing.layer if existing else None)
+    color = payload.color if "color" in payload.model_fields_set else (existing.color if existing else None)
+    icon = payload.icon if "icon" in payload.model_fields_set else (existing.icon if existing else None)
+
+    if icon == "":
+        icon = None
 
     override = NodeOverride(
         node_id=node_id_norm,
         name=name,
         layer=layer,
-        shape=shape,
         color=color,
+        icon=icon,
     )
     save_node_override(workload_id, override)
     return {
@@ -130,8 +140,8 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         "node_id": node_id_norm,
         "name": name,
         "layer": layer,
-        "shape": shape,
         "color": color,
+        "icon": icon,
     }
 
 
