@@ -139,7 +139,6 @@ function formatLayer(layer: number): string {
 
 export function buildUserTooltip(args: {
   originalName: string | undefined;
-  rawName: string | undefined;
   nameOverride: string | undefined;
   originalImportance: number | undefined;
   layerOverride: number | undefined;
@@ -150,7 +149,6 @@ export function buildUserTooltip(args: {
 }): AiTooltip | undefined {
   const {
     originalName,
-    rawName,
     nameOverride,
     originalImportance,
     layerOverride,
@@ -162,17 +160,16 @@ export function buildUserTooltip(args: {
 
   const items: Array<{ label: string; value: string }> = [];
 
-  const effectiveNameOverride = nameOverride || rawName;
-  if (effectiveNameOverride && originalName && effectiveNameOverride !== originalName) {
-    items.push({ label: "Name", value: `${effectiveNameOverride} (was ${originalName})` });
+  if (nameOverride && originalName && nameOverride !== originalName) {
+    items.push({ label: "Name", value: `${nameOverride} (was ${originalName})` });
   }
 
   if (layerOverride !== undefined && layerOverride !== null) {
     const suffix =
       typeof originalImportance === "number" && originalImportance !== layerOverride
-        ? ` (was ${formatLayer(originalImportance)} / ${originalImportance})`
+        ? ` (was ${formatLayer(originalImportance)})`
         : "";
-    items.push({ label: "Layer", value: `${formatLayer(layerOverride)} (${layerOverride})${suffix}` });
+    items.push({ label: "Layer", value: `${formatLayer(layerOverride)} ${suffix}` });
   }
 
   if (colorOverride) {
@@ -333,8 +330,6 @@ export function buildViewGraph(args: {
       const ann = annotationMap.get(n.id);
       const normalizedType = canonicalTypeForNode(n);
 
-      const rawName = n.name;
-
       const baseName = (n.metadata as any)?.original_name ?? n.name;
       const baseImportance = (n.metadata as any)?.original_importance ?? (n.metadata as any)?.importance ?? 3;
 
@@ -357,7 +352,6 @@ export function buildViewGraph(args: {
       const criticalityOverride = criticalityOverrides.get(n.id);
       const user_tooltip = buildUserTooltip({
         originalName: meta.original_name,
-        rawName,
         nameOverride: typeof meta.name_override === "string" ? meta.name_override : undefined,
         originalImportance: typeof meta.original_importance === "number" ? meta.original_importance : undefined,
         layerOverride: typeof meta.layer_override === "number" ? meta.layer_override : undefined,
@@ -376,7 +370,6 @@ export function buildViewGraph(args: {
           importance,
           ai_annotation: ann,
           original_name: baseName,
-          raw_name: rawName,
           raw_type: n.type,
           ai_tooltip: aiLayerEnabled ? buildAiTooltip(ann, baseName) : undefined,
           user_tooltip,

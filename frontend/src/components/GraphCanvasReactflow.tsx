@@ -37,6 +37,7 @@ export interface GraphEdge {
 interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  userLayerEnabled: boolean;
   onEdgeSelected?: (edge: GraphEdge | null) => void;
   onNodeSelected?: (nodeId: string | null) => void;
   maxImportance?: number;
@@ -50,6 +51,7 @@ const edgeTypes: EdgeTypes = { azure: AzureEdge };
 const GraphCanvas: React.FC<Props> = ({
   nodes: nodesProp,
   edges: edgesProp,
+  userLayerEnabled,
   onEdgeSelected,
   onNodeSelected,
   maxImportance = 1,
@@ -96,7 +98,7 @@ const GraphCanvas: React.FC<Props> = ({
           criticality_stars: typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
           color_override: typeof meta["color_override"] === "string" ? (meta["color_override"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
-          user_customized: isUserCustomized,
+          user_customized: userLayerEnabled && isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
         };
@@ -105,7 +107,7 @@ const GraphCanvas: React.FC<Props> = ({
       position: { x: 0, y: 0 }, // Will be set by layout
       connectable: true,
     }));
-  }, [visibleNodes]);
+  }, [visibleNodes, userLayerEnabled]);
 
   const rfEdges: Edge[] = useMemo(() => {
     return visibleEdges.map(e => ({
@@ -118,11 +120,11 @@ const GraphCanvas: React.FC<Props> = ({
         origin: e.origin,
         status: e.status,
         confidence: e.confidence,
-        user_customized: e.origin === "manual" || e.status === "accepted" || e.status === "rejected",
+        user_customized: userLayerEnabled && (e.origin === "manual" || e.status === "accepted" || e.status === "rejected"),
       },
       markerEnd: { type: MarkerType.ArrowClosed },
     }));
-  }, [visibleEdges]);
+  }, [visibleEdges, userLayerEnabled]);
 
   // Layout using Dagre
   const layoutedNodes = useMemo(() => {
