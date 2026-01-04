@@ -272,8 +272,30 @@ The frontend proxies API requests to the backend at `http://127.0.0.1:8000` (con
 
 ## License
 
-[Your License Here]
+This project is licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0). You are free to:
+
+- Share — copy and redistribute the material in any medium or format
+- Adapt — remix, transform, and build upon the material
+
+As long as you follow the license terms:
+
+- You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
+- If you remix, transform, or build upon the material, you must distribute your contributions under the same license as the original.
+
+For more details, visit [Creative Commons](https://creativecommons.org/licenses/by/4.0/).
 
 ## Contributing
 
-[Your Contributing Guidelines Here]
+We welcome contributions to this project! Here are some ways you can help:
+
+1. **Reporting Issues**: If you encounter any bugs or have suggestions for improvements, please open an issue in the GitHub repository.
+2. **Feature Requests**: If you have an idea for a new feature, feel free to submit a feature request.
+3. **Submitting Pull Requests**: If you want to contribute code, please fork the repository, make your changes, and submit a pull request. Ensure your code adheres to the project's coding standards and includes appropriate tests.
+4. **Documentation**: Help improve the documentation by suggesting edits or adding new content.
+
+### Guidelines
+- Please ensure your contributions are aligned with the project's goals.
+- Follow the coding style used in the project.
+- Write clear commit messages that explain your changes.
+
+Thank you for your interest in contributing!
