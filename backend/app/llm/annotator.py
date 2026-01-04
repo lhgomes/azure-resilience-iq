@@ -83,6 +83,20 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 
         - criticality_score:
             Integer 1–10 based on business impact, blast radius, and dependency count.
+            If the node metadata includes criticality_override (user-authored), treat that
+            as the baseline score and only adjust when there is strong evidence that a
+            materially different score is warranted. Make the rationale explicit when
+            diverging from the override.
+            When assessing blast radius and dependency impact, treat user-created or
+            accepted edges (source_kind "manual" or status "accepted") as authoritative.
+            Use these user relationships to raise or lower criticality based on how they
+            change the node's dependencies and exposure.
+
+                RELATIONSHIP PROVENANCE
+                -----------------------
+                - Some edges may have source_kind "manual" (user-created) and/or status "accepted";
+                    treat these as authoritative user intent when considering dependency/blast radius
+                    for criticality. Do NOT propose removing or contradicting them.
 
         - hide_by_default:
             true ONLY if the resource is low-signal or noisy at architecture level.

@@ -60,6 +60,8 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
                 "type": nd.get("type") or "unknown",
                 "name": nd.get("name") or node_id.split("/")[-1] or "unknown",
                 "importance": meta.get("importance"),
+                # Preserve user criticality overrides so the LLM can honor them.
+                "criticality_override": meta.get("criticality_override"),
                 "connections": [],
             }
         )
@@ -81,6 +83,10 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
                 "source": source,
                 "target": target,
                 "relationship": relationship,
+                # Preserve provenance and moderation state so the LLM knows which
+                # relationships were user-authored or previously accepted.
+                "source_kind": ed.get("source"),
+                "status": ed.get("status"),
             }
         )
 
