@@ -23,53 +23,99 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         """
         You are a senior Azure solution architect reviewing an Azure workload graph.
 
-        System guardrails:
+        SYSTEM GUARDRAILS
+        -----------------
         - The provided topology (nodes and edges) is already correct and authoritative.
-        - Do NOT invent new resources or relationships; do NOT alter existing relationships.
+        - Do NOT invent new resources.
+        - Do NOT remove, alter, or assert relationships.
         - All outputs are advisory suggestions only and must remain non-authoritative.
+        - Prefer conservative classification when uncertain.
 
-        Working style:
-        - Be concise, deterministic, and avoid creative wording.
-        - Prefer short, human-friendly names and pragmatic rationale.
-        - When uncertain, prefer conservative defaults over speculation.
+        WORKING STYLE
+        -------------
+        - Be concise, deterministic, and factual.
+        - Avoid creative wording.
+        - Use official Azure terminology as shown in the Azure Portal.
+        - When unsure, choose the broader, safer classification.
 
-        Layering guidance (apply consistently):
-        - L0 (0): User-facing or core workload components whose failure directly impacts customers or primary business functionality (e.g., AKS clusters, App Services, primary databases).
-        - L1 (1): Network and platform boundaries that enable or isolate workloads (e.g., VNets, subnets, private endpoints, load balancers).
-        - L2 (2): Implementation details or per-instance artifacts that add noise at architecture level (e.g., NICs, IP configurations, VM extensions).
+        LAYERING GUIDANCE (apply consistently)
+        --------------------------------------
+        - L0 (0): User-facing or core workload components whose failure directly impacts
+        customers or primary business functionality (e.g., AKS, App Service, primary databases).
+        - L1 (1): Network and platform boundaries enabling or isolating workloads
+        (e.g., VNets, subnets, private endpoints, load balancers).
+        - L2 (2): Implementation details or per-instance artifacts that add noise at
+        architecture level (e.g., NICs, IP configurations, VM extensions).
 
-        Priority ↔ criticality_score mapping (must be consistent):
-        - critical → score 8-10
-        - important → score 5-7
-        - supporting → score 1-4
+        PRIORITY ↔ CRITICALITY SCORE MAPPING (MUST MATCH)
+        -------------------------------------------------
+        - critical   → score 8–10
+        - important  → score 5–7
+        - supporting → score 1–4
 
-        Tasks:
-        1) For every existing node, suggest:
-        - display_name: concise, human-friendly label (fallback to current name if unsure).
-        - service_display_name: official Azure Portal service label (pluralized, e.g., "Virtual Machines", "Virtual networks").
-            * If uncertain, derive conservatively from the ARM type path.
-            * If still uncertain, return null rather than inventing a service name.
-        - layer (integer): 0, 1, or 2 according to the guidance above.
-        - priority: critical | important | supporting (must align with criticality_score).
-        - criticality_score (integer 1-10): based on business impact, blast radius, and dependency count.
-        - hide_by_default: true only when the node is low-signal or noisy at architecture level.
-        - confidence: numeric 0-1 reflecting certainty of the annotation.
-        - reason: brief justification (one sentence).
+        TASKS
+        -----
+        1) For EVERY existing node, suggest the following annotations:
 
-        2) Optionally suggest missing relationships between existing nodes only:
+        - display_name:
+            Short, human-friendly label suitable for an architecture diagram.
+            If unsure, fall back to the existing resource name.
+
+        - azure_service_category:
+            Azure architecture icon category corresponding to the official Azure
+            Architecture Icons taxonomy, such as:
+            Compute, Containers, Networking, Databases, Storage, Identity,
+            Integration, Security, ManagementAndGovernance.
+            If unsure, choose the broader category.
+
+        - azure_service_name:
+            Official Azure service name as shown in Azure Portal.
+            This value will be used by the application to deterministically map
+            to the correct Azure architecture icon.
+            Do NOT return icon filenames, URLs, or SVG names.
+
+        - layer:
+            Integer value: 0, 1, or 2, following the layering guidance above.
+
+        - priority:
+            One of: critical | important | supporting.
+            Must align with the criticality_score.
+
+        - criticality_score:
+            Integer 1–10 based on business impact, blast radius, and dependency count.
+
+        - hide_by_default:
+            true ONLY if the resource is low-signal or noisy at architecture level.
+
+        - confidence:
+            Numeric value between 0 and 1 reflecting certainty of the annotation.
+
+        - reason:
+            One short sentence explaining the classification.
+
+        2) Optionally suggest missing relationships BETWEEN EXISTING NODES ONLY:
         - Prefer returning no suggested edges over low-confidence suggestions.
         - Only suggest an edge when confidence ≥ 0.5.
-        - Use status "proposed" only; never assert authoritative edges.
-        - Provide relationship label, reason, and confidence.
+        - Use status "proposed" only.
+        - Never assert authoritative relationships.
 
-        Output format (JSON only):
+        ICON CLASSIFICATION RULES
+        -------------------------
+        - Do NOT invent new Azure services or categories.
+        - Use official Azure Portal naming conventions.
+        - Do NOT output icon filenames, SVG names, URLs, or asset paths.
+        - These fields are used for deterministic icon mapping by the application.
+
+        OUTPUT FORMAT (JSON ONLY)
+        -------------------------
         {
         "nodes": [
             {
             "node_id": "<existing node id>",
             "annotations": {
                 "display_name": "...",
-                "service_display_name": "...",
+                "azure_service_category": "...",
+                "azure_service_name": "...",
                 "layer": 0,
                 "priority": "critical",
                 "criticality_score": 8,
@@ -92,8 +138,9 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         ]
         }
 
-        Return JSON only with the keys shown. Do not include prose, markdown, or explanations.
-
+        Return JSON only.
+        Do NOT include prose, markdown, explanations, or commentary.
+        
         """
 ).strip()
 
@@ -208,18 +255,32 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
 
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
+    timeout_seconds = int(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "60"))
+    max_attempts = int(os.getenv("AZURE_OPENAI_MAX_ATTEMPTS", "2"))
+    max_tokens = int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "6000"))
+
     if not endpoint or not deployment:
         raise RuntimeError("Azure OpenAI endpoint or deployment not configured")
 
-    # Acquire AAD token so we do not rely on API keys.
-    credential = DefaultAzureCredential()
-    token = credential.get_token("https://cognitiveservices.azure.com/.default")
-
-    client = AzureOpenAI(
-        azure_endpoint=endpoint,
-        azure_ad_token=token.token,
-        api_version="2024-05-01-preview",
-    )
+    # Prefer API key if provided; otherwise use AAD.
+    api_key = os.getenv("AZURE_OPENAI_KEY")
+    if api_key:
+        client = AzureOpenAI(
+            azure_endpoint=endpoint,
+            api_key=api_key,
+            api_version=api_version,
+            timeout=timeout_seconds,
+        )
+    else:
+        credential = DefaultAzureCredential()
+        token = credential.get_token("https://cognitiveservices.azure.com/.default")
+        client = AzureOpenAI(
+            azure_endpoint=endpoint,
+            azure_ad_token=token.token,
+            api_version=api_version,
+            timeout=timeout_seconds,
+        )
 
     messages = [
         {"role": "system", "content": ARCHITECT_ANNOTATION_PROMPT},
@@ -229,16 +290,13 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
         },
     ]
 
-    max_attempts = 2
-    timeout_seconds = 15  # keep requests bounded for API responsiveness
-
     for attempt in range(1, max_attempts + 1):
         try:
             completion = client.chat.completions.create(
                 model=deployment,
                 messages=messages,
                 temperature=0.1,  # low temperature to stay deterministic
-                max_tokens=3000,  # increased to handle larger graphs without truncation
+                max_tokens=max_tokens,
                 response_format={"type": "json_object"},
                 timeout=timeout_seconds,
             )
@@ -259,8 +317,8 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
             if attempt == max_attempts:
                 raise
             sleep(1)  # brief backoff before retry
-        except Exception:
-            LOGGER.warning("Azure OpenAI attempt %s/%s failed", attempt, max_attempts)
+        except Exception as e:
+            LOGGER.warning("Azure OpenAI attempt %s/%s failed: %s", attempt, max_attempts, e)
             if attempt == max_attempts:
                 raise
             sleep(1)  # brief backoff before retry

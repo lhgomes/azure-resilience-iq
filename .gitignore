@@ -85,3 +85,4 @@ htmlcov/
 *.swo
 
 ai-context/
+.*:Zone.Identifier
