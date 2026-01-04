@@ -98,6 +98,21 @@ const canonicalTypeForNode = (n: GraphNode): string => {
   return "resource";
 };
 
+const extractResourceGroup = (n: GraphNode): { key: string; label: string } | null => {
+  const meta = (n as any)?.metadata ?? {};
+  const raw =
+    meta.resource_group ??
+    meta.resourceGroup ??
+    meta.resource_group_name ??
+    meta.resourceGroupName ??
+    meta.resourcegroup;
+
+  if (!raw) return null;
+  const label = String(raw).trim();
+  if (!label) return null;
+  return { key: label.toLowerCase(), label };
+};
+
 const renderStars = (score: number): string => {
   const fullStars = Math.floor(score / 2);
   const hasHalf = score % 2 === 1;
@@ -136,6 +151,7 @@ const WorkloadView: React.FC = () => {
   });
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
   const [serviceFilter, setServiceFilter] = useState<Set<string>>(new Set());
+  const [resourceGroupFilter, setResourceGroupFilter] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [criticalityOverrides, setCriticalityOverrides] = useState<Map<string, number>>(new Map());
 
@@ -187,6 +203,48 @@ const WorkloadView: React.FC = () => {
     }
     window.history.replaceState(null, "", `?${params.toString()}`);
   }, [aiLayerEnabled]);
+
+  const resourceGroupOptions = useMemo(() => {
+    if (!graph) return [] as { key: string; label: string }[];
+
+    const annMap = new Map<string, LlmNodeAnnotationPayload>();
+    (graph.llm_annotations?.nodes ?? []).forEach(entry => {
+      if (entry?.node_id) {
+        annMap.set(entry.node_id, entry.annotations || {});
+      }
+    });
+
+    const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
+    const groups = new Map<string, string>();
+
+    (graph.nodes || []).forEach(n => {
+      const ann = annMap.get(n.id);
+
+      const baseImportance = n.metadata?.original_importance ?? n.metadata?.importance ?? 3;
+      let importance = baseImportance;
+
+      if (aiLayerEnabled && ann?.layer !== undefined) {
+        importance = ann.layer;
+      }
+
+      if (userLayerEnabled && n.metadata?.override) {
+        importance = n.metadata?.importance ?? importance;
+      }
+
+      if (importance > maxImportance) return;
+
+      const info = extractResourceGroup(n);
+      if (!info) return;
+
+      if (!groups.has(info.key)) {
+        groups.set(info.key, info.label);
+      }
+    });
+
+    return Array.from(groups.entries())
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
   const serviceOptions = useMemo(() => {
     if (!graph) return [];
@@ -256,6 +314,33 @@ const WorkloadView: React.FC = () => {
       setServiceFilter(new Set(allServices));
     }
   }, [serviceOptions, serviceFilter.size]);
+
+  useEffect(() => {
+    if (!resourceGroupOptions.length) {
+      if (resourceGroupFilter.size) setResourceGroupFilter(new Set());
+      return;
+    }
+
+    const optionKeys = new Set(resourceGroupOptions.map(opt => opt.key));
+
+    setResourceGroupFilter(prev => {
+      if (prev.size === 0) {
+        return new Set(optionKeys);
+      }
+
+      const next = new Set([...prev].filter(key => optionKeys.has(key)));
+      if (next.size === 0) {
+        return new Set(optionKeys);
+      }
+
+      const unchanged = next.size === prev.size && [...next].every(key => prev.has(key));
+      if (unchanged && optionKeys.size === prev.size && [...optionKeys].every(key => prev.has(key))) {
+        return prev;
+      }
+
+      return next;
+    });
+  }, [resourceGroupOptions, resourceGroupFilter.size]);
 
   const viewGraph = useMemo(() => {
     if (!graph) return null;
@@ -330,7 +415,12 @@ const WorkloadView: React.FC = () => {
           } as Record<string, any>,
         };
       })
-      .filter(n => serviceFilter.size === 0 || serviceFilter.has((n as any).type));
+      .filter(n => {
+        const typeAllowed = serviceFilter.size === 0 || serviceFilter.has((n as any).type);
+        const rgInfo = extractResourceGroup(n as GraphNode);
+        const groupAllowed = resourceGroupFilter.size === 0 || !rgInfo || resourceGroupFilter.has(rgInfo.key);
+        return typeAllowed && groupAllowed;
+      });
 
     const visibleIds = new Set(visibleNodes.map(n => n.id));
 
@@ -365,7 +455,7 @@ const WorkloadView: React.FC = () => {
       edges: [...baseEdges, ...suggestedEdges],
       annotationMap,
     };
-  }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, criticalityOverrides]);
+  }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter, criticalityOverrides]);
 
   // Fetch workload graph
   useEffect(() => {
@@ -736,6 +826,7 @@ const WorkloadView: React.FC = () => {
 
   const nodesForView = viewGraph?.nodes ?? graph.nodes;
   const edgesForView = viewGraph?.edges ?? graph.edges;
+  const showResourceGroupFilter = resourceGroupOptions.length >= 2;
 
   return (
     <div
@@ -781,6 +872,7 @@ const WorkloadView: React.FC = () => {
 
           {/* View Level */}
           <div style={{ marginBottom: 20 }}>
+          
             <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
               View Level
             </label>
@@ -804,6 +896,9 @@ const WorkloadView: React.FC = () => {
 
           {/* Toggles */}
           <div style={{ marginBottom: 20 }}>
+            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
+              Detail View
+            </label>
             <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#eee", fontSize: 13, marginBottom: 8, cursor: "pointer" }}>
               <input
                 type="checkbox"
@@ -823,24 +918,63 @@ const WorkloadView: React.FC = () => {
             </label>
           </div>
 
-          {/* Legend Button */}
-          <button
-            onClick={() => setShowLegend(prev => !prev)}
-            title="Show/hide visual legend"
-            style={{
-              width: "100%",
-              padding: "8px 12px",
-              background: showLegend ? "#1a1a2e" : "#161616",
-              color: showLegend ? "#f59e0b" : "#9AA0A6",
-              border: showLegend ? "1px solid #f59e0b" : "1px solid #333",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 13,
-              marginBottom: 20
-            }}
-          >
-            ? Legend
-          </button>
+          {/* Resource group filter (only if multiple groups) */}
+          {showResourceGroupFilter && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <label style={{ fontSize: 12, color: "#9AA0A6" }}>
+                  Resource Groups
+                </label>
+                <button
+                  onClick={() => {
+                    const allGroups = resourceGroupOptions.map(rg => rg.key);
+                    setResourceGroupFilter(new Set(allGroups));
+                  }}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#85a2c6ff",
+                    cursor: "pointer",
+                    fontSize: 11,
+                    textDecoration: "underline"
+                  }}
+                >
+                  Select All
+                </button>
+              </div>
+              <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid #333", borderRadius: 4, padding: 8, background: "#181818" }}>
+                {resourceGroupOptions.map(rg => (
+                  <label
+                    key={rg.key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "4px 0",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      color: "#ddd"
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={resourceGroupFilter.has(rg.key)}
+                      onChange={e => {
+                        const next = new Set(resourceGroupFilter);
+                        if (e.target.checked) {
+                          next.add(rg.key);
+                        } else {
+                          next.delete(rg.key);
+                        }
+                        setResourceGroupFilter(next);
+                      }}
+                    />
+                    {rg.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Services Filter */}
           <div style={{ marginBottom: 20 }}>
@@ -980,6 +1114,26 @@ const WorkloadView: React.FC = () => {
               })}
             </div>
           </div>
+
+          {/* Legend Button */}
+          <button
+            onClick={() => setShowLegend(prev => !prev)}
+            title="Show/hide visual legend"
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              background: showLegend ? "#1a1a2e" : "#161616",
+              color: showLegend ? "#f59e0b" : "#9AA0A6",
+              border: showLegend ? "1px solid #f59e0b" : "1px solid #333",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 13,
+              marginBottom: 20
+            }}
+          >
+            {showLegend ? "Hide Legend" : "Show Legend"}
+          </button>
+
         </div>
       </div>
         
