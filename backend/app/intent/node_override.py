@@ -8,4 +8,6 @@ class NodeOverride(BaseModel):
     layer: Optional[int] = None
     color: Optional[str] = None
     icon: Optional[str] = None
+    group_id: Optional[str] = None
+    group_label: Optional[str] = None
     created_by: str = "user"

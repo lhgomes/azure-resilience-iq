@@ -119,6 +119,8 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "layer_override": override.layer if override and override.layer is not None else None,
                 "icon_override": override.icon if override and override.icon else None,
                 "icon": override.icon if override and override.icon else None,
+                "group_id": override.group_id if override and override.group_id else None,
+                "group_label": override.group_label if override and override.group_label else None,
                 # User-authored criticality overrides feed the LLM; keep raw value for summarizer
                 "criticality_override": criticality_overrides.get(rid),
             }

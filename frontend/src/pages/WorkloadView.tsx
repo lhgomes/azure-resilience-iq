@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowProvider } from "reactflow";
 import GraphCanvas, {
   GraphNode,
@@ -56,6 +56,18 @@ const WorkloadView: React.FC = () => {
   const [resourceGroupFilter, setResourceGroupFilter] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [criticalityOverrides, setCriticalityOverrides] = useState<Map<string, number>>(new Map());
+
+  const [groupToolbarSelection, setGroupToolbarSelection] = useState<{
+    selectedNodeIds: string[];
+    selectedGroupId: string | null;
+    selectedGroupLabel?: string;
+    selectedGroupMemberIds?: string[];
+  }>({ selectedNodeIds: [], selectedGroupId: null });
+  const [groupToolbarName, setGroupToolbarName] = useState<string>("");
+  const [groupCreateRequest, setGroupCreateRequest] = useState<{ nonce: number; label: string } | null>(null);
+
+  const lastSuggestedGroupNameRef = useRef<string>("");
+  const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
 
   const fetchGraph = useCallback(async () => {
     try {
@@ -493,6 +505,161 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const applyGroupToNodes = async (args: { groupId: string; label: string; memberIds: string[] }) => {
+    const { groupId, label, memberIds } = args;
+    if (!memberIds.length) return;
+
+    // Optimistic UI update
+    setGraph(prev =>
+      prev
+        ? {
+            ...prev,
+            nodes: prev.nodes.map(n => {
+              if (!memberIds.includes(n.id)) return n;
+              const meta = (n.metadata as any) ?? {};
+              return {
+                ...n,
+                metadata: {
+                  ...meta,
+                  group_id: groupId,
+                  group_label: label,
+                  override: true,
+                },
+              };
+            }),
+          }
+        : prev
+    );
+
+    await Promise.all(
+      memberIds.map(nodeId =>
+        patchNode(WORKLOAD_ID, nodeId, {
+          group_id: groupId,
+          group_label: label,
+        })
+      )
+    );
+  };
+
+  const ungroupNodes = async (args: { groupId: string; memberIds: string[] }) => {
+    const { memberIds } = args;
+    if (!memberIds.length) return;
+
+    // Optimistic UI update
+    setGraph(prev =>
+      prev
+        ? {
+            ...prev,
+            nodes: prev.nodes.map(n => {
+              if (!memberIds.includes(n.id)) return n;
+              const meta = (n.metadata as any) ?? {};
+              const nextMeta = { ...meta };
+              delete nextMeta.group_id;
+              delete nextMeta.group_label;
+
+              // Recompute override flag based on remaining user override fields.
+              const nextName = nextMeta.name_override;
+              const nextLayer = nextMeta.layer_override;
+              const nextColor = nextMeta.color_override;
+              const nextIcon = nextMeta.icon_override;
+              const hasAnyOverride =
+                (typeof nextName === "string" && nextName.length > 0) ||
+                typeof nextLayer === "number" ||
+                (typeof nextColor === "string" && nextColor.length > 0) ||
+                (typeof nextIcon === "string" && nextIcon.length > 0);
+
+              return {
+                ...n,
+                metadata: {
+                  ...nextMeta,
+                  override: hasAnyOverride,
+                },
+              };
+            }),
+          }
+        : prev
+    );
+
+    await Promise.all(
+      memberIds.map(nodeId =>
+        patchNode(WORKLOAD_ID, nodeId, {
+          group_id: null,
+          group_label: null,
+        })
+      )
+    );
+  };
+
+  const renameGroup = async (args: { groupId: string; label: string; memberIds: string[] }) => {
+    const { groupId, label, memberIds } = args;
+    if (!memberIds.length) return;
+
+    setGraph(prev =>
+      prev
+        ? {
+            ...prev,
+            nodes: prev.nodes.map(n => {
+              if (!memberIds.includes(n.id)) return n;
+              const meta = (n.metadata as any) ?? {};
+              return {
+                ...n,
+                metadata: {
+                  ...meta,
+                  group_id: groupId,
+                  group_label: label,
+                  override: true,
+                },
+              };
+            }),
+          }
+        : prev
+    );
+
+    await Promise.all(
+      memberIds.map(nodeId =>
+        patchNode(WORKLOAD_ID, nodeId, {
+          group_id: groupId,
+          group_label: label,
+        })
+      )
+    );
+  };
+
+  const moveNodeToGroup = async (args: { nodeId: string; groupId: string }) => {
+    const { nodeId, groupId } = args;
+    if (!graph) return;
+
+    const label = (() => {
+      const node = graph.nodes.find(n => (n.metadata as any)?.group_id === groupId);
+      const meta = (node?.metadata as any) ?? {};
+      return (typeof meta.group_label === "string" && meta.group_label.trim()) ? meta.group_label.trim() : groupId;
+    })();
+
+    // Optimistic UI update
+    setGraph(prev =>
+      prev
+        ? {
+            ...prev,
+            nodes: prev.nodes.map(n =>
+              n.id === nodeId
+                ? {
+                    ...n,
+                    metadata: {
+                      ...((n.metadata as any) ?? {}),
+                      group_id: groupId,
+                      group_label: label,
+                      override: true,
+                    },
+                  }
+                : n
+            ),
+          }
+        : prev
+    );
+
+    await patchNode(WORKLOAD_ID, nodeId, { group_id: groupId, group_label: label });
+  };
+
   const handleResetNode = async (nodeId: string) => {
     try {
       await resetNode(WORKLOAD_ID, nodeId);
@@ -566,6 +733,49 @@ const WorkloadView: React.FC = () => {
   const nodesForView = viewGraph?.nodes ?? graph.nodes;
   const edgesForView = viewGraph?.edges ?? graph.edges;
 
+  const suggestGroupName = (selectedIds: string[]): string => {
+    if (selectedIds.length === 0) return "";
+
+    const degreeById = new Map<string, number>();
+    for (const e of edgesForView) {
+      degreeById.set(e.source, (degreeById.get(e.source) ?? 0) + 1);
+      degreeById.set(e.target, (degreeById.get(e.target) ?? 0) + 1);
+    }
+
+    const candidates = selectedIds
+      .map(id => nodesForView.find(n => n.id === id))
+      .filter((n): n is (typeof nodesForView)[number] => !!n);
+
+    if (candidates.length === 0) return "";
+
+    const score = (n: (typeof nodesForView)[number]): number => {
+      const meta: any = (n as any).metadata ?? {};
+      const v = meta.criticality_score;
+      return typeof v === "number" ? v : 0;
+    };
+
+    const degree = (n: (typeof nodesForView)[number]): number => degreeById.get(n.id) ?? 0;
+
+    const name = (n: (typeof nodesForView)[number]): string => {
+      const raw = (n as any).name as string | undefined;
+      if (raw && raw.trim()) return raw.trim();
+      const last = n.id.split("/").pop();
+      return (last && last.trim()) ? last.trim() : n.id;
+    };
+
+    const best = [...candidates].sort((a, b) => {
+      const s = score(b) - score(a);
+      if (s !== 0) return s;
+
+      const d = degree(b) - degree(a);
+      if (d !== 0) return d;
+
+      return name(a).localeCompare(name(b));
+    })[0];
+
+    return name(best);
+  };
+
   return (
     <div
       style={{
@@ -616,6 +826,104 @@ const WorkloadView: React.FC = () => {
             showLegend={showLegend}
             onToggleLegend={() => setShowLegend(prev => !prev)}
           />
+
+          {/* Group toolbar (shows only for multi-select or selected group) */}
+          {(() => {
+            const hasMultiSelect = groupToolbarSelection.selectedGroupId === null && groupToolbarSelection.selectedNodeIds.length > 1;
+            const hasGroupSelected = !!groupToolbarSelection.selectedGroupId;
+            if (!hasMultiSelect && !hasGroupSelected) return null;
+
+            const isSaveDisabled = groupToolbarName.trim().length === 0;
+
+            return (
+              <div
+                style={{
+                  padding: "10px 12px 12px 12px",
+                  background: "#0f0f0f",
+                  borderTop: "1px solid #222",
+                  borderBottom: "1px solid #222",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  color: "#eee",
+                  flexShrink: 0,
+                }}
+              >
+                <div style={{ fontSize: 12, color: "#9AA0A6" }}>Group</div>
+
+                <input
+                  value={groupToolbarName}
+                  onChange={e => setGroupToolbarName(e.target.value)}
+                  placeholder={hasMultiSelect ? "Enter group name" : "Group name"}
+                  style={{
+                    padding: "8px 10px",
+                    background: "#181818",
+                    color: "#fff",
+                    border: "1px solid #333",
+                    borderRadius: 4,
+                    fontSize: 13,
+                  }}
+                />
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    disabled={isSaveDisabled}
+                    onClick={async () => {
+                      const label = groupToolbarName.trim();
+                      if (!label) return;
+
+                      if (hasMultiSelect) {
+                        setGroupCreateRequest({ nonce: Date.now(), label });
+                        setGroupToolbarName("");
+                        lastSuggestedGroupNameRef.current = "";
+                      } else if (hasGroupSelected) {
+                        const gid = groupToolbarSelection.selectedGroupId!;
+                        const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
+                        if (members.length) await renameGroup({ groupId: gid, label, memberIds: members });
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "8px 10px",
+                      background: isSaveDisabled ? "#2a2a2a" : "#1f2937",
+                      color: isSaveDisabled ? "#777" : "#fff",
+                      border: "1px solid #333",
+                      borderRadius: 4,
+                      cursor: isSaveDisabled ? "not-allowed" : "pointer",
+                      fontSize: 13,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Save
+                  </button>
+
+                  {hasGroupSelected && (
+                    <button
+                      onClick={async () => {
+                        const gid = groupToolbarSelection.selectedGroupId!;
+                        const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
+                        if (members.length) await ungroupNodes({ groupId: gid, memberIds: members });
+                        setGroupToolbarName("");
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: "8px 10px",
+                        background: "#1f2937",
+                        color: "#fff",
+                        border: "1px solid #333",
+                        borderRadius: 4,
+                        cursor: "pointer",
+                        fontSize: 13,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Ungroup
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Resize handle */}
@@ -687,6 +995,38 @@ const WorkloadView: React.FC = () => {
               onNodeSelected={handleNodeSelected}
               onEdgeCreate={handleDragCreateLink}
               onNodeRename={handleRenameNode}
+              onGroupCreate={applyGroupToNodes}
+              groupCreateRequest={groupCreateRequest}
+              onSelectionStateChange={state => {
+                const prevSelection = lastGroupToolbarSelectionRef.current;
+                lastGroupToolbarSelectionRef.current = state;
+                setGroupToolbarSelection(state);
+
+                // Initialize toolbar name when mode changes or selecting a different group.
+                if (state.selectedGroupId) {
+                  lastSuggestedGroupNameRef.current = "";
+                  setGroupToolbarName(prev => {
+                    if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
+                      return state.selectedGroupLabel ?? "";
+                    }
+                    return prev;
+                  });
+                } else if (state.selectedNodeIds.length > 1) {
+                  const suggested = suggestGroupName(state.selectedNodeIds);
+                  setGroupToolbarName(prev => {
+                    const shouldReplace =
+                      prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
+                    if (!shouldReplace) return prev;
+
+                    lastSuggestedGroupNameRef.current = suggested;
+                    return suggested;
+                  });
+                } else {
+                  lastSuggestedGroupNameRef.current = "";
+                  setGroupToolbarName("");
+                }
+              }}
+              onMoveNodeToGroup={moveNodeToGroup}
               onEdgeSelected={(e) => {
                 if (!e) return setSelectedEdge(null);
 
