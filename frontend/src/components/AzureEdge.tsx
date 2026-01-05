@@ -77,7 +77,8 @@ const AzureEdge: React.FC<EdgeProps> = ({
               fontWeight: 500,
               pointerEvents: "all",
               border: `1px solid ${color}`,
-              whiteSpace: "nowrap"
+              whiteSpace: "nowrap",
+              zIndex: 10
             }}
             className="nodrag nopan"
             title={labelTitle || undefined}

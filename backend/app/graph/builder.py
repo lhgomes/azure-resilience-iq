@@ -1,7 +1,7 @@
 import hashlib
 from .model import Edge, EdgeStatus, Node
 from app.intent.overrides import EdgeDecision
-from app.storage.overrides_store import load_overrides
+from app.storage.edge_overrides_store import load_overrides
 
 
 def edge_id(from_id: str, to_id: str, relationship: str) -> str:

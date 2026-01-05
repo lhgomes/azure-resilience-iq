@@ -19,11 +19,12 @@ const AzureGroupNode: React.FC<AzureGroupNodeProps> = ({ data, selected }) => {
         height: "100%",
         borderRadius: 10,
         border: selected ? "2px solid #f59e0b" : "2px dashed #374151",
-        background: "rgba(17, 24, 39, 0.35)",
+        background: "rgba(17, 24, 39, 0.15)",
         boxSizing: "border-box",
         position: "relative",
         cursor: "pointer",
         overflow: "hidden",
+        pointerEvents: "none",
       }}
       title="Use the button to collapse/expand"
     >
@@ -35,8 +36,8 @@ const AzureGroupNode: React.FC<AzureGroupNodeProps> = ({ data, selected }) => {
       <div
         style={{
           position: "absolute",
-          top: 8,
-          left: 10,
+          top: 4,
+          left: 4,
           right: 10,
           display: "flex",
           alignItems: "center",
@@ -45,6 +46,8 @@ const AzureGroupNode: React.FC<AzureGroupNodeProps> = ({ data, selected }) => {
           fontSize: 12,
           fontWeight: 700,
           color: "#e5e7eb",
+          pointerEvents: "auto",
+          zIndex: 0,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
@@ -87,10 +90,10 @@ const AzureGroupNode: React.FC<AzureGroupNodeProps> = ({ data, selected }) => {
               pointerEvents: "none",
             }}
           >
-            {data.label}
+           <span style={{color: "#272727ff"}}>{data.label}</span>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 600, pointerEvents: "none" }}>
+        <div style={{ fontSize: 11, color: "#272727ff", fontWeight: 600, pointerEvents: "none" }}>
           {data.count} {data.count === 1 ? "node" : "nodes"} {data.collapsed ? "(collapsed)" : ""}
         </div>
       </div>

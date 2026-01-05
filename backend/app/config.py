@@ -10,3 +10,4 @@ DATA_DIR = Path(os.getenv("AZURE_WORKLOAD_GRAPH_DATA_DIR", "data"))
 
 COLLECTOR_DIR = DATA_DIR / "collector"
 COLLECTOR_RESOURCES_PATH = COLLECTOR_DIR / "resources.json"
+COLLECTOR_UNIFIED_EDGES_PATH = COLLECTOR_DIR / "unified_edges.json"

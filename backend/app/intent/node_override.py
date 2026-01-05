@@ -10,4 +10,5 @@ class NodeOverride(BaseModel):
     icon: Optional[str] = None
     group_id: Optional[str] = None
     group_label: Optional[str] = None
+    criticality_score: Optional[int] = None
     created_by: str = "user"

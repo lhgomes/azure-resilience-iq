@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ReactFlowProvider } from "reactflow";
 import GraphCanvas, {
   GraphNode,
-  GraphEdge
+  GraphEdge,
+  GraphCanvasHandle
 } from "../components/GraphCanvasReactflow";
 import EdgeDrawer, {
   EdgeData
@@ -17,10 +18,13 @@ import {
   deleteEdge,
   fetchWorkloadGraph,
   patchNode,
-  patchNodeCriticality,
   rejectEdge,
   resetNode,
-  resetNodeCriticality,
+  createGroup,
+  updateGroup,
+  deleteGroup,
+  addNodeToGroup,
+  removeNodeFromGroup,
 } from "../api/workloads";
 import {
   buildViewGraph,
@@ -33,6 +37,7 @@ import {
 } from "../domain/graphView";
 
 const WORKLOAD_ID = "demo";
+const STORAGE_KEY = `workload_graph_${WORKLOAD_ID}`;
 
 const WorkloadView: React.FC = () => {
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
@@ -46,16 +51,12 @@ const WorkloadView: React.FC = () => {
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
 
-  // Initialize aiEnabled from URL query param
-  const [aiLayerEnabled, setAiLayerEnabled] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("ai") === "true";
-  });
+  // Default both layers to enabled; no URL sync
+  const [aiLayerEnabled, setAiLayerEnabled] = useState(true);
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
   const [serviceFilter, setServiceFilter] = useState<Set<string>>(new Set());
   const [resourceGroupFilter, setResourceGroupFilter] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
-  const [criticalityOverrides, setCriticalityOverrides] = useState<Map<string, number>>(new Map());
 
   const [groupToolbarSelection, setGroupToolbarSelection] = useState<{
     selectedNodeIds: string[];
@@ -68,41 +69,67 @@ const WorkloadView: React.FC = () => {
 
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
+  const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+
+  const readStoredGraph = (): GraphSnapshot | null => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return null;
+      return parsed as GraphSnapshot;
+    } catch {
+      return null;
+    }
+  };
+
+  const persistGraph = (next: GraphSnapshot | null) => {
+    if (!next) {
+      localStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      /* ignore storage errors */
+    }
+  };
+
+  const updateGraph = (updater: (prev: GraphSnapshot | null) => GraphSnapshot | null) => {
+    setGraph(prev => {
+      const base = prev ?? readStoredGraph();
+      const next = updater(base);
+      persistGraph(next);
+      return next;
+    });
+  };
 
   const fetchGraph = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
-      const raw = await fetchWorkloadGraph(WORKLOAD_ID, aiLayerEnabled);
+      const raw = await fetchWorkloadGraph(WORKLOAD_ID);
       const normalized = normalizeGraph(raw);
+      persistGraph(normalized);
       setGraph(normalized);
-
-      // Load persisted criticality overrides from backend node metadata.
-      const persisted = new Map<string, number>();
-      (normalized.nodes ?? []).forEach(n => {
-        const meta = (n as any)?.metadata ?? {};
-        const v = meta.criticality_override;
-        if (typeof v === "number") persisted.set(n.id, v);
-      });
-      setCriticalityOverrides(persisted);
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
       setLoading(false);
     }
-  }, [aiLayerEnabled]);
+  }, []);
 
-  // Update URL when aiLayerEnabled changes
+  // Fit view when filters change
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (aiLayerEnabled) {
-        params.set("ai", "true");
-    } else {
-        params.delete("ai");
-    }
-    window.history.replaceState(null, "", `?${params.toString()}`);
-  }, [aiLayerEnabled]);
+    graphCanvasRef.current?.fitView();
+  }, [viewLevel, serviceFilter, resourceGroupFilter]);
+
+  // Clear selections when view level changes
+  useEffect(() => {
+    setSelectedNode(null);
+    setSelectedEdge(null);
+  }, [viewLevel]);
 
   const resourceGroupOptions = useMemo(() => {
     if (!graph) return [] as { key: string; label: string }[];
@@ -130,21 +157,14 @@ const WorkloadView: React.FC = () => {
     const optionKeys = new Set(resourceGroupOptions.map(opt => opt.key));
 
     setResourceGroupFilter(prev => {
+      // If nothing selected yet, default to all available groups.
       if (prev.size === 0) {
         return new Set(optionKeys);
       }
 
-      const next = new Set([...prev].filter(key => optionKeys.has(key)));
-      if (next.size === 0) {
-        return new Set(optionKeys);
-      }
-
-      const unchanged = next.size === prev.size && [...next].every(key => prev.has(key));
-      if (unchanged && optionKeys.size === prev.size && [...optionKeys].every(key => prev.has(key))) {
-        return prev;
-      }
-
-      return next;
+      // Keep the user's current selection; avoid shrinking it when the option list changes.
+      // This prevents transient option recalculation from hiding nodes unexpectedly.
+      return prev;
     });
   }, [resourceGroupOptions, resourceGroupFilter.size]);
 
@@ -156,12 +176,16 @@ const WorkloadView: React.FC = () => {
       userLayerEnabled,
       serviceFilter,
       resourceGroupFilter,
-      criticalityOverrides,
     });
-  }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter, criticalityOverrides]);
+  }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
 
-  // Fetch workload graph
+  // Hydrate from local storage, then fetch fresh graph
   useEffect(() => {
+    const stored = readStoredGraph();
+    if (stored) {
+      setGraph(stored);
+    }
+
     fetchGraph();
   }, [fetchGraph]);
 
@@ -171,7 +195,7 @@ const WorkloadView: React.FC = () => {
       await acceptEdge(WORKLOAD_ID, edgeId);
 
       // Optimistic UI update
-      setGraph(prev =>
+      updateGraph(prev =>
         prev
           ? {
               ...prev,
@@ -199,7 +223,7 @@ const WorkloadView: React.FC = () => {
     try {
       await rejectEdge(WORKLOAD_ID, edgeId);
 
-      setGraph(prev =>
+      updateGraph(prev =>
         prev
           ? {
               ...prev,
@@ -226,7 +250,7 @@ const WorkloadView: React.FC = () => {
     try {
       await deleteEdge(WORKLOAD_ID, edgeId);
 
-      setGraph(prev =>
+      updateGraph(prev =>
         prev
           ? {
               ...prev,
@@ -243,6 +267,24 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const buildSelectedNodeData = (node: GraphNode) => {
+    const meta = (node.metadata as any) ?? {};
+    const userOverride = (meta.user_override as Record<string, unknown> | undefined) ?? {};
+    return {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      layer: meta.importance as number | undefined,
+      color: meta.color as string | undefined,
+      icon: meta.icon as string | undefined,
+      override: Object.keys(userOverride).length > 0,
+      criticalityScore: meta.criticality_score as number | undefined,
+      aiAnnotation: node.metadata?.ai_annotation as any,
+      originalName: node.name,
+      raw: node,
+    };
+  };
+
   const handleNodeSelected = (nodeId: string | null) => {
     if (!nodeId) {
       setSelectedNode(null);
@@ -253,23 +295,7 @@ const WorkloadView: React.FC = () => {
 
     const node = viewGraph.nodes.find(n => n.id === nodeId);
     if (!node) return;
-    const meta = (node.metadata as any) ?? {};
-    const effectiveCriticality = meta.criticality_score as number | undefined;
-    const isCriticalityOverride = criticalityOverrides.has(node.id);
-    setSelectedNode({
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      layer: meta.importance as number | undefined,
-      color: meta.color_override as string | undefined,
-      icon: (meta.icon_override as string | undefined) ?? (meta.icon as string | undefined),
-      override: meta.override as boolean | undefined,
-      criticalityScore: effectiveCriticality,
-      criticalityOverride: isCriticalityOverride,
-      aiAnnotation: node.metadata?.ai_annotation as any,
-      originalName: meta.original_name as string | undefined,
-      raw: node,
-    });
+    setSelectedNode(buildSelectedNodeData(node));
     setSelectedEdge(null);
   };
 
@@ -293,7 +319,7 @@ const WorkloadView: React.FC = () => {
       origin: "manual",
     };
 
-    setGraph(prev =>
+    updateGraph(prev =>
       prev
         ? {
             ...prev,
@@ -320,7 +346,7 @@ const WorkloadView: React.FC = () => {
         origin: created?.source ?? "manual"
       };
 
-      setGraph(prev =>
+      updateGraph(prev =>
         prev
           ? {
               ...prev,
@@ -335,7 +361,7 @@ const WorkloadView: React.FC = () => {
     } catch (err: any) {
       console.error("Failed to create link:", err.message);
 
-      setGraph(prev =>
+      updateGraph(prev =>
         prev
           ? {
               ...prev,
@@ -349,22 +375,7 @@ const WorkloadView: React.FC = () => {
   const handleRenameNode = async (nodeId: string) => {
     const node = viewGraph?.nodes.find(n => n.id === nodeId);
     if (!node) return;
-    const meta = (node.metadata as any) ?? {};
-    const effectiveCriticality = meta.criticality_score as number | undefined;
-    const isCriticalityOverride = criticalityOverrides.has(node.id);
-    setSelectedNode({
-      id: node.id,
-      name: node.name,
-      type: node.type,
-      layer: meta.importance as number | undefined,
-      color: meta.color_override as string | undefined,
-      icon: (meta.icon_override as string | undefined) ?? (meta.icon as string | undefined),
-      override: meta.override as boolean | undefined,
-      criticalityScore: effectiveCriticality,
-      criticalityOverride: isCriticalityOverride,
-      aiAnnotation: node.metadata?.ai_annotation as any,
-      originalName: meta.original_name as string | undefined,
-    });
+    setSelectedNode(buildSelectedNodeData(node));
   };
 
   const handleSaveNode = async (nodeId: string, payload: { name?: string; layer?: number | null; color?: string | null; icon?: string | null; criticality?: number | null }) => {
@@ -374,100 +385,73 @@ const WorkloadView: React.FC = () => {
         layer: payload.layer,
         color: payload.color,
         icon: payload.icon,
+        criticality_score: payload.criticality,
       };
 
-      const shouldPatchNode =
-        payload.name !== undefined ||
-        payload.layer !== undefined ||
-        payload.color !== undefined ||
-        payload.icon !== undefined;
+      await patchNode(WORKLOAD_ID, nodeId, nodePatch);
 
-      if (shouldPatchNode) {
-        await patchNode(WORKLOAD_ID, nodeId, nodePatch);
-      }
+      updateGraph(prev => {
+        if (!prev) return prev;
 
-      if (payload.criticality === null) {
-        if (criticalityOverrides.has(nodeId)) {
-          await resetNodeCriticality(WORKLOAD_ID, nodeId);
-        }
-      } else if (typeof payload.criticality === "number") {
-        await patchNodeCriticality(WORKLOAD_ID, nodeId, payload.criticality);
-      }
+        const nextOverride: Record<string, unknown> = {};
+        if (payload.name !== undefined) nextOverride.name = payload.name ?? undefined;
+        if (payload.layer !== undefined) nextOverride.layer = payload.layer ?? undefined;
+        if (payload.color !== undefined) nextOverride.color = payload.color ?? undefined;
+        if (payload.icon !== undefined) nextOverride.icon = payload.icon ?? undefined;
+        if (payload.criticality !== undefined) nextOverride.criticality_score = payload.criticality ?? undefined;
 
-      setGraph(prev =>
-        prev
-          ? {
-              ...prev,
-              nodes: prev.nodes.map(n =>
-                n.id === nodeId
-                  ? {
-                      ...n,
-                      name: payload.name ?? n.name,
-                      metadata: {
-                        ...(n.metadata as any),
-                        importance: (() => {
-                          const meta = (n.metadata as any) ?? {};
-                          if (payload.layer === undefined) return meta.importance;
-                          if (payload.layer === null) {
-                            return typeof meta.original_importance === "number" ? meta.original_importance : meta.importance;
-                          }
-                          return payload.layer;
-                        })(),
-                        name_override: payload.name === undefined ? (n.metadata as any)?.name_override : payload.name,
-                        layer_override: payload.layer === undefined ? (n.metadata as any)?.layer_override : (payload.layer === null ? undefined : payload.layer),
-                        color_override: payload.color === undefined ? (n.metadata as any)?.color_override : (payload.color === null ? undefined : payload.color),
-                        icon_override: payload.icon === undefined ? (n.metadata as any)?.icon_override : (payload.icon === null ? undefined : payload.icon),
-                        override: (() => {
-                          const nextName = payload.name === undefined ? (n.metadata as any)?.name_override : payload.name;
-                          const nextLayer = payload.layer === undefined ? (n.metadata as any)?.layer_override : (payload.layer === null ? undefined : payload.layer);
-                          const nextColor = payload.color === undefined ? (n.metadata as any)?.color_override : (payload.color === null ? undefined : payload.color);
-                          const nextIcon = payload.icon === undefined ? (n.metadata as any)?.icon_override : (payload.icon === null ? undefined : payload.icon);
-                          return (
-                            (typeof nextName === "string" && nextName.length > 0) ||
-                            typeof nextLayer === "number" ||
-                            (typeof nextColor === "string" && nextColor.length > 0) ||
-                            (typeof nextIcon === "string" && nextIcon.length > 0)
-                          );
-                        })(),
-                      }
-                    }
-                  : n
-              )
-            }
-          : prev
-      );
+        // Clean undefined values
+        const cleanedOverride = Object.fromEntries(
+          Object.entries(nextOverride).filter(([, v]) => v !== undefined)
+        );
 
-      if (payload.criticality === null) {
-        setCriticalityOverrides(prev => {
-          if (!prev.has(nodeId)) return prev;
-          const next = new Map(prev);
-          next.delete(nodeId);
-          return next;
-        });
-      } else if (typeof payload.criticality === "number") {
-        setCriticalityOverrides(prev => {
-          const next = new Map(prev);
-          next.set(nodeId, payload.criticality as number);
-          return next;
-        });
-      }
+        const nextNodeOverrides = { ...prev.node_overrides };
+        if (Object.keys(cleanedOverride).length > 0) nextNodeOverrides[nodeId] = cleanedOverride;
+        else delete nextNodeOverrides[nodeId];
+
+        return {
+          ...prev,
+          node_overrides: nextNodeOverrides,
+          nodes: prev.nodes.map(n => {
+            if (n.id !== nodeId) return n;
+            const meta = (n.metadata as any) ?? {};
+            return {
+              ...n,
+              name: payload.name ?? n.name,
+              metadata: {
+                ...meta,
+                importance: payload.layer === undefined ? meta.importance : payload.layer ?? meta.importance,
+                color: payload.color === undefined ? meta.color : payload.color ?? undefined,
+                icon: payload.icon === undefined ? meta.icon : payload.icon ?? undefined,
+                criticality_score:
+                  payload.criticality === undefined
+                    ? meta.criticality_score
+                    : payload.criticality === null
+                      ? meta.criticality_score
+                      : payload.criticality,
+                user_override: Object.keys(cleanedOverride).length > 0 ? cleanedOverride : undefined,
+              }
+            };
+          })
+        };
+      });
 
       setSelectedNode(prev => {
         if (!prev || prev.id !== nodeId) return prev;
 
         const rawNode = (prev.raw as any) ?? undefined;
         const rawMeta = rawNode?.metadata ?? {};
+        const recomputedOverride: Record<string, unknown> = {};
+        if (payload.name !== undefined) recomputedOverride.name = payload.name ?? undefined;
+        if (payload.layer !== undefined) recomputedOverride.layer = payload.layer ?? undefined;
+        if (payload.color !== undefined) recomputedOverride.color = payload.color ?? undefined;
+        if (payload.icon !== undefined) recomputedOverride.icon = payload.icon ?? undefined;
+        if (payload.criticality !== undefined) recomputedOverride.criticality_score = payload.criticality ?? undefined;
 
-        const nextNameOverride = payload.name === undefined ? rawMeta.name_override : payload.name;
-        const nextLayerOverride = payload.layer === undefined ? rawMeta.layer_override : (payload.layer === null ? undefined : payload.layer);
-        const nextColorOverride = payload.color === undefined ? rawMeta.color_override : (payload.color === null ? undefined : payload.color);
-        const nextIconOverride = payload.icon === undefined ? rawMeta.icon_override : (payload.icon === null ? undefined : payload.icon);
-
-        const nextOverride =
-          (typeof nextNameOverride === "string" && nextNameOverride.length > 0) ||
-          typeof nextLayerOverride === "number" ||
-          (typeof nextColorOverride === "string" && nextColorOverride.length > 0) ||
-          (typeof nextIconOverride === "string" && nextIconOverride.length > 0);
+        // Clean undefined values
+        const cleanedRecomputedOverride = Object.fromEntries(
+          Object.entries(recomputedOverride).filter(([, v]) => v !== undefined)
+        );
 
         const nextRaw = rawNode
           ? {
@@ -475,11 +459,7 @@ const WorkloadView: React.FC = () => {
               name: payload.name ?? rawNode.name,
               metadata: {
                 ...rawMeta,
-                name_override: nextNameOverride,
-                layer_override: nextLayerOverride,
-                color_override: nextColorOverride,
-                icon_override: nextIconOverride,
-                override: nextOverride,
+                user_override: Object.keys(cleanedRecomputedOverride).length > 0 ? cleanedRecomputedOverride : undefined,
               },
             }
           : undefined;
@@ -490,14 +470,11 @@ const WorkloadView: React.FC = () => {
           layer: payload.layer === undefined ? prev.layer : payload.layer ?? undefined,
           color: payload.color === undefined ? prev.color : payload.color ?? undefined,
           icon: payload.icon === undefined ? prev.icon : payload.icon ?? undefined,
-          override: nextOverride,
+          override: Object.keys(cleanedRecomputedOverride).length > 0,
           raw: nextRaw ?? prev.raw,
           criticalityScore: payload.criticality === undefined
             ? prev.criticalityScore
             : (payload.criticality === null ? undefined : payload.criticality),
-          criticalityOverride: payload.criticality === undefined
-            ? prev.criticalityOverride
-            : payload.criticality !== null,
         };
       });
     } catch (err) {
@@ -509,172 +486,168 @@ const WorkloadView: React.FC = () => {
     const { groupId, label, memberIds } = args;
     if (!memberIds.length) return;
 
-    // Optimistic UI update
-    setGraph(prev =>
-      prev
-        ? {
-            ...prev,
-            nodes: prev.nodes.map(n => {
-              if (!memberIds.includes(n.id)) return n;
-              const meta = (n.metadata as any) ?? {};
-              return {
-                ...n,
-                metadata: {
-                  ...meta,
-                  group_id: groupId,
-                  group_label: label,
-                  override: true,
-                },
-              };
-            }),
-          }
-        : prev
-    );
+    // Optimistic UI update - create new group
+    updateGraph(prev => {
+      if (!prev) return prev;
 
-    await Promise.all(
-      memberIds.map(nodeId =>
-        patchNode(WORKLOAD_ID, nodeId, {
-          group_id: groupId,
-          group_label: label,
-        })
-      )
-    );
+      const groups = prev.groups ?? [];
+      // Remove nodes from any existing groups
+      const updatedGroups = groups.map(g => ({
+        ...g,
+        nodes: g.nodes.filter(id => !memberIds.includes(id)),
+      }));
+      
+      // Add new group
+      return {
+        ...prev,
+        groups: [...updatedGroups, { id: groupId, name: label, nodes: memberIds }],
+      };
+    });
+
+    // Remove nodes from any existing groups first
+    if (graph?.groups) {
+      for (const group of graph.groups) {
+        for (const nodeId of memberIds) {
+          if (group.nodes.includes(nodeId)) {
+            await removeNodeFromGroup(WORKLOAD_ID, group.id, nodeId);
+          }
+        }
+      }
+    }
+
+    // Create the new group
+    await createGroup(WORKLOAD_ID, { id: groupId, name: label, nodes: memberIds });
   };
 
-  const ungroupNodes = async (args: { groupId: string; memberIds: string[] }) => {
-    const { memberIds } = args;
-    if (!memberIds.length) return;
 
-    // Optimistic UI update
-    setGraph(prev =>
+  const ungroupNodes = async (args: { groupId: string; memberIds: string[] }) => {
+    const { groupId } = args;
+
+    // Optimistic UI update - remove the group
+    updateGraph(prev =>
       prev
         ? {
             ...prev,
-            nodes: prev.nodes.map(n => {
-              if (!memberIds.includes(n.id)) return n;
-              const meta = (n.metadata as any) ?? {};
-              const nextMeta = { ...meta };
-              delete nextMeta.group_id;
-              delete nextMeta.group_label;
-
-              // Recompute override flag based on remaining user override fields.
-              const nextName = nextMeta.name_override;
-              const nextLayer = nextMeta.layer_override;
-              const nextColor = nextMeta.color_override;
-              const nextIcon = nextMeta.icon_override;
-              const hasAnyOverride =
-                (typeof nextName === "string" && nextName.length > 0) ||
-                typeof nextLayer === "number" ||
-                (typeof nextColor === "string" && nextColor.length > 0) ||
-                (typeof nextIcon === "string" && nextIcon.length > 0);
-
-              return {
-                ...n,
-                metadata: {
-                  ...nextMeta,
-                  override: hasAnyOverride,
-                },
-              };
-            }),
+            groups: (prev.groups ?? []).filter(g => g.id !== groupId),
           }
         : prev
     );
 
-    await Promise.all(
-      memberIds.map(nodeId =>
-        patchNode(WORKLOAD_ID, nodeId, {
-          group_id: null,
-          group_label: null,
-        })
-      )
-    );
+    // Delete the entire group
+    await deleteGroup(WORKLOAD_ID, groupId);
   };
 
   const renameGroup = async (args: { groupId: string; label: string; memberIds: string[] }) => {
-    const { groupId, label, memberIds } = args;
-    if (!memberIds.length) return;
+    const { groupId, label } = args;
 
-    setGraph(prev =>
+    // Optimistic UI update
+    updateGraph(prev =>
       prev
         ? {
             ...prev,
-            nodes: prev.nodes.map(n => {
-              if (!memberIds.includes(n.id)) return n;
-              const meta = (n.metadata as any) ?? {};
-              return {
-                ...n,
-                metadata: {
-                  ...meta,
-                  group_id: groupId,
-                  group_label: label,
-                  override: true,
-                },
-              };
-            }),
+            groups: (prev.groups ?? []).map(g => (g.id === groupId ? { ...g, name: label } : g)),
           }
         : prev
     );
 
-    await Promise.all(
-      memberIds.map(nodeId =>
-        patchNode(WORKLOAD_ID, nodeId, {
-          group_id: groupId,
-          group_label: label,
-        })
-      )
-    );
+    // Update the group name
+    await updateGroup(WORKLOAD_ID, groupId, { name: label });
   };
 
   const moveNodeToGroup = async (args: { nodeId: string; groupId: string }) => {
     const { nodeId, groupId } = args;
     if (!graph) return;
 
-    const label = (() => {
-      const node = graph.nodes.find(n => (n.metadata as any)?.group_id === groupId);
-      const meta = (node?.metadata as any) ?? {};
-      return (typeof meta.group_label === "string" && meta.group_label.trim()) ? meta.group_label.trim() : groupId;
-    })();
+    // Optimistic UI update - add node to the group's nodes array
+    updateGraph(prev => {
+      if (!prev) return prev;
 
-    // Optimistic UI update
-    setGraph(prev =>
-      prev
-        ? {
-            ...prev,
-            nodes: prev.nodes.map(n =>
-              n.id === nodeId
-                ? {
-                    ...n,
-                    metadata: {
-                      ...((n.metadata as any) ?? {}),
-                      group_id: groupId,
-                      group_label: label,
-                      override: true,
-                    },
-                  }
-                : n
-            ),
-          }
-        : prev
-    );
+      const groups = prev.groups ?? [];
+      const updatedGroups = groups.map(g => {
+        if (g.id === groupId && !g.nodes.includes(nodeId)) {
+          return { ...g, nodes: [...g.nodes, nodeId] };
+        }
+        // Remove from other groups
+        return { ...g, nodes: g.nodes.filter(id => id !== nodeId) };
+      });
 
-    await patchNode(WORKLOAD_ID, nodeId, { group_id: groupId, group_label: label });
+      return {
+        ...prev,
+        groups: updatedGroups,
+      };
+    });
+
+    // Remove from any existing groups first
+    if (graph.groups) {
+      for (const group of graph.groups) {
+        if (group.nodes.includes(nodeId) && group.id !== groupId) {
+          await removeNodeFromGroup(WORKLOAD_ID, group.id, nodeId);
+        }
+      }
+    }
+
+    // Add to the new group
+    await addNodeToGroup(WORKLOAD_ID, groupId, nodeId);
+  };
+
+  const handleRemoveNodeFromGroup = async (args: { nodeId: string; groupId: string }) => {
+    const { nodeId, groupId } = args;
+    if (!graph) return;
+
+    // Optimistic UI update - remove node from the group's nodes array
+    updateGraph(prev => {
+      if (!prev) return prev;
+
+      const groups = prev.groups ?? [];
+      const updatedGroups = groups.map(g => {
+        if (g.id === groupId) {
+          return { ...g, nodes: g.nodes.filter(id => id !== nodeId) };
+        }
+        return g;
+      });
+
+      return {
+        ...prev,
+        groups: updatedGroups,
+      };
+    });
+
+    // Remove from the group
+    await removeNodeFromGroup(WORKLOAD_ID, groupId, nodeId);
+  };
+
+  const handleNodeRemoveFromGroupClick = (args: { nodeId: string; groupId: string }) => {
+    // Just call the handler directly - it's synchronous for UI feedback
+    handleRemoveNodeFromGroup(args);
   };
 
   const handleResetNode = async (nodeId: string) => {
     try {
       await resetNode(WORKLOAD_ID, nodeId);
 
-      // Reset criticality override too (if present).
-      if (criticalityOverrides.has(nodeId)) {
-        await resetNodeCriticality(WORKLOAD_ID, nodeId);
-        setCriticalityOverrides(prev => {
-          const next = new Map(prev);
-          next.delete(nodeId);
-          return next;
-        });
-      }
+      // Remove override from local storage and rebuild graph
+      updateGraph(prev => {
+        if (!prev) return prev;
 
-      await fetchGraph();
+        const nextOverrides = { ...prev.node_overrides };
+        delete nextOverrides[nodeId];
+
+        return {
+          ...prev,
+          node_overrides: nextOverrides,
+          nodes: prev.nodes.map(n => {
+            if (n.id !== nodeId) return n;
+            const meta = (n.metadata as any) ?? {};
+            const nextMeta = { ...meta };
+            delete nextMeta.user_override;
+            return {
+              ...n,
+              metadata: nextMeta,
+            };
+          }),
+        };
+      });
+
       setSelectedNode(null);
     } catch (err) {
       console.error("Failed to reset node", err);
@@ -988,6 +961,7 @@ const WorkloadView: React.FC = () => {
         <div style={{ flex: 1, height: "100%" }}>
           <ReactFlowProvider>
             <GraphCanvas
+              ref={graphCanvasRef}
               nodes={nodesForView}
               edges={edgesForView}
               userLayerEnabled={userLayerEnabled}
@@ -1027,9 +1001,14 @@ const WorkloadView: React.FC = () => {
                 }
               }}
               onMoveNodeToGroup={moveNodeToGroup}
+              onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
               onEdgeSelected={(e) => {
-                if (!e) return setSelectedEdge(null);
+                if (!e) {
+                  setSelectedEdge(null);
+                  return;
+                }
 
+                setSelectedNode(null);
                 setSelectedEdge({
                   id: e.id,
                   source: e.source,
@@ -1037,6 +1016,7 @@ const WorkloadView: React.FC = () => {
                   relationship: e.relationship,
                   confidence: e.confidence,
                   status: e.status as any,
+                  evidence: e.evidence,
                   origin: e.origin,
                   raw: e,
                 });

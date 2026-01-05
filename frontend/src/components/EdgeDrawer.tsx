@@ -150,6 +150,123 @@ const EdgeDrawer: React.FC<Props> = ({
         </div>
       </div>
 
+      {/* Multi-source signals (if available) */}
+      {edge.evidence && (
+        (() => {
+          const multiSourceEvidence = edge.evidence.find(
+            (e) => e.type === "multi_source_signals"
+          );
+          if (multiSourceEvidence && multiSourceEvidence.signals) {
+            return (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ marginBottom: 8 }}>
+                  <strong>Detection Signals</strong>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    fontSize: 12
+                  }}
+                >
+                  {multiSourceEvidence.signals.map(
+                    (signal: any, idx: number) => (
+                      <div
+                        key={idx}
+                        style={{
+                          padding: 8,
+                          background: "#1a1a1a",
+                          border: "1px solid #333",
+                          borderRadius: 4
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <strong style={{ color: "#9CDCFE" }}>
+                            {signal.type}
+                          </strong>
+                          <span
+                            style={{
+                              color:
+                                (signal.confidence ?? 0) >= 0.9
+                                  ? "#4CAF50"
+                                  : (signal.confidence ?? 0) >= 0.7
+                                  ? "#FFC107"
+                                  : "#F44336"
+                            }}
+                          >
+                            {Math.round((signal.confidence ?? 0) * 100)}%
+                          </span>
+                        </div>
+                        {signal.evidence && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "#ccc",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word"
+                            }}
+                          >
+                            {typeof signal.evidence === "string"
+                              ? signal.evidence
+                              : JSON.stringify(
+                                  signal.evidence,
+                                  null,
+                                  2
+                                ).substring(0, 200)}
+                          </div>
+                        )}
+                        {signal.source_resource && (
+                          <div
+                            style={{
+                              marginTop: 4,
+                              fontSize: 10,
+                              color: "#888"
+                            }}
+                          >
+                            From: {signal.source_resource}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )}
+                </div>
+                {multiSourceEvidence.aggregated_confidence !== undefined && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: 6,
+                      background: "#1f2937",
+                      borderLeft: "3px solid #3b82f6",
+                      fontSize: 12
+                    }}
+                  >
+                    <strong>Aggregated Confidence:</strong>{" "}
+                    <span
+                      style={{
+                        color:
+                          multiSourceEvidence.aggregated_confidence >= 0.9
+                            ? "#4CAF50"
+                            : multiSourceEvidence.aggregated_confidence >=
+                              0.7
+                            ? "#FFC107"
+                            : "#F44336"
+                      }}
+                    >
+                      {Math.round(
+                        multiSourceEvidence.aggregated_confidence * 100
+                      )}
+                      %
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return null;
+        })()
+      )}
+
       {aiSuggested && (
         <div
           style={{

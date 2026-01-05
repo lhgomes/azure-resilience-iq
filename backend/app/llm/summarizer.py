@@ -76,17 +76,35 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         if not source or not target:
             continue
 
-        safe_edges.append(
-            {
-                "source": source,
-                "target": target,
-                "relationship": relationship,
-                # Preserve provenance and moderation state so the LLM knows which
-                # relationships were user-authored or previously accepted.
-                "source_kind": ed.get("source"),
-                "status": ed.get("status"),
-            }
-        )
+        # Extract multi-source signal information if available
+        evidence = ed.get("evidence") or []
+        multi_source_info = None
+        if evidence and isinstance(evidence, list):
+            for ev in evidence:
+                if isinstance(ev, dict) and ev.get("type") == "multi_source_signals":
+                    multi_source_info = {
+                        "signals": ev.get("signal_types", []),
+                        "aggregated_confidence": ev.get("aggregated_confidence"),
+                        "signal_count": len(ev.get("signals", []))
+                    }
+                    break
+
+        edge_data = {
+            "source": source,
+            "target": target,
+            "relationship": relationship,
+            # Preserve provenance and moderation state so the LLM knows which
+            # relationships were user-authored or previously accepted.
+            "source_kind": ed.get("source"),
+            "status": ed.get("status"),
+            "confidence": ed.get("confidence"),
+        }
+        
+        # Add multi-source signal context if available
+        if multi_source_info:
+            edge_data["multi_source_signals"] = multi_source_info
+        
+        safe_edges.append(edge_data)
 
         if source in connections:
             connections[source].add(target)

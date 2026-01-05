@@ -4,6 +4,7 @@ import type {
   LlmNodeAnnotation,
   LlmNodeAnnotationPayload,
   RawGraphSnapshot,
+  NodeGroup,
 } from "../api/workloads";
 
 export type ViewLevel = "overview" | "network" | "full";
@@ -26,6 +27,9 @@ export interface GraphSnapshot {
     nodes?: LlmNodeAnnotation[];
     edges?: LlmEdgeSuggestion[];
   };
+  node_overrides?: Record<string, Record<string, unknown>>;
+  edge_overrides?: Record<string, Record<string, unknown>>;
+  groups?: NodeGroup[];
 }
 
 export function normalizeTypeString(rawType?: string): string {
@@ -65,7 +69,7 @@ export function canonicalTypeForNode(node: GraphNode): string {
     if (normalized !== "resource") return normalized;
   }
 
-  const haystack = `${node.id} ${node.name} ${meta?.original_name ?? ""}`.toLowerCase();
+  const haystack = `${node.id} ${node.name}`.toLowerCase();
   if (
     haystack.includes("/virtualmachines/") ||
     haystack.includes(" virtual machine") ||
@@ -102,14 +106,31 @@ export function renderStars(score: number): string {
   return stars;
 }
 
-export function getEffectiveCriticalityScore(
+function buildAnnotationMap(
+  snapshot: GraphSnapshot
+): Map<string, LlmNodeAnnotationPayload> {
+  const annMap = new Map<string, LlmNodeAnnotationPayload>();
+  (snapshot.llm_annotations?.nodes ?? []).forEach(entry => {
+    if (entry?.node_id) annMap.set(entry.node_id, entry.annotations || {});
+  });
+  return annMap;
+}
+
+function computeEffectiveImportance(
+  node: GraphNode,
   ann: LlmNodeAnnotationPayload | undefined,
-  overrides: Map<string, number>,
-  nodeId: string
-): number | undefined {
-  const override = overrides.get(nodeId);
-  if (override !== undefined) return override;
-  return ann?.criticality_score;
+  nodeOverride: Record<string, unknown> | undefined,
+  aiLayerEnabled: boolean,
+  userLayerEnabled: boolean
+): number {
+  const baseImportance = (node.metadata as any)?.importance ?? 3;
+  let importance = baseImportance;
+
+  if (aiLayerEnabled && ann?.layer !== undefined) importance = ann.layer;
+  if (userLayerEnabled && typeof (nodeOverride as any)?.layer === "number")
+    importance = (nodeOverride as any).layer as number;
+
+  return importance;
 }
 
 export function buildAiTooltip(
@@ -131,9 +152,9 @@ export function buildAiTooltip(
 }
 
 function formatLayer(layer: number): string {
-  if (layer === 1) return "L0";
-  if (layer === 2) return "L1";
-  if (layer === 3) return "L2";
+  if (layer === 1) return "L1";
+  if (layer === 2) return "L2";
+  if (layer === 3) return "L3";
   return String(layer);
 }
 
@@ -201,6 +222,7 @@ export function normalizeGraph(raw: RawGraphSnapshot): GraphSnapshot {
     relationship: e.relationship,
     confidence: e.confidence,
     status: e.status ?? "proposed",
+    evidence: e.evidence,
     origin: e.source ?? "arg",
   }));
 
@@ -208,6 +230,9 @@ export function normalizeGraph(raw: RawGraphSnapshot): GraphSnapshot {
     nodes: (raw?.nodes ?? []) as unknown as GraphNode[],
     edges,
     llm_annotations: raw?.llm_annotations,
+    node_overrides: raw?.node_overrides,
+    edge_overrides: raw?.edge_overrides,
+    groups: raw?.groups ?? [],
   };
 }
 
@@ -222,11 +247,7 @@ export function computeServiceOptions(
   aiLayerEnabled: boolean,
   userLayerEnabled: boolean
 ): ServiceOptionCategory[] {
-  const annMap = new Map<string, LlmNodeAnnotationPayload>();
-  (snapshot.llm_annotations?.nodes ?? []).forEach(entry => {
-    if (entry?.node_id) annMap.set(entry.node_id, entry.annotations || {});
-  });
-
+  const annMap = buildAnnotationMap(snapshot);
   const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
   const categoryMap = new Map<string, Map<string, string>>();
 
@@ -235,14 +256,8 @@ export function computeServiceOptions(
     if (!key) return;
 
     const ann = annMap.get(n.id);
-
-    const baseImportance = (n.metadata as any)?.original_importance ?? (n.metadata as any)?.importance ?? 3;
-    let importance = baseImportance;
-
-    if (aiLayerEnabled && ann?.layer !== undefined) importance = ann.layer;
-    if (userLayerEnabled && (n.metadata as any)?.override) {
-      importance = (n.metadata as any)?.importance ?? importance;
-    }
+    const nodeOverride = userLayerEnabled ? (snapshot.node_overrides ?? {})[n.id] : undefined;
+    const importance = computeEffectiveImportance(n, ann, nodeOverride, aiLayerEnabled, userLayerEnabled);
 
     if (importance > maxImportance) return;
 
@@ -270,24 +285,14 @@ export function computeResourceGroupOptions(
   aiLayerEnabled: boolean,
   userLayerEnabled: boolean
 ): Array<{ key: string; label: string }> {
-  const annMap = new Map<string, LlmNodeAnnotationPayload>();
-  (snapshot.llm_annotations?.nodes ?? []).forEach(entry => {
-    if (entry?.node_id) annMap.set(entry.node_id, entry.annotations || {});
-  });
-
+  const annMap = buildAnnotationMap(snapshot);
   const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
   const groups = new Map<string, string>();
 
   (snapshot.nodes || []).forEach(n => {
     const ann = annMap.get(n.id);
-
-    const baseImportance = (n.metadata as any)?.original_importance ?? (n.metadata as any)?.importance ?? 3;
-    let importance = baseImportance;
-
-    if (aiLayerEnabled && ann?.layer !== undefined) importance = ann.layer;
-    if (userLayerEnabled && (n.metadata as any)?.override) {
-      importance = (n.metadata as any)?.importance ?? importance;
-    }
+    const nodeOverride = userLayerEnabled ? (snapshot.node_overrides ?? {})[n.id] : undefined;
+    const importance = computeEffectiveImportance(n, ann, nodeOverride, aiLayerEnabled, userLayerEnabled);
 
     if (importance > maxImportance) return;
 
@@ -314,50 +319,66 @@ export function buildViewGraph(args: {
   userLayerEnabled: boolean;
   serviceFilter: Set<string>;
   resourceGroupFilter: Set<string>;
-  criticalityOverrides: Map<string, number>;
 }): ViewGraph {
-  const { snapshot, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter, criticalityOverrides } = args;
+  const { snapshot, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter } = args;
+  const annotationMap = aiLayerEnabled ? buildAnnotationMap(snapshot) : new Map();
 
-  const annotationMap = new Map<string, LlmNodeAnnotationPayload>();
-  if (aiLayerEnabled) {
-    (snapshot.llm_annotations?.nodes ?? []).forEach(entry => {
-      if (entry?.node_id) annotationMap.set(entry.node_id, entry.annotations || {});
-    });
+  // Build a map from node_id to group info
+  const nodeToGroupMap = new Map<string, { groupId: string; groupLabel: string }>();
+  if (snapshot.groups) {
+    for (const group of snapshot.groups) {
+      for (const nodeId of group.nodes) {
+        nodeToGroupMap.set(nodeId, { groupId: group.id, groupLabel: group.name });
+      }
+    }
   }
 
   const visibleNodes: GraphNode[] = (snapshot.nodes || [])
     .map(n => {
       const ann = annotationMap.get(n.id);
+      const nodeOverride = userLayerEnabled ? (snapshot.node_overrides ?? {})[n.id] : undefined;
       const normalizedType = canonicalTypeForNode(n);
 
-      const baseName = (n.metadata as any)?.original_name ?? n.name;
-      const baseImportance = (n.metadata as any)?.original_importance ?? (n.metadata as any)?.importance ?? 3;
+      const meta = (n.metadata as any) ?? {};
+      
+      // Extract group info from the groups array instead of nodeOverride
+      const groupInfo = nodeToGroupMap.get(n.id);
+      const groupId = groupInfo?.groupId;
+      const groupLabel = groupInfo?.groupLabel;
+      
+      const baseName = n.name;
 
       let name = baseName;
-      let importance = baseImportance;
+      let importance = computeEffectiveImportance(n, ann, nodeOverride, aiLayerEnabled, userLayerEnabled);
+      let color = meta.color as string | undefined;
+      let icon = meta.icon as string | undefined;
 
-      if (aiLayerEnabled) {
-        if (ann?.display_name) name = ann.display_name;
-        if (ann?.layer !== undefined) importance = ann.layer;
-      }
+      if (aiLayerEnabled && ann?.display_name) name = ann.display_name;
+      if (userLayerEnabled && typeof (nodeOverride as any)?.name === "string")
+        name = (nodeOverride as any).name as string;
 
-      if (userLayerEnabled && (n.metadata as any)?.override) {
-        name = n.name ?? name;
-        importance = (n.metadata as any)?.importance ?? importance;
-      }
+      if (userLayerEnabled && typeof (nodeOverride as any)?.color === "string")
+        color = (nodeOverride as any).color as string;
+      if (userLayerEnabled && typeof (nodeOverride as any)?.icon === "string")
+        icon = (nodeOverride as any).icon as string;
 
-      const effectiveCriticality = getEffectiveCriticalityScore(ann, criticalityOverrides, n.id);
+      const criticalityOverride = userLayerEnabled ? (nodeOverride as any)?.criticality_score : undefined;
+      const effectiveCriticality =
+        typeof criticalityOverride === "number"
+          ? criticalityOverride
+          : aiLayerEnabled && typeof ann?.criticality_score === "number"
+            ? ann.criticality_score
+            : undefined;
 
-      const meta = (n.metadata as any) ?? {};
-      const criticalityOverride = criticalityOverrides.get(n.id);
+      const baseImportance = meta.importance ?? 3;
       const user_tooltip = buildUserTooltip({
-        originalName: meta.original_name,
-        nameOverride: typeof meta.name_override === "string" ? meta.name_override : undefined,
-        originalImportance: typeof meta.original_importance === "number" ? meta.original_importance : undefined,
-        layerOverride: typeof meta.layer_override === "number" ? meta.layer_override : undefined,
-        colorOverride: typeof meta.color_override === "string" ? meta.color_override : undefined,
-        iconOverride: typeof meta.icon_override === "string" ? meta.icon_override : undefined,
-        criticalityOverride,
+        originalName: baseName,
+        nameOverride: typeof (nodeOverride as any)?.name === "string" ? (nodeOverride as any).name : undefined,
+        originalImportance: baseImportance,
+        layerOverride: typeof (nodeOverride as any)?.layer === "number" ? (nodeOverride as any).layer : undefined,
+        colorOverride: typeof (nodeOverride as any)?.color === "string" ? (nodeOverride as any).color : undefined,
+        iconOverride: typeof (nodeOverride as any)?.icon === "string" ? (nodeOverride as any).icon : undefined,
+        criticalityOverride: typeof criticalityOverride === "number" ? criticalityOverride : undefined,
         aiCriticality: ann?.criticality_score,
       });
 
@@ -366,15 +387,19 @@ export function buildViewGraph(args: {
         type: normalizedType,
         name,
         metadata: {
-          ...(n.metadata as any),
+          ...meta,
           importance,
-          ai_annotation: ann,
-          original_name: baseName,
+          color,
+          icon,
+          ai_annotation: aiLayerEnabled ? ann : undefined,
           raw_type: n.type,
           ai_tooltip: aiLayerEnabled ? buildAiTooltip(ann, baseName) : undefined,
           user_tooltip,
           criticality_score: effectiveCriticality,
           criticality_stars: renderStars(effectiveCriticality ?? 5),
+          user_override: nodeOverride,
+          group_id: groupId,
+          group_label: groupLabel,
         } as Record<string, unknown>,
       };
     })

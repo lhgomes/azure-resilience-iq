@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { AZURE_ICON_MANIFEST } from "../utils/azureIconManifest";
+import { renderStars } from "../domain/graphView";
 
 export interface NodeData {
   id: string;
@@ -9,7 +10,6 @@ export interface NodeData {
   color?: string;
   icon?: string;
   criticalityScore?: number;
-  criticalityOverride?: boolean;
   override?: boolean;
   aiAnnotation?: AiAnnotation;
   originalName?: string;
@@ -25,6 +25,7 @@ interface AiAnnotation {
   confidence?: number;
   reason?: string;
   source?: string;
+  icon?: string;
 }
 
 interface Props {
@@ -66,44 +67,61 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
 
   useEffect(() => {
     if (!node) return;
-    setName(node.name ?? "");
-    setLayer(typeof node.layer === "number" ? node.layer : "");
-    setColor(node.color ?? "");
-    setIcon(node.icon ?? "");
-    setCriticality(typeof node.criticalityScore === "number" ? node.criticalityScore : "");
+    const rawMeta = (node.raw as any)?.metadata ?? {};
+    const userOverride = (rawMeta.user_override as Record<string, unknown> | undefined) ?? {};
+
+    // Priority: 1. User override, 2. AI suggestion, 3. Original data
+    const aiName = node.aiAnnotation?.display_name;
+    const originalName = node.originalName ?? node.name;
+    const effectiveName = (userOverride as any).name ?? aiName ?? originalName ?? "";
+
+    const aiLayer = node.aiAnnotation?.layer;
+    const originalLayer = rawMeta.importance ?? node.layer;
+    const effectiveLayer = (userOverride as any).layer ?? aiLayer ?? originalLayer;
+
+    const aiIcon = node.aiAnnotation?.icon;
+    const originalIcon = rawMeta.icon;
+    const effectiveIcon = (userOverride as any).icon ?? aiIcon ?? originalIcon ?? "";
+
+    const aiCriticality = node.aiAnnotation?.criticality_score;
+    const userCriticality = (userOverride as any).criticality_score as number | undefined;
+    const effectiveCriticalityScore = userCriticality ?? aiCriticality ?? node.criticalityScore;
+
+    const userColor = (userOverride as any).color as string | undefined;
+    const baseColor = rawMeta.color as string | undefined;
+
+    setName(effectiveName);
+    setLayer(typeof effectiveLayer === "number" ? effectiveLayer : "");
+    setColor(userColor ?? baseColor ?? "");
+    setIcon(effectiveIcon);
+    setCriticality(typeof effectiveCriticalityScore === "number" ? effectiveCriticalityScore : "");
   }, [node]);
 
   if (!node) return null;
 
   const rawMeta = (node.raw as any)?.metadata ?? {};
 
-  const baselineName = rawMeta.original_name ?? node.originalName ?? node.name;
-  const baselineLayer = rawMeta.original_importance ?? rawMeta.importance ?? node.layer;
-  const baselineColor = (node.raw as any)?.metadata?.color_override ?? "";
-  const baselineIcon = (node.raw as any)?.metadata?.icon_override ?? (node.raw as any)?.metadata?.icon ?? "";
+  const userOverride = (rawMeta.user_override as Record<string, unknown> | undefined) ?? {};
+
   const baselineCriticality = node.aiAnnotation?.criticality_score ?? null;
   const effectiveCriticality = criticality === "" ? null : Number(criticality);
-  const criticalityChanged = effectiveCriticality !== null
-    ? (baselineCriticality === null ? true : effectiveCriticality !== baselineCriticality || node.criticalityOverride)
-    : false;
   const sliderValue = criticality === ""
     ? (baselineCriticality ?? node.criticalityScore ?? 5)
     : Number(criticality);
-  const hasCriticalityOverride = node.criticalityOverride ?? false;
 
   const userChanges: string[] = [];
   const aiChanges: string[] = [];
 
-  const nameOverride = rawMeta.name_override as string | undefined;
-  const layerOverride = rawMeta.layer_override as number | undefined;
-  const colorOverride = rawMeta.color_override as string | undefined;
-  const iconOverride = rawMeta.icon_override as string | undefined;
-  const criticalityOverride = rawMeta.criticality_override as number | undefined;
+  const nameOverride = (userOverride as any).name as string | undefined;
+  const layerOverride = (userOverride as any).layer as number | undefined;
+  const colorOverride = (userOverride as any).color as string | undefined;
+  const iconOverride = (userOverride as any).icon as string | undefined;
+  const criticalityOverride = (userOverride as any).criticality_score as number | undefined;
 
-  const nameUserOverridden = userLayerEnabled && (typeof nameOverride === "string" && nameOverride.length > 0);
+  const nameUserOverridden = userLayerEnabled && typeof nameOverride === "string" && nameOverride.length > 0;
   const layerUserOverridden = userLayerEnabled && typeof layerOverride === "number";
-  const colorUserOverridden = userLayerEnabled && (typeof colorOverride === "string" && colorOverride.length > 0);
-  const iconUserOverridden = userLayerEnabled && (typeof iconOverride === "string" && iconOverride.length > 0);
+  const colorUserOverridden = userLayerEnabled && typeof colorOverride === "string" && colorOverride.length > 0;
+  const iconUserOverridden = userLayerEnabled && typeof iconOverride === "string" && iconOverride.length > 0;
   const criticalityUserOverridden = userLayerEnabled && typeof criticalityOverride === "number";
 
   if (nameUserOverridden) userChanges.push("Name");
@@ -112,9 +130,12 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   if (iconUserOverridden) userChanges.push("Icon");
   const aiCriticality = node.aiAnnotation?.criticality_score;
   const userCriticalityIsEffectiveChange =
-    node.criticalityOverride &&
+    criticalityUserOverridden &&
     (typeof aiCriticality !== "number" || node.criticalityScore !== aiCriticality);
   if (userCriticalityIsEffectiveChange) userChanges.push("Criticality");
+
+  // Check if there are any user overrides to enable the reset button
+  const hasAnyOverride = Object.keys(userOverride).length > 0;
 
   if (aiLayerEnabled && node.aiAnnotation) {
     const ann = node.aiAnnotation;
@@ -125,9 +146,9 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       node.name === ann.display_name;
 
     const layerAiApplied =
-      userLayerEnabled && !layerUserOverridden
-        ? (typeof ann.layer === "number" && node.layer === ann.layer)
-        : (typeof ann.layer === "number" && node.layer === ann.layer);
+      !layerUserOverridden &&
+      typeof ann.layer === "number" &&
+      node.layer === ann.layer;
 
     const criticalityAiApplied =
       typeof ann.criticality_score === "number" &&
@@ -140,6 +161,23 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
 
   const rawJson = node.raw ? JSON.stringify(node.raw, null, 2) : null;
 
+  // Detect if user has made changes from the current effective values
+  const hasChanges = (() => {
+    const currentEffectiveName = node.name ?? "";
+    const currentEffectiveLayer = node.layer ?? null;
+    const currentEffectiveColor = node.color ?? "";
+    const currentEffectiveIcon = node.icon ?? "";
+    const currentEffectiveCriticality = node.criticalityScore ?? null;
+
+    const nameChanged = name.trim() !== currentEffectiveName;
+    const layerChanged = (layer === "" ? null : Number(layer)) !== (currentEffectiveLayer ?? null);
+    const colorChanged = (color || null) !== (currentEffectiveColor || null);
+    const iconChanged = (icon || null) !== (currentEffectiveIcon || null);
+    const criticalityChanged = effectiveCriticality !== (currentEffectiveCriticality ?? null);
+
+    return nameChanged || layerChanged || colorChanged || iconChanged || criticalityChanged;
+  })();
+
   const handleSave = () => {
     onSave?.(node.id, {
       name: name.trim() || undefined,
@@ -148,15 +186,6 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
       icon: icon || null,
       criticality: effectiveCriticality,
     });
-  };
-
-  const renderStars = (score: number): string => {
-    const full = Math.floor(score / 2);
-    const half = score % 2 === 1;
-    let stars = "★".repeat(full);
-    if (half) stars += "⯪";
-    stars += "☆".repeat(5 - full - (half ? 1 : 0));
-    return stars;
   };
 
   return (
@@ -211,7 +240,7 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
             AI
           </span>
         )}
-        {userLayerEnabled && (node.override || node.criticalityOverride) && (
+        {userLayerEnabled && (node.override || criticalityUserOverridden) && (
           <span
             title="User input"
             style={{
@@ -268,9 +297,9 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
           }}
         >
           <option value="">Default</option>
-          <option value="1">L0</option>
-          <option value="2">L1</option>
-          <option value="3">L2</option>
+          <option value="1">L1</option>
+          <option value="2">L2</option>
+          <option value="3">L3</option>
         </select>
       </div>
 
@@ -378,19 +407,21 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
           </span>
         </div>
         <div style={{ fontSize: 12, color: "#9AA0A6", marginTop: 6 }}>
-          {hasCriticalityOverride ? "User override active" : "AI suggestion will be used if unset"}
+          {criticalityUserOverridden ? "User override active" : "AI suggestion will be used if unset"}
         </div>
       </div>
 
       <button
         onClick={handleSave}
+        disabled={!hasChanges}
         style={{
           width: "100%",
           padding: "10px 12px",
-          background: "#2ea043",
-          color: "#fff",
+          background: hasChanges ? "#2ea043" : "#0f1419",
+          color: hasChanges ? "#fff" : "#666",
           border: "none",
-          cursor: "pointer"
+          cursor: hasChanges ? "pointer" : "not-allowed",
+          opacity: hasChanges ? 1 : 0.5
         }}
       >
         Save
@@ -398,14 +429,16 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
 
       <button
         onClick={() => onReset?.()}
+        disabled={!hasAnyOverride}
         style={{
           marginTop: 10,
           width: "100%",
           padding: "10px 12px",
-          background: "#1f2937",
-          color: "#fff",
+          background: hasAnyOverride ? "#1f2937" : "#0f1419",
+          color: hasAnyOverride ? "#fff" : "#666",
           border: "1px solid #333",
-          cursor: "pointer"
+          cursor: hasAnyOverride ? "pointer" : "not-allowed",
+          opacity: hasAnyOverride ? 1 : 0.5
         }}
       >
         Reset to defaults

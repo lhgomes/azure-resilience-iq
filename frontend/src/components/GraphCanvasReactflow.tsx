@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from "react";
 import ReactFlow, {
   Node,
   Edge,
@@ -34,6 +34,7 @@ export interface GraphEdge {
   relationship: string;
   confidence?: number;
   status?: "proposed" | "accepted" | "rejected";
+  evidence?: Array<Record<string, unknown>>;
   origin?: string;
 }
 
@@ -75,6 +76,8 @@ interface Props {
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
   onMoveNodeToGroup?: (args: { nodeId: string; groupId: string }) => Promise<void> | void;
+  onRemoveNodeFromGroup?: (args: { nodeId: string; groupId: string }) => Promise<void> | void;
+  onNodeRemoveFromGroup?: (args: { nodeId: string; groupId: string }) => void;
   onSelectionStateChange?: (state: {
     selectedNodeIds: string[];
     selectedGroupId: string | null;
@@ -85,22 +88,38 @@ interface Props {
 
 const nodeTypes: NodeTypes = { azure: AzureNode };
 const edgeTypes: EdgeTypes = { azure: AzureEdge };
+const nodeTypesWithGroups: NodeTypes = { ...nodeTypes, azureGroup: AzureGroupNode };
 
-const GraphCanvas: React.FC<Props> = ({
-  nodes: nodesProp,
-  edges: edgesProp,
-  userLayerEnabled,
-  onEdgeSelected,
-  onNodeSelected,
-  maxImportance = 1,
-  onEdgeCreate,
-  onNodeRename,
-  onGroupCreate,
-  groupCreateRequest,
-  onMoveNodeToGroup,
-  onSelectionStateChange,
-}) => {
+export interface GraphCanvasHandle {
+  fitView: () => void;
+}
+
+const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
+  const {
+    nodes: nodesProp,
+    edges: edgesProp,
+    userLayerEnabled,
+    onEdgeSelected,
+    onNodeSelected,
+    maxImportance = 1,
+    onEdgeCreate,
+    onNodeRename,
+    onGroupCreate,
+    groupCreateRequest,
+    onMoveNodeToGroup,
+    onRemoveNodeFromGroup,
+    onNodeRemoveFromGroup,
+    onSelectionStateChange,
+  } = props;
+  
   const { fitView } = useReactFlow();
+
+  // Expose fitView to parent via ref
+  useImperativeHandle(ref, () => ({
+    fitView: () => {
+      setTimeout(() => fitView(), 100);
+    }
+  }), [fitView]);
 
   const [groups, setGroups] = useState<GroupState[]>([]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -170,19 +189,17 @@ const GraphCanvas: React.FC<Props> = ({
       id: n.id,
       data: (() => {
         const meta = n.metadata ?? {};
-        const isUserCustomized = !!meta["override"] || typeof meta["criticality_override"] === "number";
+        const userOverride = (meta["user_override"] as Record<string, unknown> | undefined) ?? undefined;
+        const isUserCustomized = userLayerEnabled && !!userOverride && Object.keys(userOverride).length > 0;
         return {
           label: n.name || n.id.split("/").pop() || "unknown",
-          icon:
-            (typeof meta["icon_override"] === "string" ? (meta["icon_override"] as string) : undefined) ??
-            (typeof meta["icon"] === "string" ? (meta["icon"] as string) : undefined),
+          icon: typeof meta["icon"] === "string" ? (meta["icon"] as string) : undefined,
           type: n.type,
           criticality_stars:
             typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
-          color_override:
-            typeof meta["color_override"] === "string" ? (meta["color_override"] as string) : undefined,
+          color: typeof meta["color"] === "string" ? (meta["color"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
-          user_customized: userLayerEnabled && isUserCustomized,
+          user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
         };
@@ -320,8 +337,6 @@ const GraphCanvas: React.FC<Props> = ({
     });
   }, [visibleNodes, groupInfoByNodeId, layoutedNodes]);
 
-  const nodeTypesWithGroups: NodeTypes = useMemo(() => ({ ...nodeTypes, azureGroup: AzureGroupNode }), []);
-
   const groupMembership = useMemo(() => {
     const map = new Map<string, string>();
     for (const g of groups) {
@@ -360,10 +375,34 @@ const GraphCanvas: React.FC<Props> = ({
 
     const baseNodes: Node[] = layoutedNodes.map(n => {
       const groupId = groupMembership.get(n.id);
-      if (!groupId) return { ...n, zIndex: 1 };
+      if (!groupId) {
+        // For non-grouped nodes, check if position overlaps with any group
+        // If it does, move it outside the group bounds
+        let adjustedPos = n.position;
+        for (const g of groups) {
+          const nodeLeft = n.position.x;
+          const nodeTop = n.position.y;
+          const nodeRight = nodeLeft + NODE_W;
+          const nodeBottom = nodeTop + NODE_H;
+          
+          const groupLeft = g.rect.x;
+          const groupTop = g.rect.y;
+          const groupRight = g.rect.x + g.rect.width;
+          const groupBottom = g.rect.y + g.rect.height;
+          
+          // Check if node overlaps with group
+          if (nodeLeft < groupRight && nodeRight > groupLeft && 
+              nodeTop < groupBottom && nodeBottom > groupTop) {
+            // Move node to the right of the group
+            adjustedPos = { x: groupRight + 20, y: n.position.y };
+            break; // Only adjust once
+          }
+        }
+        return { ...n, position: adjustedPos, zIndex: 10 };
+      }
 
       const g = groups.find(x => x.id === groupId);
-      if (!g) return { ...n, zIndex: 1 };
+      if (!g) return { ...n, zIndex: 10 };
 
       const rel = g.childPositions[n.id] ?? {
         x: n.position.x - g.rect.x,
@@ -373,10 +412,14 @@ const GraphCanvas: React.FC<Props> = ({
       return {
         ...n,
         parentNode: g.id,
-        extent: "parent",
         position: rel,
         hidden: g.collapsed,
         zIndex: 1,
+        data: {
+          ...(typeof n.data === 'object' ? n.data : {}),
+          groupId: groupId,
+          onRemoveFromGroup: () => onNodeRemoveFromGroup?.({ nodeId: n.id, groupId }),
+        },
       };
     });
 
@@ -739,7 +782,9 @@ const GraphCanvas: React.FC<Props> = ({
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (connection.source && connection.target) {
-        onEdgeCreate?.(connection.source, connection.target);
+        // Swap source and target because React Flow's connection model may be reversed
+        // When user drags from node A to node B, we want A -> B (A depends on B)
+        onEdgeCreate?.(connection.target, connection.source);
       }
     },
     [onEdgeCreate]
@@ -765,11 +810,14 @@ const GraphCanvas: React.FC<Props> = ({
       nodeTypes={nodeTypesWithGroups}
       edgeTypes={edgeTypes}
       connectionMode={ConnectionMode.Loose}
+      defaultEdgeOptions={{ zIndex: 10 }}
       style={{ width: "100%", height: "100%" }}
     >
       <Controls />
     </ReactFlow>
   );
-};
+});
+
+GraphCanvas.displayName = 'GraphCanvas';
 
 export default GraphCanvas;

@@ -78,9 +78,9 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         <div style={{ marginBottom: 12 }}>
           <strong>View levels:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
-            <div style={{ marginBottom: 3 }}>L0: Core workload</div>
-            <div style={{ marginBottom: 3 }}>L1: Network + Platform</div>
-            <div style={{ marginBottom: 3 }}>L2: Full + Implementation</div>
+            <div style={{ marginBottom: 3 }}>L1: Core workload</div>
+            <div style={{ marginBottom: 3 }}>L2: Network + Platform</div>
+            <div style={{ marginBottom: 3 }}>L3: Full + Implementation</div>
           </div>
         </div>
       </div>
