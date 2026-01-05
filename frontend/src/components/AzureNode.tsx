@@ -10,11 +10,13 @@ interface AzureNodeProps {
     icon?: string;
     type?: string;
     criticality_stars?: string;
-    color_override?: string;
+    color?: string;
     ai_annotation?: boolean;
     user_customized?: boolean;
     ai_tooltip?: AiTooltip;
     user_tooltip?: AiTooltip;
+    groupId?: string;
+    onRemoveFromGroup?: () => void;
   };
   isConnectable: boolean;
   selected: boolean;
@@ -37,7 +39,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   }, [showTooltip]);
 
   const getNodeColor = (): string => {
-    if (data.color_override) return data.color_override;
+    if (data.color) return data.color;
     
     switch (data.type) {
       case "vm":
@@ -85,6 +87,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           fontSize: "11px",
           fontWeight: 600,
           fontFamily: "Segoe UI, system-ui, sans-serif",
+          marginTop: "15px",
           boxShadow: selected 
             ? "0 0 12px rgba(245, 158, 11, 0.6)" 
             : "0 2px 8px rgba(0,0,0,0.25)",
@@ -133,6 +136,33 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           title="User input"
         >
           Ui
+        </div>
+      )}
+
+      {data.groupId && data.onRemoveFromGroup && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowTooltip(false);
+            data.onRemoveFromGroup?.();
+          }}
+          style={{
+            position: "absolute",
+            bottom: "-6px",
+            right: "-6px",
+            background: "#7c3aed",
+            color: "#fff",
+            padding: "2px 5px",
+            borderRadius: "8px",
+            fontSize: "8px",
+            fontWeight: 700,
+            border: "2px solid #1a1a1a",
+            cursor: "pointer",
+            userSelect: "none"
+          }}
+          title="Click to remove from group"
+        >
+          ✕
         </div>
       )}
       

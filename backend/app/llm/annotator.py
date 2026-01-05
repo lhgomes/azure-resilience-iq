@@ -17,7 +17,7 @@ LOGGER = logging.getLogger(__name__)
 # Prompt for the production LLM call.
 # Sections:
 # - Role & safety rails: senior Azure architect, respect existing topology, advisory only.
-# - Task asks: display names, layers (L0-L2 mapped to ints), priority, hide flag, optional edge proposals.
+# - Task asks: display names, layers (L1-L3 mapped to ints), priority, hide flag, optional edge proposals.
 # - Output contract: JSON only, deterministic friendly for low-temperature usage.
 ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         """
@@ -40,11 +40,11 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 
         LAYERING GUIDANCE (apply consistently)
         --------------------------------------
-        - L0 (0): User-facing or core workload components whose failure directly impacts
+        - L1 (1): User-facing or core workload components whose failure directly impacts
         customers or primary business functionality (e.g., AKS, App Service, primary databases).
-        - L1 (1): Network and platform boundaries enabling or isolating workloads
+        - L2 (2): Network and platform boundaries enabling or isolating workloads
         (e.g., VNets, subnets, private endpoints, load balancers).
-        - L2 (2): Implementation details or per-instance artifacts that add noise at
+        - L3 (3): Implementation details or per-instance artifacts that add noise at
         architecture level (e.g., NICs, IP configurations, VM extensions).
 
         PRIORITY ↔ CRITICALITY SCORE MAPPING (MUST MATCH)
@@ -97,6 +97,18 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
                 - Some edges may have source_kind "manual" (user-created) and/or status "accepted";
                     treat these as authoritative user intent when considering dependency/blast radius
                     for criticality. Do NOT propose removing or contradicting them.
+                
+                MULTI-SOURCE SIGNAL CONFIDENCE
+                ------------------------------
+                - Edges may include multi_source_signals with aggregated_confidence scores (0–1).
+                - Higher aggregated_confidence (≥0.9) indicates the relationship was detected by
+                  multiple independent methods (ARM topology, DNS records, Flow Logs, App Insights, etc.).
+                - Use this signal confidence as supporting evidence for relationship criticality:
+                  + High confidence (≥0.9) → relationship is highly reliable; elevate criticality
+                  + Medium confidence (0.7–0.89) → relationship is well-supported; use as-is
+                  + Lower confidence (<0.7) → relationship may be incidental; apply caution
+                - Never contradict user-created edges, but confidence levels may inform whether
+                  critical-path edges are truly business-critical vs. infrastructure artifacts.
 
         - hide_by_default:
             true ONLY if the resource is low-signal or noisy at architecture level.

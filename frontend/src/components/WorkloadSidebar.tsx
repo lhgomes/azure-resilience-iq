@@ -65,9 +65,9 @@ const WorkloadSidebar: React.FC<Props> = props => {
             borderRadius: 4,
           }}
         >
-          <option value="overview">Overview (L0)</option>
-          <option value="network">Network (L1)</option>
-          <option value="full">Full (L2)</option>
+          <option value="overview">Overview (L1)</option>
+          <option value="network">Network (L2)</option>
+          <option value="full">Full (L3)</option>
         </select>
       </div>
 

@@ -16,10 +16,14 @@ from app.storage.node_overrides_store import (
     load_node_overrides,
     delete_node_override,
 )
-from app.storage.overrides_store import load_overrides, save_override
-from app.storage.criticality_overrides_store import (
-    save_criticality_override,
-    delete_criticality_override,
+from app.storage.edge_overrides_store import load_overrides, save_override
+from app.storage.groups_store import (
+    load_groups,
+    save_group,
+    delete_group,
+    add_node_to_group,
+    remove_node_from_group,
+    NodeGroup,
 )
 from app.relationships.utils import norm_id
 
@@ -52,12 +56,26 @@ class UpdateNodeRequest(BaseModel):
     layer: int | None = None
     color: str | None = None
     icon: str | None = None
-    group_id: str | None = None
-    group_label: str | None = None
+    criticality_score: int | None = None
 
 
 class UpdateCriticalityRequest(BaseModel):
     score: int
+
+
+class CreateGroupRequest(BaseModel):
+    id: str
+    name: str
+    nodes: list[str]
+
+
+class UpdateGroupRequest(BaseModel):
+    name: str | None = None
+    nodes: list[str] | None = None
+
+
+class AddNodeToGroupRequest(BaseModel):
+    node_id: str
 
 
 @app.get("/health")
@@ -76,13 +94,21 @@ def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCrit
             detail="criticality_score must be an integer between 1 and 10"
         )
 
-    saved = save_criticality_override(workload_id, node_id_norm, score)
-    if not saved:
-        raise HTTPException(
-            status_code=400,
-            detail="Failed to save criticality score"
-        )
+    existing = load_node_overrides(workload_id).get(node_id_norm)
+    
+    override = NodeOverride(
+        node_id=node_id_norm,
+        name=existing.name if existing else None,
+        layer=existing.layer if existing else None,
+        color=existing.color if existing else None,
+        icon=existing.icon if existing else None,
+        group_id=existing.group_id if existing else None,
+        group_label=existing.group_label if existing else None,
+        criticality_score=score,
+    )
 
+    save_node_override(workload_id, override)
+    
     return {
         "status": "updated",
         "node_id": node_id_norm,
@@ -93,13 +119,31 @@ def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCrit
 def reset_criticality_score(workload_id: str, node_id: str):
     """Reset criticality score override for a node (reverts to LLM suggestion)."""
     node_id_norm = norm_id(node_id)
-    deleted = delete_criticality_override(workload_id, node_id_norm)
-
-    if not deleted:
+    existing = load_node_overrides(workload_id).get(node_id_norm)
+    
+    if not existing or existing.criticality_score is None:
         raise HTTPException(
             status_code=404,
             detail="Criticality override not found"
         )
+    
+    # Clear just the criticality score, keep other overrides
+    override = NodeOverride(
+        node_id=node_id_norm,
+        name=existing.name,
+        layer=existing.layer,
+        color=existing.color,
+        icon=existing.icon,
+        group_id=existing.group_id,
+        group_label=existing.group_label,
+        criticality_score=None,
+    )
+    
+    # If all fields are None, delete the entire override
+    if all(v is None for k, v in override.model_dump().items() if k != 'node_id' and k != 'created_by'):
+        delete_node_override(workload_id, node_id_norm)
+    else:
+        save_node_override(workload_id, override)
 
     return {
         "status": "deleted",
@@ -139,6 +183,19 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
     if icon == "":
         icon = None
 
+    # Handle criticality_score
+    criticality_score = None
+    if "criticality_score" in payload.model_fields_set:
+        criticality_score = payload.criticality_score
+        # Validate if provided
+        if criticality_score is not None and (not isinstance(criticality_score, int) or criticality_score < 1 or criticality_score > 10):
+            raise HTTPException(
+                status_code=400,
+                detail="criticality_score must be an integer between 1 and 10"
+            )
+    else:
+        criticality_score = existing.criticality_score if existing else None
+
     override = NodeOverride(
         node_id=node_id_norm,
         name=name,
@@ -147,6 +204,7 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         icon=icon,
         group_id=group_id,
         group_label=group_label,
+        criticality_score=criticality_score,
     )
 
     if (
@@ -156,6 +214,7 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         and override.icon is None
         and override.group_id is None
         and override.group_label is None
+        and override.criticality_score is None
     ):
         # Nothing left to override; remove record if it exists.
         deleted = delete_node_override(workload_id, node_id_norm)
@@ -255,6 +314,62 @@ def remove_manual_edge(workload_id: str, edge_id: str):
         )
 
     return {"status": "deleted", "edge_id": edge_id}
+
+
+# Group endpoints
+@app.get("/api/workloads/{workload_id}/groups")
+def get_groups(workload_id: str):
+    groups = load_groups(workload_id)
+    return [g.model_dump() for g in groups]
+
+
+@app.post("/api/workloads/{workload_id}/groups")
+def create_group(workload_id: str, payload: CreateGroupRequest):
+    group = NodeGroup(id=payload.id, name=payload.name, nodes=payload.nodes)
+    save_group(workload_id, group)
+    return group.model_dump()
+
+
+@app.patch("/api/workloads/{workload_id}/groups/{group_id}")
+def update_group(workload_id: str, group_id: str, payload: UpdateGroupRequest):
+    from app.storage.groups_store import get_group
+    
+    group = get_group(workload_id, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if payload.name is not None:
+        group.name = payload.name
+    if payload.nodes is not None:
+        group.nodes = payload.nodes
+    
+    save_group(workload_id, group)
+    return group.model_dump()
+
+
+@app.delete("/api/workloads/{workload_id}/groups/{group_id}")
+def delete_group_endpoint(workload_id: str, group_id: str):
+    deleted = delete_group(workload_id, group_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "deleted", "group_id": group_id}
+
+
+@app.post("/api/workloads/{workload_id}/groups/{group_id}/nodes")
+def add_node_endpoint(workload_id: str, group_id: str, payload: AddNodeToGroupRequest):
+    success = add_node_to_group(workload_id, group_id, payload.node_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "added", "group_id": group_id, "node_id": payload.node_id}
+
+
+@app.delete("/api/workloads/{workload_id}/groups/{group_id}/nodes/{node_id:path}")
+def remove_node_endpoint(workload_id: str, group_id: str, node_id: str):
+    success = remove_node_from_group(workload_id, group_id, node_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "removed", "group_id": group_id, "node_id": node_id}
+
 
 @app.get("/api/workloads/{workload_id}/graph")
 def get_graph(workload_id: str, include_llm: bool = False):

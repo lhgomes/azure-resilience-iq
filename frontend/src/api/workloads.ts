@@ -50,6 +50,12 @@ export interface LlmEdgeSuggestion {
   source?: string;
 }
 
+export interface NodeGroup {
+  id: string;
+  name: string;
+  nodes: string[];
+}
+
 export interface RawGraphSnapshot {
   nodes: RawGraphNode[];
   edges: RawGraphEdge[];
@@ -57,6 +63,9 @@ export interface RawGraphSnapshot {
     nodes?: LlmNodeAnnotation[];
     edges?: LlmEdgeSuggestion[];
   };
+  node_overrides?: Record<string, Record<string, unknown>>;
+  edge_overrides?: Record<string, Record<string, unknown>>;
+  groups?: NodeGroup[];
 }
 
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -92,9 +101,8 @@ export function workloadPath(workloadId: WorkloadId, suffix: string): string {
   return `/api/workloads/${encodeURIComponent(workloadId)}${suffix}`;
 }
 
-export async function fetchWorkloadGraph(workloadId: WorkloadId, includeLlm: boolean): Promise<RawGraphSnapshot> {
-  const qs = includeLlm ? "?include_llm=true" : "";
-  return await apiJson<RawGraphSnapshot>(workloadPath(workloadId, `/graph${qs}`));
+export async function fetchWorkloadGraph(workloadId: WorkloadId): Promise<RawGraphSnapshot> {
+  return await apiJson<RawGraphSnapshot>(workloadPath(workloadId, `/graph`));
 }
 
 export async function acceptEdge(workloadId: WorkloadId, edgeId: string): Promise<void> {
@@ -128,11 +136,11 @@ export async function patchNode(
     layer?: number | null;
     color?: string | null;
     icon?: string | null;
-    group_id?: string | null;
-    group_label?: string | null;
+    criticality_score?: number | null;
   }
 ): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/nodes/${encodeURIComponent(nodeId)}`), {
+  // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
+  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/nodes/${encodeURIComponent(nodeId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -140,21 +148,59 @@ export async function patchNode(
 }
 
 export async function resetNode(workloadId: WorkloadId, nodeId: string): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/nodes/${encodeURIComponent(nodeId)}`), { method: "DELETE" });
+  // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
+  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
 }
 
-export async function patchNodeCriticality(
+// Group API functions
+export async function createGroup(
   workloadId: WorkloadId,
-  nodeId: string,
-  score: number
-): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/nodes/${encodeURIComponent(nodeId)}/criticality`), {
-    method: "PATCH",
+  payload: { id: string; name: string; nodes: string[] }
+): Promise<NodeGroup> {
+  return await apiJson(`/api/workloads/${encodeURIComponent(workloadId)}/groups`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ score }),
+    body: JSON.stringify(payload),
   });
 }
 
-export async function resetNodeCriticality(workloadId: WorkloadId, nodeId: string): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/nodes/${encodeURIComponent(nodeId)}/criticality`), { method: "DELETE" });
+export async function updateGroup(
+  workloadId: WorkloadId,
+  groupId: string,
+  payload: { name?: string; nodes?: string[] }
+): Promise<NodeGroup> {
+  return await apiJson(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteGroup(workloadId: WorkloadId, groupId: string): Promise<void> {
+  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function addNodeToGroup(
+  workloadId: WorkloadId,
+  groupId: string,
+  nodeId: string
+): Promise<void> {
+  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}/nodes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ node_id: nodeId }),
+  });
+}
+
+export async function removeNodeFromGroup(
+  workloadId: WorkloadId,
+  groupId: string,
+  nodeId: string
+): Promise<void> {
+  await apiNoBody(
+    `/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}/nodes/${encodeURIComponent(nodeId)}`,
+    { method: "DELETE" }
+  );
 }

@@ -118,7 +118,7 @@ python -m app.llm.run --workload-id demo
 
 This analyzes the collected resources and generates:
 - Display name suggestions
-- Layer classifications (L0: core workload, L1: network/platform, L2: implementation details)
+- Layer classifications (L1: core workload, L2: network/platform, L3: implementation details)
 - Criticality scores (1-10)
 - Architecture improvement suggestions
 
@@ -162,16 +162,24 @@ azure-workload-graph/
 │   │   ├── graph/            # Graph building and modeling
 │   │   ├── llm/              # LLM annotation engine
 │   │   ├── relationships/    # Resource relationship extraction
-│   │   ├── storage/          # Data persistence layer
+│   │   ├── storage/          # Data persistence layer (nodes, edges, groups, criticality)
 │   │   ├── intent/           # User overrides and manual edges
 │   │   └── main.py           # FastAPI application
-│   ├── data/                 # Collected data and user overrides
+│   ├── data/
+│   │   ├── collector/        # Collected Azure resources
+│   │   ├── llm_annotations/  # LLM-generated annotations
+│   │   ├── node_overrides/   # User node customizations
+│   │   ├── criticality_overrides/  # User criticality scores
+│   │   ├── manual_edges/     # User-created edges
+│   │   └── groups/           # Node groupings
 │   ├── pyproject.toml        # Python dependencies
 │   └── .env                  # Environment configuration
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # React components
+│   │   ├── components/       # React components (nodes, edges, graph canvas)
 │   │   ├── pages/            # Page components
+│   │   ├── domain/           # Business logic (graph view builder)
+│   │   ├── api/              # API client functions
 │   │   └── utils/            # Utilities and icon resolver
 │   ├── public/               # Static assets (Azure icons)
 │   ├── package.json          # npm dependencies
@@ -179,19 +187,79 @@ azure-workload-graph/
 └── README.md
 ```
 
+## Multi-Source Dependency Detection
+
+The application uses a **multi-signal approach** to discover Azure resource dependencies with high confidence:
+
+### Detection Methods (12 Signal Types)
+
+The system detects dependencies through multiple independent methods:
+
+| Confidence | Signal Type | Source |
+|---|---|---|
+| 0.98 | ARM_Declared | Azure Resource Manager properties |
+| 0.96 | PrivateEndpoint | Private Endpoint configurations |
+| 0.92 | FlowLogObserved | NSG Flow Log analysis |
+| 0.90 | ApplicationInsights | App Insights dependency tracking |
+| 0.90 | ConnectionString | Config/connection string patterns |
+| 0.88 | AppConfig | Key Vault and App Config |
+| 0.85 | PrivateDNS | Private DNS zones and records |
+| 0.85 | SubnetRouting | AKS subnet routing |
+| 0.82 | DNSZoneLink | Azure DNS zone mappings |
+| 0.72 | RouteTable | Route table associations |
+| 0.70 | VNetCoupling | VNet topology analysis |
+| 0.68 | NSGRule | Network Security Group rules |
+
+### Confidence Aggregation
+
+When multiple signals detect the same dependency, confidence scores are combined using Bayesian aggregation:
+- Single signal: Base confidence (0.68-0.98)
+- Each additional signal: +2% boost
+- Multiple signals (3+): Approaches 100% confidence
+
+### User Experience
+
+When viewing a dependency in the UI:
+- **Signal Details Panel** shows all detected signals with individual confidence scores
+- **Color-coded confidence**: 🟢 Green (≥90%), 🟡 Yellow (70-89%), 🔴 Red (<70%)
+- **Aggregated Confidence** combines all signals into a unified score
+- **Evidence preservation** maintains full audit trail of detection methods
+
+### LLM Integration
+
+The LLM annotator uses signal confidence to:
+- Elevate criticality for high-confidence edges (≥0.9)
+- Apply caution for lower-confidence edges (<0.7)
+- Justify dependency assessments based on signal evidence
+
 ## API Endpoints
 
 The backend provides the following main endpoints:
 
+### Core Endpoints
 - `GET /health` - Health check
-- `GET /api/workloads/{workload_id}` - Get workload graph
-- `PATCH /api/workloads/{workload_id}/nodes/{node_id}` - Update node properties
+- `GET /api/workloads/{workload_id}/graph` - Get workload graph (supports `?include_llm=true` for LLM annotations)
+- `GET /api/workloads/{workload_id}/reviews` - Get edge review inbox
+
+### Node Management
+- `PATCH /api/workloads/{workload_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer)
 - `DELETE /api/workloads/{workload_id}/nodes/{node_id}` - Remove node override
 - `PATCH /api/workloads/{workload_id}/nodes/{node_id}/criticality` - Update criticality score
 - `DELETE /api/workloads/{workload_id}/nodes/{node_id}/criticality` - Reset criticality score
+
+### Edge Management
 - `POST /api/workloads/{workload_id}/edges` - Create manual edge
-- `POST /api/workloads/{workload_id}/edges/{edge_id}/accept` - Accept LLM-suggested edge
-- `POST /api/workloads/{workload_id}/edges/{edge_id}/reject` - Reject LLM-suggested edge
+- `POST /api/workloads/{workload_id}/edges/{edge_id}/accept` - Accept edge
+- `POST /api/workloads/{workload_id}/edges/{edge_id}/reject` - Reject edge
+- `DELETE /api/workloads/{workload_id}/edges/{edge_id}` - Delete edge
+
+### Group Management
+- `GET /api/workloads/{workload_id}/groups` - Get all groups
+- `POST /api/workloads/{workload_id}/groups` - Create a new group
+- `PATCH /api/workloads/{workload_id}/groups/{group_id}` - Update group name
+- `DELETE /api/workloads/{workload_id}/groups/{group_id}` - Delete a group
+- `POST /api/workloads/{workload_id}/groups/{group_id}/nodes` - Add node to group
+- `DELETE /api/workloads/{workload_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
 
 ## Development Workflow
 

@@ -11,8 +11,19 @@ from app.relationships.extract_aks import extract_aks_relationships
 from app.relationships.extract_networking import extract_networking_relationships
 from app.relationships.extract_private_endpoints import extract_private_endpoint_relationships
 from app.storage.manual_edges_store import load_manual_edges
-from app.storage.node_overrides_store import load_node_overrides
-from app.storage.criticality_overrides_store import load_criticality_overrides
+from app.config import COLLECTOR_UNIFIED_EDGES_PATH
+
+
+def load_unified_edges() -> List[Dict[str, Any]]:
+    """Load multi-source unified edges from collector output if available."""
+    if not COLLECTOR_UNIFIED_EDGES_PATH.exists():
+        return []
+    
+    try:
+        raw = json.loads(COLLECTOR_UNIFIED_EDGES_PATH.read_text())
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
 
 def node_importance(azure_type: str) -> int:
     t = (azure_type or "").lower()
@@ -79,8 +90,6 @@ def map_node_type(azure_type: str) -> str:
 
 def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str) -> dict:
     gb = GraphBuilder()
-    node_overrides = load_node_overrides(workload_id)
-    criticality_overrides = load_criticality_overrides(workload_id)
 
     # index resources by id
     by_id: Dict[str, Dict[str, Any]] = {}
@@ -91,17 +100,13 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
 
     # add nodes from resources
     for rid, r in by_id.items():
-        override = node_overrides.get(rid)
-        original_name = r.get("name") or rid.split("/")[-1]
-        original_importance = node_importance(r.get("type"))
-
-        display_name = (override.name if override and override.name else None) or original_name
-        importance_value = override.layer if override and override.layer is not None else original_importance
+        base_name = r.get("name") or rid.split("/")[-1]
+        importance = node_importance(r.get("type"))
 
         gb.add_node(Node(
             id=rid,
             type=map_node_type(r.get("type")),
-            name=display_name,
+            name=base_name,
             source="arg",
             metadata={
                 "azure_type": r.get("type"),
@@ -109,20 +114,8 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "resource_group": r.get("resource_group") or r.get("resourceGroup"),
                 "subscription_id": r.get("subscription_id") or r.get("subscriptionId"),
                 "tags": r.get("tags") or {},
-                "importance": importance_value,
-                "display_name": display_name,
-                "original_name": original_name,
-                "original_importance": original_importance,
-                "override": bool(override),
-                "name_override": override.name if override and override.name else None,
-                "color_override": override.color if override and override.color else None,
-                "layer_override": override.layer if override and override.layer is not None else None,
-                "icon_override": override.icon if override and override.icon else None,
-                "icon": override.icon if override and override.icon else None,
-                "group_id": override.group_id if override and override.group_id else None,
-                "group_label": override.group_label if override and override.group_label else None,
-                # User-authored criticality overrides feed the LLM; keep raw value for summarizer
-                "criticality_override": criticality_overrides.get(rid),
+                "importance": importance,
+                "display_name": base_name,
             }
         ))
 
@@ -172,11 +165,63 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
 
     snapshot = gb.build(workload_id)
 
+    # Load and merge multi-source unified edges (with signal details)
+    unified_edges = load_unified_edges()
+    unified_edges_by_key = {}
+    
+    for ue in unified_edges:
+        from_id = norm_id(ue.get('from'))
+        to_id = norm_id(ue.get('to'))
+        
+        if not from_id or not to_id:
+            continue
+        
+        # Skip if nodes don't exist
+        if from_id not in gb.nodes or to_id not in gb.nodes:
+            continue
+        
+        key = f"{from_id}|{to_id}"
+        unified_edges_by_key[key] = ue
+    
+    # Enrich existing edges with multi-source signal data
+    enriched_edges = []
+    for edge in snapshot["edges"]:
+        key = f"{edge.from_id}|{edge.to_id}"
+        
+        if key in unified_edges_by_key:
+            ue = unified_edges_by_key[key]
+            # Merge signal information into evidence
+            combined_evidence = list(edge.evidence) if edge.evidence else []
+            
+            # Add signal details as enrichment
+            signal_enrichment = {
+                "type": "multi_source_signals",
+                "signals": ue.get('signal_details', []),
+                "aggregated_confidence": ue.get('confidence'),
+                "signal_types": ue.get('signals', [])
+            }
+            combined_evidence.append(signal_enrichment)
+            
+            # Update edge confidence to use aggregated confidence from multi-source
+            enriched_edge = Edge(
+                id=edge.id,
+                from_id=edge.from_id,
+                to_id=edge.to_id,
+                relationship=edge.relationship,
+                confidence=max(edge.confidence, ue.get('confidence', edge.confidence)),
+                source=edge.source,
+                evidence=combined_evidence,
+                status=edge.status
+            )
+            enriched_edges.append(enriched_edge)
+        else:
+            enriched_edges.append(edge)
+
     # merge user-created (manual) edges, mark as accepted and keep deduped
     manual_edges = load_manual_edges(workload_id)
-    existing_ids = {edge.id for edge in snapshot["edges"]}
+    existing_ids = {edge.id for edge in enriched_edges}
 
-    merged_edges = list(snapshot["edges"])
+    merged_edges = list(enriched_edges)
     for me in manual_edges:
         if me.id in existing_ids:
             continue
