@@ -52,6 +52,8 @@ class UpdateNodeRequest(BaseModel):
     layer: int | None = None
     color: str | None = None
     icon: str | None = None
+    group_id: str | None = None
+    group_label: str | None = None
 
 
 class UpdateCriticalityRequest(BaseModel):
@@ -124,6 +126,16 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
     color = payload.color if "color" in payload.model_fields_set else (existing.color if existing else None)
     icon = payload.icon if "icon" in payload.model_fields_set else (existing.icon if existing else None)
 
+    group_id = payload.group_id if "group_id" in payload.model_fields_set else (existing.group_id if existing else None)
+    if group_id is not None and group_id.strip() == "":
+        group_id = None
+
+    group_label = payload.group_label if "group_label" in payload.model_fields_set else (existing.group_label if existing else None)
+    if group_label is not None:
+        group_label = group_label.strip()
+        if group_label == "":
+            group_label = None
+
     if icon == "":
         icon = None
 
@@ -133,7 +145,25 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         layer=layer,
         color=color,
         icon=icon,
+        group_id=group_id,
+        group_label=group_label,
     )
+
+    if (
+        override.name is None
+        and override.layer is None
+        and override.color is None
+        and override.icon is None
+        and override.group_id is None
+        and override.group_label is None
+    ):
+        # Nothing left to override; remove record if it exists.
+        deleted = delete_node_override(workload_id, node_id_norm)
+        return {
+            "status": "deleted" if deleted else "noop",
+            "node_id": node_id_norm,
+        }
+
     save_node_override(workload_id, override)
     return {
         "status": "updated",
@@ -142,6 +172,8 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         "layer": layer,
         "color": color,
         "icon": icon,
+        "group_id": group_id,
+        "group_label": group_label,
     }
 
 

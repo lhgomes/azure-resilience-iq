@@ -45,7 +45,6 @@ const WorkloadSidebar: React.FC<Props> = props => {
         padding: 16,
         overflowY: "auto",
         overflowX: "hidden",
-        flex: 1,
       }}
     >
       <h3 style={{ margin: "0 0 20px 0", color: "#eee", fontSize: 16 }}>Controls</h3>
