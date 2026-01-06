@@ -224,6 +224,7 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
     """
     Enforce contract on LLM response: validate priority and layer values.
     Drop invalid items with WARN logs instead of failing the whole batch.
+    Auto-correct layer values to valid range (0-2).
     """
     allowed_priorities = {"critical", "important", "supporting"}
     allowed_layers = {0, 1, 2}
@@ -244,13 +245,22 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
                 )
                 continue
 
-            # Validate layer
+            # Auto-correct layer: clamp to valid range
             if layer is not None and layer not in allowed_layers:
-                LOGGER.warning(
-                    "Dropping node annotation for %s: invalid layer %s (allowed: %s)",
-                    node_id, layer, allowed_layers
-                )
-                continue
+                if isinstance(layer, (int, float)):
+                    # Clamp to valid range
+                    corrected_layer = max(0, min(2, int(layer)))
+                    LOGGER.warning(
+                        "Auto-correcting layer for %s: %s → %s",
+                        node_id, layer, corrected_layer
+                    )
+                    ann["layer"] = corrected_layer
+                else:
+                    LOGGER.warning(
+                        "Dropping node annotation for %s: invalid layer %s (allowed: %s)",
+                        node_id, layer, allowed_layers
+                    )
+                    continue
 
             valid_nodes.append(item)
         except Exception:
