@@ -14,6 +14,7 @@ from .extract_private_endpoints import extract_private_endpoint_relationships
 from .extract_appinsights import extract_appinsights_signals
 from .extract_connections import extract_connection_string_signals
 from .extract_dns import extract_dns_signals
+from .extract_compute import extract_compute_relationships
 from .utils import norm_id
 
 
@@ -59,6 +60,7 @@ class MultiSourceAggregator:
         
         # Extract from static/declarative sources
         self._extract_arm_signals()
+        self._extract_compute_signals()
         self._extract_networking_signals()
         self._extract_private_endpoint_signals()
         self._extract_aks_signals()
@@ -77,17 +79,20 @@ class MultiSourceAggregator:
         if flow_logs_data:
             self._extract_flow_logs_signals(flow_logs_data)
         
+        # Deduplicate reverse edges
+        self._deduplicate_reverse_edges()
+        
         # Return aggregated edges
         return list(self.edges_by_key.values())
     
     def _extract_arm_signals(self):
         """Extract signals from ARM-declared relationships"""
-        # This includes explicit references in properties
+        # This includes explicit references in properties (both dict-based and string-based)
         for rid, resource in self.resources_by_id.items():
             props = resource.get('properties') or {}
             
-            # e.g., reference to another resource in properties
             for prop_key, prop_value in props.items():
+                # 1. Dictionary-based references: {id: "..."}
                 if isinstance(prop_value, dict) and 'id' in prop_value:
                     target_id = norm_id(prop_value['id'])
                     if target_id in self.resources_by_id:
@@ -98,11 +103,82 @@ class MultiSourceAggregator:
                             signal=SignalSource(
                                 type=SignalType.ARM_DECLARED,
                                 confidence=0.98,
-                                evidence={'property': prop_key},
+                                evidence={'property': prop_key, 'type': 'dict_reference'},
                                 timestamp=datetime.utcnow().isoformat() + 'Z',
                                 source_resource='ARM'
                             )
                         )
+                
+                # 2. String-based resource ID references: "Id" or "ResourceId" properties
+                # These contain full resource paths like "/subscriptions/.../providers/..."
+                elif isinstance(prop_value, str) and prop_key.endswith(('Id', 'ResourceId', 'resourceId')):
+                    if prop_value.startswith('/subscriptions/'):
+                        target_id = norm_id(prop_value)
+                        if target_id in self.resources_by_id:
+                            # Use semantic relationship names based on property and target type
+                            target_resource = self.resources_by_id.get(target_id, {})
+                            target_type = (target_resource.get('type') or '').lower()
+                            relationship = self._semantic_relationship_name(prop_key, target_type)
+                            
+                            self._add_signal(
+                                from_id=rid,
+                                to_id=target_id,
+                                relationship=relationship,
+                                signal=SignalSource(
+                                    type=SignalType.ARM_DECLARED,
+                                    confidence=0.98,
+                                    evidence={'property': prop_key, 'type': 'string_reference'},
+                                    timestamp=datetime.utcnow().isoformat() + 'Z',
+                                    source_resource='ARM'
+                                )
+                            )
+    
+    def _semantic_relationship_name(self, prop_key: str, target_type: str) -> str:
+        """
+        Convert property names to semantic relationship names.
+        
+        Examples:
+        - targetResourceId + vm -> manages_vm
+        - targetResourceId + schedule -> schedules
+        """
+        # Map property names to semantic relationships
+        semantic_map = {
+            'targetresourceid': {
+                'microsoft.compute/virtualmachines': 'manages_vm',
+                'microsoft.compute/virtualmachinescalesets': 'manages_vmss',
+                'microsoft.network/networkinterfaces': 'manages_nic',
+            },
+            'storageuri': {
+                'microsoft.storage/storageaccounts': 'uses_storage_account',
+            }
+        }
+        
+        prop_key_lower = prop_key.lower()
+        
+        # Check if we have a semantic mapping for this property
+        if prop_key_lower in semantic_map:
+            return semantic_map[prop_key_lower].get(target_type, prop_key)
+        
+        # Default: return the original property name
+        return prop_key
+    
+    def _extract_compute_signals(self):
+        """Extract signals from compute resources (VMs, VMScaleSets)"""
+        edges = extract_compute_relationships(self.resources_by_id)
+        
+        for from_id, to_id, relationship, signal_type, confidence, evidence_list in edges:
+            self._add_signal(
+                from_id=from_id,
+                to_id=to_id,
+                relationship=relationship,
+                signal=SignalSource(
+                    type=SignalType.ARM_DECLARED,
+                    confidence=confidence,
+                    evidence={'compute_resource': relationship, 'evidence': evidence_list},
+                    timestamp=datetime.utcnow().isoformat() + 'Z',
+                    source_resource='ComputeResource'
+                )
+            )
     
     def _extract_networking_signals(self):
         """Extract signals from networking topology"""
@@ -306,4 +382,72 @@ class MultiSourceAggregator:
                         # Return the parent (VM, App Service, etc.)
                         return ipcfg.get('properties', {}).get('primary', rid)
         
-        return None
+        return None    
+    def _deduplicate_reverse_edges(self):
+        """
+        Remove bidirectional edges, keeping only the one with higher priority.
+        
+        Priority system (higher number = keep this direction):
+        - Direct parent-child relationships (e.g., VM → NIC) take precedence over reverse references
+        - Relationship type priority determines which direction to keep
+        """
+        # Define relationship type priorities (higher = preferred direction)
+        # Format: (from_resource_type, to_resource_type, relationship) -> priority
+        RELATIONSHIP_PRIORITIES = {
+            # Compute resources
+            ('microsoft.compute/virtualmachines', 'microsoft.network/networkinterfaces', 'uses_nic'): 100,
+            ('microsoft.network/networkinterfaces', 'microsoft.compute/virtualmachines', 'virtualmachine'): 50,
+            
+            ('microsoft.compute/virtualmachines', 'microsoft.compute/disks', 'uses_os_disk'): 100,
+            ('microsoft.compute/disks', 'microsoft.compute/virtualmachines', 'vm'): 50,
+            
+            ('microsoft.compute/virtualmachines', 'microsoft.compute/sshpublickeys', 'uses_ssh_key'): 100,
+            ('microsoft.compute/sshpublickeys', 'microsoft.compute/virtualmachines', 'vm'): 50,
+            
+            # VNet relationships
+            ('microsoft.network/virtualnetworks', 'microsoft.network/virtualnetworks/subnets', 'contains_subnet'): 100,
+            ('microsoft.network/virtualnetworks/subnets', 'microsoft.network/virtualnetworks', 'belongs_to_vnet'): 50,
+        }
+        
+        # Find reverse edge pairs
+        edges_to_remove = set()
+        
+        for key1, edge1 in list(self.edges_by_key.items()):
+            if key1 in edges_to_remove:
+                continue
+            
+            # Look for reverse edge (B → A when we have A → B)
+            reverse_key = f"{edge1.to_id}|{edge1.from_id}"
+            if reverse_key not in self.edges_by_key:
+                continue
+            
+            edge2 = self.edges_by_key[reverse_key]
+            
+            # Get resource types
+            res1 = self.resources_by_id.get(edge1.from_id, {})
+            res2 = self.resources_by_id.get(edge1.to_id, {})
+            type1 = (res1.get('type') or '').lower()
+            type2 = (res2.get('type') or '').lower()
+            
+            # Lookup priorities
+            priority1 = RELATIONSHIP_PRIORITIES.get(
+                (type1, type2, edge1.relationship), 0
+            )
+            priority2 = RELATIONSHIP_PRIORITIES.get(
+                (type2, type1, edge2.relationship), 0
+            )
+            
+            # If priorities are equal, use confidence as tiebreaker
+            if priority1 == priority2:
+                priority1 = edge1.confidence
+                priority2 = edge2.confidence
+            
+            # Remove the lower priority edge
+            if priority1 > priority2:
+                edges_to_remove.add(reverse_key)
+            elif priority2 > priority1:
+                edges_to_remove.add(key1)
+        
+        # Remove marked edges
+        for key in edges_to_remove:
+            del self.edges_by_key[key]

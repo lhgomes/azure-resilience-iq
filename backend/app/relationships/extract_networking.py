@@ -75,7 +75,7 @@ def extract_networking_relationships(resources_by_id: Dict[str, Dict[str, Any]])
                     [{"rule": "parent_id(subnet, /subnets/)"}],
                 ))
 
-    # NIC -> Subnet / NSG
+    # NIC -> Subnet / NSG / Public IP
     for rid, r in resources_by_id.items():
         rtype = (r.get("type") or "").lower()
         if rtype != "microsoft.network/networkinterfaces":
@@ -97,6 +97,20 @@ def extract_networking_relationships(resources_by_id: Dict[str, Dict[str, Any]])
                     0.9,
                     [{"field": "nic.ipConfigurations[].properties.subnet.id", "value": subnet_id}],
                 ))
+
+            # NIC -> Public IP
+            pubip_id = safe_get(ipcfg or {}, "properties.publicIPAddress.id")
+            if isinstance(pubip_id, str) and pubip_id.strip():
+                pubip_id_n = norm_id(pubip_id)
+                if pubip_id_n in resources_by_id:
+                    edges.append((
+                        rid,
+                        pubip_id_n,
+                        "uses_public_ip",
+                        "arg",
+                        0.95,
+                        [{"field": "nic.ipConfigurations[].properties.publicIPAddress.id", "value": pubip_id}],
+                    ))
 
         nsg_id = safe_get(props, "networkSecurityGroup.id")
         if isinstance(nsg_id, str) and nsg_id.strip():

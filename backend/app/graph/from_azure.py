@@ -91,12 +91,8 @@ def map_node_type(azure_type: str) -> str:
 def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str) -> dict:
     gb = GraphBuilder()
 
-    # index resources by id
-    by_id: Dict[str, Dict[str, Any]] = {}
-    for r in resources:
-        rid = norm_id(r.get("id"))
-        if rid:
-            by_id[rid] = r
+    # index resources by id (IDs are already normalized from collector)
+    by_id: Dict[str, Dict[str, Any]] = {r.get("id"): r for r in resources if r.get("id")}
 
     # add nodes from resources
     for rid, r in by_id.items():
@@ -170,8 +166,9 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     unified_edges_by_key = {}
     
     for ue in unified_edges:
-        from_id = norm_id(ue.get('from'))
-        to_id = norm_id(ue.get('to'))
+        # IDs are already normalized from collector
+        from_id = ue.get('from')
+        to_id = ue.get('to')
         
         if not from_id or not to_id:
             continue
@@ -185,8 +182,11 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     
     # Enrich existing edges with multi-source signal data
     enriched_edges = []
+    processed_keys = set()
+    
     for edge in snapshot["edges"]:
         key = f"{edge.from_id}|{edge.to_id}"
+        processed_keys.add(key)
         
         if key in unified_edges_by_key:
             ue = unified_edges_by_key[key]
@@ -216,6 +216,34 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             enriched_edges.append(enriched_edge)
         else:
             enriched_edges.append(edge)
+    
+    # Add unified edges that weren't already extracted by other methods
+    for key, ue in unified_edges_by_key.items():
+        if key in processed_keys:
+            continue
+        
+        # IDs are already normalized from collector
+        from_id = ue.get('from')
+        to_id = ue.get('to')
+        relationship = ue.get('relationship', 'relates_to')
+        
+        # Create new edge from unified edge
+        edge = Edge(
+            id=f"{from_id}|{to_id}",
+            from_id=from_id,
+            to_id=to_id,
+            relationship=relationship,
+            confidence=ue.get('confidence', 0.7),
+            source='multi_source',
+            evidence=[{
+                "type": "multi_source_signals",
+                "signals": ue.get('signal_details', []),
+                "aggregated_confidence": ue.get('confidence'),
+                "signal_types": ue.get('signals', [])
+            }],
+            status=EdgeStatus.proposed
+        )
+        enriched_edges.append(edge)
 
     # merge user-created (manual) edges, mark as accepted and keep deduped
     manual_edges = load_manual_edges(workload_id)
