@@ -17,6 +17,7 @@ interface Props {
   onAccept?: (edgeId: string) => void;
   onReject?: (edgeId: string) => void;
   onDelete?: (edgeId: string) => void;
+  onReverseDirection?: (edgeId: string) => void;
   onClose?: () => void;
 }
 
@@ -25,6 +26,7 @@ const EdgeDrawer: React.FC<Props> = ({
   onAccept,
   onReject,
   onDelete,
+  onReverseDirection,
   onClose
 }) => {
   if (!edge) return null;
@@ -36,6 +38,7 @@ const EdgeDrawer: React.FC<Props> = ({
 
   const aiSuggested = edge.origin === "llm";
   const userCustomized = edge.origin === "manual" || edge.status === "accepted" || edge.status === "rejected";
+  const isManual = edge.origin === "manual";
   const rawJson = edge.raw ? JSON.stringify(edge.raw, null, 2) : null;
 
   return (
@@ -327,58 +330,84 @@ const EdgeDrawer: React.FC<Props> = ({
       <div
         style={{
           display: "flex",
+          flexDirection: "column",
           gap: 12,
           marginTop: "auto"
         }}
       >
-        <button
-          onClick={() => onAccept?.(edge.id)}
-          disabled={edge.status === "accepted" || aiSuggested}
-          style={{
-            flex: 1,
-            padding: "8px 12px",
-            background:
-              edge.status === "accepted" || aiSuggested ? "#1e4620" : "#2ea043",
-            color: "#fff",
-            border: "none",
-            cursor: "pointer",
-            opacity: edge.status === "accepted" || aiSuggested ? 0.6 : 1
-          }}
-        >
-          ✓ Accept
-        </button>
+        {!isManual && (
+          <div style={{ display: "flex", gap: 12 }}>
+            <button
+              onClick={() => onAccept?.(edge.id)}
+              disabled={edge.status === "accepted" || aiSuggested}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background:
+                  edge.status === "accepted" || aiSuggested ? "#1e4620" : "#2ea043",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer",
+                opacity: edge.status === "accepted" || aiSuggested ? 0.6 : 1
+              }}
+            >
+              ✓ Accept
+            </button>
 
-        <button
-          onClick={() => onReject?.(edge.id)}
-          disabled={edge.status === "rejected" || aiSuggested}
-          style={{
-            flex: 1,
-            padding: "8px 12px",
-            background:
-              edge.status === "rejected" || aiSuggested ? "#4c1d1d" : "#d73a49",
-            color: "#fff",
-            border: "none",
-            cursor: "pointer",
-            opacity: edge.status === "rejected" || aiSuggested ? 0.6 : 1
-          }}
-        >
-          ✕ Reject
-        </button>
+            <button
+              onClick={() => onReject?.(edge.id)}
+              disabled={edge.status === "rejected" || aiSuggested}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background:
+                  edge.status === "rejected" || aiSuggested ? "#4c1d1d" : "#d73a49",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer",
+                opacity: edge.status === "rejected" || aiSuggested ? 0.6 : 1
+              }}
+            >
+              ✕ Reject
+            </button>
+          </div>
+        )}
 
-        {edge.origin === "manual" && (
-          <button
-            onClick={() => onDelete?.(edge.id)}
-            style={{
-              flex: 1,
-              padding: "8px 12px",
-              background: "#312e81",
-              color: "#fff",
-              border: "none",
-              cursor: "pointer"
-            }}
-          >
-            Delete
-          </button>
+        {isManual && (
+          <div style={{ display: "flex", gap: 12 }}>
+            <button
+              onClick={() => onDelete?.(edge.id)}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background: "#d73a49",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer"
+              }}
+            >
+              ✕ Delete
+            </button>
+
+            <button
+              onClick={() => onReverseDirection?.(edge.id)}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                background: "#1e3a8a",
+                color: "#fff",
+                border: "none",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6
+              }}
+              title="Reverse the direction of this edge"
+            >
+              ⇄ Reverse
+            </button>
+          </div>
         )}
       </div>
 

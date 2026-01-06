@@ -4,13 +4,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.graph.builder import edge_id
+from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.intent.manual_edge import ManualEdge
 from app.intent.node_override import NodeOverride
 
 from app.intent.overrides import EdgeOverride, EdgeDecision
-from app.storage.manual_edges_store import save_manual_edge, delete_manual_edge
+from app.storage.manual_edges_store import save_manual_edge, delete_manual_edge, load_manual_edges
 from app.storage.node_overrides_store import (
     save_node_override,
     load_node_overrides,
@@ -45,8 +45,8 @@ app.add_middleware(
 
 
 class CreateEdgeRequest(BaseModel):
-    from_id: str
-    to_id: str
+    source: str
+    target: str
     relationship: str
     confidence: float | None = 1.0
 
@@ -248,19 +248,19 @@ def remove_node_override(workload_id: str, node_id: str):
 
 @app.post("/api/workloads/{workload_id}/edges")
 def create_manual_edge(workload_id: str, payload: CreateEdgeRequest):
-    from_id = norm_id(payload.from_id)
-    to_id = norm_id(payload.to_id)
+    source = norm_id(payload.source)
+    target = norm_id(payload.target)
 
-    if not from_id or not to_id:
+    if not source or not target:
         raise HTTPException(
             status_code=400,
-            detail="from_id and to_id are required"
+            detail="source and target are required"
         )
 
-    if from_id == to_id:
+    if source == target:
         raise HTTPException(
             status_code=400,
-            detail="from_id and to_id must be different"
+            detail="source and target must be different"
         )
 
     if not payload.relationship:
@@ -269,23 +269,23 @@ def create_manual_edge(workload_id: str, payload: CreateEdgeRequest):
             detail="relationship is required"
         )
 
-    eid = edge_id(from_id, to_id, payload.relationship)
+    eid = build_edge_id(source, target, payload.relationship)
 
     manual_edge = ManualEdge(
         id=eid,
-        from_id=from_id,
-        to_id=to_id,
+        source=source,
+        target=target,
         relationship=payload.relationship,
         confidence=payload.confidence or 1.0,
         status="accepted",
-        source="manual",
+        origin="manual",
     )
 
     save_manual_edge(workload_id, manual_edge)
 
     return {"edge": manual_edge}
 
-@app.post("/api/workloads/{workload_id}/edges/{edge_id}/accept")
+@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/accept")
 def accept_edge(workload_id: str, edge_id: str):
     override = EdgeOverride(
         edge_id=edge_id,
@@ -294,7 +294,7 @@ def accept_edge(workload_id: str, edge_id: str):
     save_override(workload_id, override)
     return {"status": "accepted", "edge_id": edge_id}
 
-@app.post("/api/workloads/{workload_id}/edges/{edge_id}/reject")
+@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/reject")
 def reject_edge(workload_id: str, edge_id: str, reason: str | None = None):
     override = EdgeOverride(
         edge_id=edge_id,
@@ -304,7 +304,7 @@ def reject_edge(workload_id: str, edge_id: str, reason: str | None = None):
     save_override(workload_id, override)
     return {"status": "rejected", "edge_id": edge_id}
 
-@app.delete("/api/workloads/{workload_id}/edges/{edge_id}")
+@app.delete("/api/workloads/{workload_id}/edges/{edge_id:path}")
 def remove_manual_edge(workload_id: str, edge_id: str):
     deleted = delete_manual_edge(workload_id, edge_id)
     if not deleted:
@@ -314,6 +314,43 @@ def remove_manual_edge(workload_id: str, edge_id: str):
         )
 
     return {"status": "deleted", "edge_id": edge_id}
+
+
+@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/reverse")
+def reverse_manual_edge_direction(workload_id: str, edge_id: str):
+    """Reverse the direction of a manual edge (swap source and target)."""
+    # Load all manual edges
+    edges = load_manual_edges(workload_id)
+    
+    # Find the edge to reverse
+    edge_to_reverse = None
+    for edge in edges:
+        if edge.id == edge_id:
+            edge_to_reverse = edge
+            break
+    
+    if not edge_to_reverse:
+        raise HTTPException(
+            status_code=404,
+            detail="Manual edge not found"
+        )
+    
+    # Update the edge with reversed direction (keep the same ID)
+    reversed_edge = ManualEdge(
+        id=edge_to_reverse.id,  # Keep same ID
+        source=edge_to_reverse.target,  # Swap
+        target=edge_to_reverse.source,  # Swap
+        relationship=edge_to_reverse.relationship,
+        confidence=edge_to_reverse.confidence,
+        status=edge_to_reverse.status,
+        origin=edge_to_reverse.origin,
+        created_by=edge_to_reverse.created_by,
+    )
+    
+    # Save the updated edge (this will replace the old one)
+    save_manual_edge(workload_id, reversed_edge)
+    
+    return {"edge": reversed_edge}
 
 
 # Group endpoints

@@ -16,6 +16,7 @@ import {
   acceptEdge,
   createManualEdge,
   deleteEdge,
+  reverseEdgeDirection,
   fetchWorkloadGraph,
   patchNode,
   rejectEdge,
@@ -267,6 +268,43 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const handleReverseEdgeDirection = async (edgeId: string) => {
+    try {
+      const result = await reverseEdgeDirection(WORKLOAD_ID, edgeId);
+      const reversedEdge = result.edge;
+
+      if (reversedEdge) {
+        const updated: GraphEdge = {
+          id: reversedEdge.id,
+          source: reversedEdge.source,
+          target: reversedEdge.target,
+          relationship: reversedEdge.relationship,
+          confidence: reversedEdge.confidence,
+          status: reversedEdge.status as any,
+          origin: reversedEdge.origin,
+          evidence: reversedEdge.evidence,
+        };
+
+        setSelectedEdge(updated);
+
+        // Update the edge in place with reversed direction
+        updateGraph(prev =>
+          prev
+            ? {
+                ...prev,
+                edges: prev.edges.map(e =>
+                  e.id === edgeId ? updated : e
+                )
+              }
+            : prev
+        );
+
+      }
+    } catch (err) {
+      console.error("Failed to reverse edge direction", err);
+    }
+  };
+
   const buildSelectedNodeData = (node: GraphNode) => {
     const meta = (node.metadata as any) ?? {};
     const userOverride = (meta.user_override as Record<string, unknown> | undefined) ?? {};
@@ -299,76 +337,45 @@ const WorkloadView: React.FC = () => {
     setSelectedEdge(null);
   };
 
-  const handleDragCreateLink = async (sourceId: string, targetId: string) => {
-    await handleCreateManualLink(sourceId, targetId);
-  };
-
-  const handleCreateManualLink = async (fromId: string, toId: string) => {
-    if (!fromId || !toId || fromId === toId) return;
-
-    const relationship = "depends_on"; // Default relationship for drag-and-drop
-
-    const optimisticId = `manual-pending-${fromId}-${relationship}-${toId}-${Date.now()}`;
-    const optimisticEdge: GraphEdge = {
-      id: optimisticId,
-      source: fromId,
-      target: toId,
-      relationship,
-      confidence: 1,
-      status: "accepted",
-      origin: "manual",
-    };
-
-    updateGraph(prev =>
-      prev
-        ? {
-            ...prev,
-            edges: [...prev.edges, optimisticEdge],
-          }
-        : prev
-    );
+  const handleCreateManualLink = async (sourceId: string, targetId: string) => {
+    if (!sourceId || !targetId || sourceId === targetId) return;
 
     try {
       const body = await createManualEdge(WORKLOAD_ID, {
-        from_id: fromId,
-        to_id: toId,
-        relationship,
+        source: sourceId,
+        target: targetId,
+        relationship: "depends_on",
       });
       const created = body.edge;
 
-      const newEdge: GraphEdge = {
-        id: created?.id ?? `manual-${fromId}-${relationship}-${toId}-${Date.now()}`,
-        source: created?.from_id ?? fromId,
-        target: created?.to_id ?? toId,
-        relationship: created?.relationship ?? relationship,
-        confidence: created?.confidence ?? 1,
-        status: created?.status ?? "accepted",
-        origin: created?.source ?? "manual"
-      };
+      if (created) {
+        const newEdge: GraphEdge = {
+          id: created.id,
+           source: created.source,
+           target: created.target,
+          relationship: created.relationship,
+          confidence: created.confidence,
+          status: created.status as any,
+           origin: created.origin,
+          evidence: created.evidence,
+        };
 
-      updateGraph(prev =>
-        prev
-          ? {
-              ...prev,
-              edges: [
-                ...prev.edges.filter(e => e.id !== optimisticId && e.id !== newEdge.id),
-                newEdge
-              ]
-            }
-          : prev
-      );
+        updateGraph(prev =>
+          prev
+            ? {
+                ...prev,
+                edges: [...prev.edges, newEdge],
+              }
+            : prev
+        );
 
+        // Open the drawer for the newly created edge
+        setSelectedEdge(newEdge);
+      } else {
+        console.error("Failed to create link: no edge returned");
+      }
     } catch (err: any) {
       console.error("Failed to create link:", err.message);
-
-      updateGraph(prev =>
-        prev
-          ? {
-              ...prev,
-              edges: prev.edges.filter(e => e.id !== optimisticId),
-            }
-          : prev
-      );
     }
   };
 
@@ -964,10 +971,11 @@ const WorkloadView: React.FC = () => {
               ref={graphCanvasRef}
               nodes={nodesForView}
               edges={edgesForView}
+                selectedEdgeId={selectedEdge?.id ?? null}
               userLayerEnabled={userLayerEnabled}
               maxImportance={maxImportance}
               onNodeSelected={handleNodeSelected}
-              onEdgeCreate={handleDragCreateLink}
+              onEdgeCreate={handleCreateManualLink}
               onNodeRename={handleRenameNode}
               onGroupCreate={applyGroupToNodes}
               groupCreateRequest={groupCreateRequest}
@@ -1033,6 +1041,7 @@ const WorkloadView: React.FC = () => {
           onAccept={handleAcceptEdge}
           onReject={handleRejectEdge}
           onDelete={handleDeleteEdge}
+          onReverseDirection={handleReverseEdgeDirection}
           onClose={() => setSelectedEdge(null)}
         />
       )}

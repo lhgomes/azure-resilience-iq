@@ -13,11 +13,11 @@ export type EdgeStatus = "proposed" | "accepted" | "rejected";
 
 export interface RawGraphEdge {
   id: string;
-  from_id: string;
-  to_id: string;
+  source: string; // edge start (ReactFlow naming)
+  target: string; // edge end (ReactFlow naming)
   relationship: string;
   confidence: number;
-  source: string; // edge origin from backend (arg/manual/heuristic/etc)
+  origin: string; // edge origin from backend (arg/manual/heuristic/etc)
   evidence?: Array<Record<string, unknown>>;
   status?: EdgeStatus;
 }
@@ -41,13 +41,13 @@ export interface LlmNodeAnnotation {
 }
 
 export interface LlmEdgeSuggestion {
-  from_id: string;
-  to_id: string;
+  source: string;
+  target: string;
   relationship: string;
   confidence?: number;
   reason?: string;
   status?: string;
-  source?: string;
+  origin?: string;
 }
 
 export interface NodeGroup {
@@ -117,9 +117,13 @@ export async function deleteEdge(workloadId: WorkloadId, edgeId: string): Promis
   await apiNoBody(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}`), { method: "DELETE" });
 }
 
+export async function reverseEdgeDirection(workloadId: WorkloadId, edgeId: string): Promise<{ edge?: RawGraphEdge; old_edge_id?: string } & Record<string, unknown>> {
+  return await apiJson(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}/reverse`), { method: "POST" });
+}
+
 export async function createManualEdge(
   workloadId: WorkloadId,
-  payload: { from_id: string; to_id: string; relationship: string }
+  payload: { source: string; target: string; relationship: string }
 ): Promise<{ edge?: RawGraphEdge } & Record<string, unknown>> {
   return await apiJson(workloadPath(workloadId, "/edges"), {
     method: "POST",

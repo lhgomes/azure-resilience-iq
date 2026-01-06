@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .models import LLMAnnotations
 from .summarizer import summarize_graph_for_llm
+from app.graph.builder import edge_id
 
 LOGGER = logging.getLogger(__name__)
 
@@ -153,13 +154,13 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         ],
         "edges": [
             {
-            "from_id": "<existing node id>",
-            "to_id": "<existing node id>",
+            "source": "<existing node id>",
+            "target": "<existing node id>",
             "relationship": "<short verb phrase>",
             "status": "proposed",
             "confidence": 0.6,
             "reason": "...",
-            "source": "llm"
+            "origin": "llm"
             }
         ]
         }
@@ -270,11 +271,15 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
     valid_edges = []
     for item in raw.get("edges") or []:
         try:
-            from_id = item.get("from_id")
-            to_id = item.get("to_id")
-            if not from_id or not to_id:
-                LOGGER.warning("Dropping edge suggestion: missing from_id or to_id")
+            source = item.get("source")
+            target = item.get("target")
+            relationship = item.get("relationship")
+            if not source or not target:
+                LOGGER.warning("Dropping edge suggestion: missing source or target")
                 continue
+            # Add computed edge ID if not present
+            if "id" not in item:
+                item["id"] = edge_id(source, target, relationship or "")
             valid_edges.append(item)
         except Exception:
             LOGGER.warning("Skipping malformed edge suggestion item", exc_info=True)

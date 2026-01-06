@@ -2,11 +2,13 @@ from pydantic import BaseModel
 
 
 class ManualEdge(BaseModel):
+    """Manual edge aligned with ReactFlow naming (source/target)."""
+
     id: str
-    from_id: str
-    to_id: str
+    source: str
+    target: str
     relationship: str
     confidence: float = 1.0
     status: str = "accepted"
-    source: str = "manual"
+    origin: str = "manual"
     created_by: str = "user"

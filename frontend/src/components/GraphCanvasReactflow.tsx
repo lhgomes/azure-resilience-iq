@@ -67,6 +67,7 @@ interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
   userLayerEnabled: boolean;
+  selectedEdgeId?: string | null;
   onEdgeSelected?: (edge: GraphEdge | null) => void;
   onNodeSelected?: (nodeId: string | null) => void;
   maxImportance?: number;
@@ -110,6 +111,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     onRemoveNodeFromGroup,
     onNodeRemoveFromGroup,
     onSelectionStateChange,
+    selectedEdgeId = null,
   } = props;
   
   const { fitView } = useReactFlow();
@@ -216,6 +218,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       source: e.source,
       target: e.target,
       type: "azure",
+      selected: selectedEdgeId ? e.id === selectedEdgeId : false,
       data: {
         label: e.relationship,
         origin: e.origin,
@@ -227,7 +230,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       },
       markerEnd: { type: MarkerType.ArrowClosed },
     }));
-  }, [visibleEdges, userLayerEnabled]);
+  }, [visibleEdges, userLayerEnabled, selectedEdgeId]);
 
   // Layout using Dagre
   const layoutedNodes = useMemo(() => {

@@ -26,11 +26,11 @@ class Node(BaseModel):
 
 class Edge(BaseModel):
     id: str
-    from_id: str
-    to_id: str
+    source: str  # edge start node
+    target: str  # edge end node
     relationship: str
     confidence: float
-    source: str
+    origin: str  # edge origin (arg/manual/heuristic/etc)
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
     status: EdgeStatus = EdgeStatus.proposed
 

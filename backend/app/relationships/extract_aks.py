@@ -5,7 +5,7 @@ from .utils import norm_id, safe_get
 def extract_aks_relationships(resources_by_id: Dict[str, Dict[str, Any]]) -> List[Tuple[str, str, str, str, float, list]]:
     """
     Returns edges as tuples:
-    (from_id, to_id, relationship, source, confidence, evidence)
+    (source, target, relationship, source_type, confidence, evidence)
     """
     edges: List[Tuple[str, str, str, str, float, list]] = []
 
