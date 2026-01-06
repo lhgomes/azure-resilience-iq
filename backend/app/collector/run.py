@@ -9,6 +9,7 @@ from app.config import COLLECTOR_DIR
 from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
 from app.relationships.utils import norm_id
+from app.graph.builder import edge_id
 
 
 OUTPUT_DIR = COLLECTOR_DIR
@@ -85,13 +86,15 @@ def main():
     # Format output
     edges_output = [
         {
-            'from': edge.from_id,
-            'to': edge.to_id,
+            'id': edge_id(edge.source, edge.target, edge.relationship),
+            'source': edge.source,
+            'target': edge.target,
             'relationship': edge.relationship,
             'signals': [s['type'] for s in edge.signals],
             'signal_details': edge.signals,
             'confidence': round(edge.confidence, 3),
             'evidence': edge.evidence,
+            'origin': edge.origin,
             'timestamp': edge.timestamp
         }
         for edge in unified_edges

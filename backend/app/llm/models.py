@@ -20,13 +20,14 @@ class NodeAnnotationPayload(BaseModel):
 class EdgeSuggestionPayload(BaseModel):
     """Advisory edge suggestion between two existing nodes (non-authoritative)."""
 
-    from_id: str
-    to_id: str
+    source: str
+    target: str
     relationship: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reason: Optional[str] = None
     status: Optional[str] = "proposed"
-    source: str = "llm"
+    origin: str = "llm"
+    id: Optional[str] = None
 
 
 class NodeAnnotation(BaseModel):

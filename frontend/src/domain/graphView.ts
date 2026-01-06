@@ -217,13 +217,13 @@ export function buildUserTooltip(args: {
 export function normalizeGraph(raw: RawGraphSnapshot): GraphSnapshot {
   const edges: GraphEdge[] = (raw?.edges ?? []).map(e => ({
     id: e.id,
-    source: e.from_id,
-    target: e.to_id,
+    source: e.source,
+    target: e.target,
     relationship: e.relationship,
     confidence: e.confidence,
     status: e.status ?? "proposed",
     evidence: e.evidence,
-    origin: e.source ?? "arg",
+    origin: e.origin ?? "arg",
   }));
 
   return {
@@ -421,13 +421,13 @@ export function buildViewGraph(args: {
   const suggestedEdges: GraphEdge[] = aiLayerEnabled
     ? (snapshot.llm_annotations?.edges ?? [])
         .map(s => ({
-          id: `llm-${s.from_id}-${s.relationship}-${s.to_id}`,
-          source: s.from_id,
-          target: s.to_id,
+          id: `llm-${s.source}-${s.relationship}-${s.target}`,
+          source: s.source,
+          target: s.target,
           relationship: s.relationship,
           confidence: s.confidence ?? 0.5,
           status: "proposed" as const,
-          origin: s.source ?? "llm",
+          origin: s.origin ?? s.source ?? "llm",
         }))
         .filter(e => !existingKeys.has(`${e.source}|${e.relationship}|${e.target}`) && visibleIds.has(e.source) && visibleIds.has(e.target))
     : [];

@@ -11,7 +11,7 @@ def extract_compute_relationships(resources_by_id: Dict[str, Dict[str, Any]]) ->
     Extract relationships from compute resources (VMs, VMScaleSets, etc.)
     
     Returns:
-        List of (from_id, to_id, relationship_type, signal_type, confidence, evidence_list)
+        List of (source, target, relationship_type, signal_type, confidence, evidence_list)
     """
     edges = []
     

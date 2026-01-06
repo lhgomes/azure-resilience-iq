@@ -32,7 +32,11 @@ def load_llm_annotations(workload_id: str) -> LLMAnnotations:
         if item.get("node_id")
     ]
 
-    edges = [EdgeSuggestionPayload(**item) for item in edge_items if isinstance(item, dict)]
+    edges = [
+        EdgeSuggestionPayload(**item)
+        for item in edge_items
+        if isinstance(item, dict)
+    ]
 
     return LLMAnnotations(nodes=nodes, edges=edges)
 

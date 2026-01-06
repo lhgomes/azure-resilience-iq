@@ -22,6 +22,9 @@ def extract_connection_string_signals(
     - Storage Account connections
     - PostgreSQL/MySQL connections
     - Service Bus connections
+    
+    Returns:
+        List of (source, target, [signals]) tuples
     """
     signals_list: List[Tuple[str, str, List[SignalSource]]] = []
     

@@ -146,15 +146,15 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             metadata={"synthetic": True, "kind": "subnet"}
         ))
 
-    # add edges (dedupe handled by GraphBuilder.edge_id)
+    # add edges (dedupe handled by edge IDs)
     for (f, t, rel, src, conf, evidence) in all_edges:
         if not f or not t:
             continue
         gb.add_edge(
-            from_id=norm_id(f),
-            to_id=norm_id(t),
+            source=norm_id(f),
+            target=norm_id(t),
             relationship=rel,
-            source=src,
+            origin=src,
             confidence=conf,
             evidence=evidence
         )
@@ -164,28 +164,32 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     # Load and merge multi-source unified edges (with signal details)
     unified_edges = load_unified_edges()
     unified_edges_by_key = {}
+    unified_edges_by_id = {}
     
     for ue in unified_edges:
         # IDs are already normalized from collector
-        from_id = ue.get('from')
-        to_id = ue.get('to')
+        source = ue.get('source')
+        target = ue.get('target')
+        ue_id = ue.get('id')
         
-        if not from_id or not to_id:
+        if not source or not target:
             continue
         
         # Skip if nodes don't exist
-        if from_id not in gb.nodes or to_id not in gb.nodes:
+        if source not in gb.nodes or target not in gb.nodes:
             continue
         
-        key = f"{from_id}|{to_id}"
+        key = f"{source}|{target}"
         unified_edges_by_key[key] = ue
+        if ue_id:
+            unified_edges_by_id[ue_id] = ue
     
     # Enrich existing edges with multi-source signal data
     enriched_edges = []
     processed_keys = set()
     
     for edge in snapshot["edges"]:
-        key = f"{edge.from_id}|{edge.to_id}"
+        key = f"{edge.source}|{edge.target}"
         processed_keys.add(key)
         
         if key in unified_edges_by_key:
@@ -205,11 +209,11 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             # Update edge confidence to use aggregated confidence from multi-source
             enriched_edge = Edge(
                 id=edge.id,
-                from_id=edge.from_id,
-                to_id=edge.to_id,
+                source=edge.source,
+                target=edge.target,
                 relationship=edge.relationship,
                 confidence=max(edge.confidence, ue.get('confidence', edge.confidence)),
-                source=edge.source,
+                origin=edge.origin,
                 evidence=combined_evidence,
                 status=edge.status
             )
@@ -223,18 +227,19 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             continue
         
         # IDs are already normalized from collector
-        from_id = ue.get('from')
-        to_id = ue.get('to')
+        source = ue.get('source')
+        target = ue.get('target')
         relationship = ue.get('relationship', 'relates_to')
+        ue_id = ue.get('id')
         
-        # Create new edge from unified edge
+        # Create new edge from unified edge, using pre-computed ID
         edge = Edge(
-            id=f"{from_id}|{to_id}",
-            from_id=from_id,
-            to_id=to_id,
+            id=ue_id or f"{source}|{target}",
+            source=source,
+            target=target,
             relationship=relationship,
             confidence=ue.get('confidence', 0.7),
-            source='multi_source',
+            origin='multi_source',
             evidence=[{
                 "type": "multi_source_signals",
                 "signals": ue.get('signal_details', []),
@@ -254,16 +259,16 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
         if me.id in existing_ids:
             continue
 
-        if norm_id(me.from_id) not in gb.nodes or norm_id(me.to_id) not in gb.nodes:
+        if norm_id(me.source) not in gb.nodes or norm_id(me.target) not in gb.nodes:
             continue
 
         merged_edges.append(Edge(
             id=me.id,
-            from_id=norm_id(me.from_id),
-            to_id=norm_id(me.to_id),
+            source=norm_id(me.source),
+            target=norm_id(me.target),
             relationship=me.relationship,
             confidence=me.confidence,
-            source=me.source,
+            origin=me.origin,
             evidence=[],
             status=EdgeStatus.accepted
         ))

@@ -19,6 +19,9 @@ def extract_dns_signals(
     - Private DNS Zone links to VNets
     - A/CNAME records pointing to resources
     - Private Endpoint DNS registration
+    
+    Returns:
+        List of (source, target, [signals]) tuples
     """
     signals_list: List[Tuple[str, str, List[SignalSource]]] = []
     

@@ -12,7 +12,7 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         {"id": "/subs/123/rg/demo/vnet", "type": "vnet", "name": "demo-vnet"}
       ],
       "edges": [
-        {"from_id": "/subs/123/rg/demo/aks", "to_id": "/subs/123/rg/demo/vnet", "relationship": "connected_to"}
+        {"source": "/subs/123/rg/demo/aks", "target": "/subs/123/rg/demo/vnet", "relationship": "connected_to"}
       ]
     }
 
@@ -69,8 +69,8 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
 
     for e in edges_raw:
         ed = as_dict(e)
-        source = ed.get("from_id") or ed.get("source")
-        target = ed.get("to_id") or ed.get("target")
+        source = ed.get("source")
+        target = ed.get("target")
         relationship = ed.get("relationship") or "related_to"
 
         if not source or not target:

@@ -1,12 +1,16 @@
-import hashlib
+import uuid
 from .model import Edge, EdgeStatus, Node
 from app.intent.overrides import EdgeDecision
 from app.storage.edge_overrides_store import load_overrides
 
+# Namespace UUID for azure-workload-graph edges
+EDGE_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # DNS namespace
 
-def edge_id(from_id: str, to_id: str, relationship: str) -> str:
-    raw = f"{from_id}|{relationship}|{to_id}"
-    return hashlib.sha256(raw.encode()).hexdigest()
+
+def edge_id(source: str, target: str, relationship: str) -> str:
+    """Generate deterministic UUIDv5 for an edge based on source, relationship, and target."""
+    raw = f"{source}|{relationship}|{target}"
+    return str(uuid.uuid5(EDGE_NAMESPACE, raw))
 
 
 class GraphBuilder:
@@ -19,21 +23,22 @@ class GraphBuilder:
 
     def add_edge(
         self,
-        from_id: str,
-        to_id: str,
-        relationship: str,
         source: str,
+        target: str,
+        relationship: str,
+        origin: str,
         confidence: float,
         evidence: list[dict] | None = None,
+        edge_id_override: str | None = None,
     ):
-        eid = edge_id(from_id, to_id, relationship)
+        eid = edge_id_override or edge_id(source, target, relationship)
         if eid not in self.edges:
             self.edges[eid] = Edge(
                 id=eid,
-                from_id=from_id,
-                to_id=to_id,
-                relationship=relationship,
                 source=source,
+                target=target,
+                relationship=relationship,
+                origin=origin,
                 confidence=confidence,
                 evidence=evidence or [],
             )

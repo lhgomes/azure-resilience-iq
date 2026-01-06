@@ -9,6 +9,7 @@ def extract_networking_relationships(resources_by_id: Dict[str, Dict[str, Any]])
     """
     Returns (edges, synthetic_node_ids)
     synthetic_node_ids = subnet ids that are referenced but may not be present as resources
+    Edge tuples: (source, target, relationship, source_type, confidence, evidence_list)
     """
     edges: List[Tuple[str, str, str, str, float, list]] = []
     synthetic: Set[str] = set()
@@ -30,10 +31,11 @@ def extract_networking_relationships(resources_by_id: Dict[str, Dict[str, Any]])
             sid_n = norm_id(sid)
             synthetic.add(sid_n)
 
+            # Prefer subnet -> VNet direction so the dependent resource points to its parent
             edges.append((
-                rid,
                 sid_n,
-                "contains_subnet",
+                rid,
+                "belongs_to_vnet",
                 "arg",
                 0.98,
                 [{"field": "virtualNetworks.properties.subnets[].id", "value": sid}],
@@ -61,18 +63,6 @@ def extract_networking_relationships(resources_by_id: Dict[str, Dict[str, Any]])
                     "arg",
                     0.9,
                     [{"field": "subnet.properties.routeTable.id", "value": rt_id}],
-                ))
-
-            # subnet -> vnet (derived)
-            vnet_id = parent_id(sid_n, "/subnets/")
-            if vnet_id:
-                edges.append((
-                    sid_n,
-                    vnet_id,
-                    "belongs_to_vnet",
-                    "heuristic",
-                    0.85,
-                    [{"rule": "parent_id(subnet, /subnets/)"}],
                 ))
 
     # NIC -> Subnet / NSG / Public IP

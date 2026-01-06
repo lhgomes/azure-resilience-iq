@@ -21,8 +21,8 @@ from .utils import norm_id
 @dataclass
 class UnifiedEdge:
     """Edge with multi-source signal aggregation"""
-    from_id: str
-    to_id: str
+    source: str  # source node ID
+    target: str  # target node ID
     relationship: str
     signals: List[Dict[str, Any]]  # List of signal metadata
     confidence: float
@@ -97,8 +97,8 @@ class MultiSourceAggregator:
                     target_id = norm_id(prop_value['id'])
                     if target_id in self.resources_by_id:
                         self._add_signal(
-                            from_id=rid,
-                            to_id=target_id,
+                            source=rid,
+                            target=target_id,
                             relationship=prop_key,
                             signal=SignalSource(
                                 type=SignalType.ARM_DECLARED,
@@ -121,8 +121,8 @@ class MultiSourceAggregator:
                             relationship = self._semantic_relationship_name(prop_key, target_type)
                             
                             self._add_signal(
-                                from_id=rid,
-                                to_id=target_id,
+                                source=rid,
+                                target=target_id,
                                 relationship=relationship,
                                 signal=SignalSource(
                                     type=SignalType.ARM_DECLARED,
@@ -166,10 +166,10 @@ class MultiSourceAggregator:
         """Extract signals from compute resources (VMs, VMScaleSets)"""
         edges = extract_compute_relationships(self.resources_by_id)
         
-        for from_id, to_id, relationship, signal_type, confidence, evidence_list in edges:
+        for source, target, relationship, signal_type, confidence, evidence_list in edges:
             self._add_signal(
-                from_id=from_id,
-                to_id=to_id,
+                source=source,
+                target=target,
                 relationship=relationship,
                 signal=SignalSource(
                     type=SignalType.ARM_DECLARED,
@@ -184,10 +184,10 @@ class MultiSourceAggregator:
         """Extract signals from networking topology"""
         edges, _ = extract_networking_relationships(self.resources_by_id)
         
-        for from_id, to_id, relationship, _, _, evidence_list in edges:
+        for source, target, relationship, _, _, evidence_list in edges:
             self._add_signal(
-                from_id=from_id,
-                to_id=to_id,
+                source=source,
+                target=target,
                 relationship=relationship,
                 signal=SignalSource(
                     type=SignalType.VNET_COUPLING,
@@ -202,10 +202,10 @@ class MultiSourceAggregator:
         """Extract signals from Private Endpoint mappings"""
         edges, _ = extract_private_endpoint_relationships(self.resources_by_id)
         
-        for from_id, to_id, relationship, _, _, evidence_list in edges:
+        for source, target, relationship, _, _, evidence_list in edges:
             self._add_signal(
-                from_id=from_id,
-                to_id=to_id,
+                source=source,
+                target=target,
                 relationship=relationship,
                 signal=SignalSource(
                     type=SignalType.PRIVATE_ENDPOINT,
@@ -220,10 +220,10 @@ class MultiSourceAggregator:
         """Extract signals from AKS relationships"""
         edges = extract_aks_relationships(self.resources_by_id)
         
-        for from_id, to_id, relationship, _, _, evidence_list in edges:
+        for source, target, relationship, _, _, evidence_list in edges:
             self._add_signal(
-                from_id=from_id,
-                to_id=to_id,
+                source=source,
+                target=target,
                 relationship=relationship,
                 signal=SignalSource(
                     type=SignalType.SUBNET_ROUTING,
@@ -253,9 +253,8 @@ class MultiSourceAggregator:
                             target_id = self._find_resource_by_subnet(destination)
                             if target_id:
                                 self._add_signal(
-                                    from_id=rid,
-                                    to_id=target_id,
-                                    relationship='nsg_allows_traffic',
+                            source=rid,
+                            target=target_id,
                                     signal=SignalSource(
                                         type=SignalType.NSG_RULE,
                                         confidence=0.68,
@@ -269,11 +268,11 @@ class MultiSourceAggregator:
         """Extract signals from connection strings"""
         edges = extract_connection_string_signals(self.resources_by_id)
         
-        for from_id, to_id, signals in edges:
+        for source, target, signals in edges:
             for signal in signals:
                 self._add_signal(
-                    from_id=from_id,
-                    to_id=to_id,
+                    source=source,
+                    target=target,
                     relationship='references',
                     signal=signal
                 )
@@ -282,11 +281,11 @@ class MultiSourceAggregator:
         """Extract signals from DNS configuration"""
         edges = extract_dns_signals(self.resources_by_id)
         
-        for from_id, to_id, signals in edges:
+        for source, target, signals in edges:
             for signal in signals:
                 self._add_signal(
-                    from_id=from_id,
-                    to_id=to_id,
+                    source=source,
+                    target=target,
                     relationship='resolves_to',
                     signal=signal
                 )
@@ -295,11 +294,11 @@ class MultiSourceAggregator:
         """Extract signals from Application Insights"""
         edges = extract_appinsights_signals(self.resources_by_id, appinsights_data)
         
-        for from_id, to_id, signals in edges:
+        for source, target, signals in edges:
             for signal in signals:
                 self._add_signal(
-                    from_id=from_id,
-                    to_id=to_id,
+                    source=source,
+                    target=target,
                     relationship='observes_dependency_to',
                     signal=signal
                 )
@@ -312,8 +311,8 @@ class MultiSourceAggregator:
             
             if source_id and target_id:
                 self._add_signal(
-                    from_id=source_id,
-                    to_id=target_id,
+                    source=source_id,
+                    target=target_id,
                     relationship=f"flow_observed_{flow.get('protocol', 'unknown').lower()}",
                     signal=SignalSource(
                         type=SignalType.FLOW_LOG_OBSERVED,
@@ -331,19 +330,19 @@ class MultiSourceAggregator:
     
     def _add_signal(
         self,
-        from_id: str,
-        to_id: str,
+        source: str,
+        target: str,
         relationship: str,
         signal: SignalSource
     ):
         """Add a signal to an edge, aggregating if edge already exists"""
-        key = f"{from_id}|{to_id}"
+        key = f"{source}|{target}"
         
         if key not in self.edges_by_key:
             # Create new edge
             self.edges_by_key[key] = UnifiedEdge(
-                from_id=from_id,
-                to_id=to_id,
+                source=source,
+                target=target,
                 relationship=relationship,
                 signals=[signal],
                 confidence=signal['confidence'],
@@ -404,9 +403,9 @@ class MultiSourceAggregator:
             ('microsoft.compute/virtualmachines', 'microsoft.compute/sshpublickeys', 'uses_ssh_key'): 100,
             ('microsoft.compute/sshpublickeys', 'microsoft.compute/virtualmachines', 'vm'): 50,
             
-            # VNet relationships
-            ('microsoft.network/virtualnetworks', 'microsoft.network/virtualnetworks/subnets', 'contains_subnet'): 100,
-            ('microsoft.network/virtualnetworks/subnets', 'microsoft.network/virtualnetworks', 'belongs_to_vnet'): 50,
+            # VNet relationships (prefer subnet -> vnet direction)
+            ('microsoft.network/virtualnetworks/subnets', 'microsoft.network/virtualnetworks', 'belongs_to_vnet'): 100,
+            ('microsoft.network/virtualnetworks', 'microsoft.network/virtualnetworks/subnets', 'contains_subnet'): 50,
         }
         
         # Find reverse edge pairs
@@ -417,15 +416,15 @@ class MultiSourceAggregator:
                 continue
             
             # Look for reverse edge (B → A when we have A → B)
-            reverse_key = f"{edge1.to_id}|{edge1.from_id}"
+            reverse_key = f"{edge1.target}|{edge1.source}"
             if reverse_key not in self.edges_by_key:
                 continue
             
             edge2 = self.edges_by_key[reverse_key]
             
             # Get resource types
-            res1 = self.resources_by_id.get(edge1.from_id, {})
-            res2 = self.resources_by_id.get(edge1.to_id, {})
+            res1 = self.resources_by_id.get(edge1.source, {})
+            res2 = self.resources_by_id.get(edge1.target, {})
             type1 = (res1.get('type') or '').lower()
             type2 = (res2.get('type') or '').lower()
             

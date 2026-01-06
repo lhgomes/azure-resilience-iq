@@ -22,7 +22,7 @@ def extract_appinsights_signals(
                          Expected format: [{ source, target, protocol, avg_duration, call_count, ... }]
     
     Returns:
-        List of (from_id, to_id, [signals]) tuples
+        List of (source, target, [signals]) tuples
     """
     signals_list: List[Tuple[str, str, List[SignalSource]]] = []
     

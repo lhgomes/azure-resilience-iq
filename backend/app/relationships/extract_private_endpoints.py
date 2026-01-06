@@ -6,6 +6,10 @@ def extract_private_endpoint_relationships(resources_by_id: Dict[str, Dict[str, 
     List[Tuple[str, str, str, str, float, list]],
     Set[str]
 ]:
+    """
+    Returns (edges, synthetic_node_ids)
+    Edge tuples: (source, target, relationship, source_type, confidence, evidence_list)
+    """
     edges: List[Tuple[str, str, str, str, float, list]] = []
     synthetic: Set[str] = set()
 
