@@ -8,6 +8,7 @@ from .arg import query_resources
 from app.config import COLLECTOR_DIR
 from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
+from app.relationships.utils import norm_id
 
 
 OUTPUT_DIR = COLLECTOR_DIR
@@ -46,8 +47,16 @@ def main():
         tags=tags,
     )
 
-    output = [r.model_dump() for r in resources]
-    resources_by_id = {r.id: r.model_dump() for r in resources}
+    # Normalize all resource IDs at the source
+    normalized_resources = []
+    for r in resources:
+        resource_dict = r.model_dump()
+        resource_dict['id'] = norm_id(resource_dict['id'])
+        normalized_resources.append(resource_dict)
+    
+    output = normalized_resources
+    # Build lookup by normalized ID
+    resources_by_id = {r['id']: r for r in output}
 
     out_file = OUTPUT_DIR / "resources.json"
     out_file.write_text(json.dumps(output, indent=2))
