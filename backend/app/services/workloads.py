@@ -43,8 +43,62 @@ def get_workload_graph(workload_id: str, *, include_llm: bool = False) -> dict:
     edge_overrides = load_overrides(workload_id)
     groups = load_groups(workload_id)
 
+    # Merge LLM annotations into node metadata
+    # Priority: node_overrides > llm_annotations > defaults
+    nodes = snapshot.get("nodes") or []
+    
+    # Convert nodes to dicts if they're Pydantic models
+    nodes_list = []
+    for n in nodes:
+        if isinstance(n, dict):
+            nodes_list.append(n)
+        else:
+            nodes_list.append(n.model_dump() if hasattr(n, 'model_dump') else n.__dict__)
+    
+    nodes_by_id = {n.get("id"): n for n in nodes_list if n.get("id")}
+    
+    for llm_node in annotations.nodes:
+        node_id = llm_node.node_id
+        if node_id not in nodes_by_id:
+            continue
+        
+        node = nodes_by_id[node_id]
+        if "metadata" not in node:
+            node["metadata"] = {}
+        
+        node_ann = llm_node.annotations
+        
+        # Merge into metadata, respecting priority order
+        if node_ann.display_name and node_id not in node_overrides:
+            node["metadata"]["display_name"] = node_ann.display_name
+        
+        if node_ann.azure_service_category:
+            node["metadata"]["azure_service_category"] = node_ann.azure_service_category
+        
+        if node_ann.azure_service_name:
+            node["metadata"]["azure_service_name"] = node_ann.azure_service_name
+        
+        if node_ann.layer is not None:
+            node["metadata"]["layer"] = node_ann.layer
+        
+        if node_ann.priority:
+            node["metadata"]["priority"] = node_ann.priority
+        
+        if node_ann.criticality_score is not None:
+            node["metadata"]["criticality_score"] = node_ann.criticality_score
+        
+        if node_ann.hide_by_default is not None:
+            node["metadata"]["hide_by_default"] = node_ann.hide_by_default
+        
+        if node_ann.confidence is not None:
+            node["metadata"]["llm_confidence"] = node_ann.confidence
+        
+        if node_ann.reason:
+            node["metadata"]["llm_reason"] = node_ann.reason
+
     return {
         **snapshot,
+        "nodes": list(nodes_by_id.values()),
         "llm_annotations": annotations.model_dump(),
         "node_overrides": {
             node_id: override.model_dump() 
@@ -53,7 +107,6 @@ def get_workload_graph(workload_id: str, *, include_llm: bool = False) -> dict:
         "edge_overrides": edge_overrides,
         "groups": [g.model_dump() for g in groups],
     }
-
 
 def get_review_inbox(workload_id: str) -> dict:
     snapshot = build_workload_snapshot(workload_id)
