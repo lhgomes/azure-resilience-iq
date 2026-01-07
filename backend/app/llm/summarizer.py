@@ -115,6 +115,8 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         nid = n.get("id")
         if not nid:
             continue
-        n["connections"] = sorted(connections.get(nid) or [])
+        conn_list = sorted(connections.get(nid) or [])
+        n["connections"] = conn_list
+        n["connection_count"] = len(conn_list)
 
     return {"nodes": safe_nodes, "edges": safe_edges}
