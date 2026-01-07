@@ -11,16 +11,21 @@ from app.relationships.extract_aks import extract_aks_relationships
 from app.relationships.extract_networking import extract_networking_relationships
 from app.relationships.extract_private_endpoints import extract_private_endpoint_relationships
 from app.storage.manual_edges_store import load_manual_edges
-from app.config import COLLECTOR_UNIFIED_EDGES_PATH
+from app.config import get_edges_path
 
 
-def load_unified_edges() -> List[Dict[str, Any]]:
+def load_unified_edges(subscription_id: str) -> List[Dict[str, Any]]:
     """Load multi-source unified edges from collector output if available."""
-    if not COLLECTOR_UNIFIED_EDGES_PATH.exists():
+    edges_path = get_edges_path(subscription_id)
+    if not edges_path.exists():
         return []
     
     try:
-        raw = json.loads(COLLECTOR_UNIFIED_EDGES_PATH.read_text())
+        raw = json.loads(edges_path.read_text())
+        # Handle new format with subscription metadata
+        if isinstance(raw, dict) and "edges" in raw:
+            return raw["edges"]
+        # Fallback for direct list format
         return raw if isinstance(raw, list) else []
     except Exception:
         return []
@@ -162,7 +167,7 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     snapshot = gb.build(workload_id)
 
     # Load and merge multi-source unified edges (with signal details)
-    unified_edges = load_unified_edges()
+    unified_edges = load_unified_edges(workload_id)
     unified_edges_by_key = {}
     unified_edges_by_id = {}
     

@@ -5,25 +5,26 @@ from typing import List
 from azure.identity import AzureCliCredential
 from .arg import query_resources
 
-from app.config import COLLECTOR_DIR
+from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
 from app.relationships.utils import norm_id
 from app.graph.builder import edge_id
 
 
-OUTPUT_DIR = COLLECTOR_DIR
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def get_current_subscription() -> str:
-    """
-    Uses Azure CLI context.
-    """
-    credential = AzureCliCredential()
-    token = credential.get_token("https://management.azure.com/.default")
-    # Subscription is resolved by ARG using CLI context
-    return None
+def get_subscription_name(subscription_id: str) -> str:
+    """Fetch subscription name from Azure."""
+    try:
+        from azure.mgmt.subscription import SubscriptionClient
+        from azure.identity import DefaultAzureCredential
+        
+        credential = DefaultAzureCredential()
+        client = SubscriptionClient(credential)
+        subscription = client.subscriptions.get(subscription_id)
+        return subscription.display_name or subscription_id
+    except Exception:
+        # Fallback to subscription ID if we can't fetch the name
+        return subscription_id
 
 
 def main():
@@ -59,10 +60,25 @@ def main():
     # Build lookup by normalized ID
     resources_by_id = {r['id']: r for r in output}
 
-    out_file = OUTPUT_DIR / "resources.json"
-    out_file.write_text(json.dumps(output, indent=2))
+    # Get subscription name and add to output metadata
+    subscription_name = get_subscription_name(args.subscription_id)
+    
+    # Create subscription-id based directory
+    sub_dir = get_subscription_dir(args.subscription_id)
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save resources with subscription metadata
+    resources_output = {
+        "subscription_id": args.subscription_id,
+        "subscription_name": subscription_name,
+        "resources": output
+    }
+    
+    out_file = get_resources_path(args.subscription_id)
+    out_file.write_text(json.dumps(resources_output, indent=2))
 
     print(f"✔ Collected {len(resources)} resources")
+    print(f"✔ Subscription: {subscription_name}")
     print(f"✔ Written to {out_file}")
     
     # Extract multi-source signals
@@ -100,11 +116,17 @@ def main():
         for edge in unified_edges
     ]
     
-    signals_file = OUTPUT_DIR / "unified_edges.json"
-    signals_file.write_text(json.dumps(edges_output, indent=2))
+    # Create edges directory
+    edges_file = get_edges_path(args.subscription_id)
+    edges_output_data = {
+        "subscription_id": args.subscription_id,
+        "subscription_name": subscription_name,
+        "edges": edges_output
+    }
+    edges_file.write_text(json.dumps(edges_output_data, indent=2))
     
     print(f"✔ Extracted {len(unified_edges)} unified edges with multi-source signals")
-    print(f"✔ Written to {signals_file}")
+    print(f"✔ Written to {edges_file}")
 
 
 if __name__ == "__main__":

@@ -104,27 +104,27 @@ python -m app.collector.run \
   --tag environment=production
 ```
 
-This creates `data/collector/resources.json` with the collected Azure resources.
+This creates:
+- `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
+- `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
 
-If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
+Data is organized by subscription ID. To use a different base directory, set `AZURE_WORKLOAD_GRAPH_DATA_DIR`.
 
 ### Step 2: Run LLM Annotations (Optional)
 
 If you configured Azure OpenAI and set `USE_REAL_LLM=true`, run the LLM annotator:
 
 ```bash
-python -m app.llm.run --workload-id demo
+python -m app.llm.run --subscription-id <your-subscription-id>
 ```
 
 This analyzes the collected resources and generates:
 - Display name suggestions
 - Layer classifications (L1: core workload, L2: network/platform, L3: implementation details)
-- Criticality scores (1-10)
+- Criticality scores (1-10) and criticality weights (% distribution)
 - Architecture improvement suggestions
 
-Results are saved to `data/llm_annotations/demo.json`.
-
-If `AZURE_WORKLOAD_GRAPH_DATA_DIR` is set, the annotations are saved under that directory.
+Results are saved to `data/{subscription-id}/llm_annotations.json`.
 
 ### Step 3: Start the Backend Server
 
@@ -152,6 +152,8 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173`.
 
+**First Time**: When you first open the app, you'll see a subscription picker. Select the subscription you collected data for, and the graph will load automatically.
+
 ## Project Structure
 
 ```
@@ -162,16 +164,19 @@ azure-workload-graph/
 │   │   ├── graph/            # Graph building and modeling
 │   │   ├── llm/              # LLM annotation engine
 │   │   ├── relationships/    # Resource relationship extraction
-│   │   ├── storage/          # Data persistence layer (nodes, edges, groups, criticality)
+│   │   ├── services/         # Business logic (workloads, subscriptions)
+│   │   ├── storage/          # Data persistence layer
 │   │   ├── intent/           # User overrides and manual edges
 │   │   └── main.py           # FastAPI application
 │   ├── data/
-│   │   ├── collector/        # Collected Azure resources
-│   │   ├── llm_annotations/  # LLM-generated annotations
-│   │   ├── node_overrides/   # User node customizations
-│   │   ├── criticality_overrides/  # User criticality scores
-│   │   ├── manual_edges/     # User-created edges
-│   │   └── groups/           # Node groupings
+│   │   └── {subscription-id}/
+│   │       ├── resources.json        # Collected Azure resources
+│   │       ├── edges.json            # Multi-source dependency edges
+│   │       ├── llm_annotations.json  # LLM-generated annotations
+│   │       ├── node_overrides.json   # User node customizations
+│   │       ├── edge_overrides.json   # Edge accept/reject decisions
+│   │       ├── manual_edges.json     # User-created edges
+│   │       └── groups.json           # Node groupings
 │   ├── pyproject.toml        # Python dependencies
 │   └── .env                  # Environment configuration
 ├── frontend/
@@ -238,28 +243,26 @@ The backend provides the following main endpoints:
 
 ### Core Endpoints
 - `GET /health` - Health check
-- `GET /api/workloads/{workload_id}/graph` - Get workload graph (supports `?include_llm=true` for LLM annotations)
-- `GET /api/workloads/{workload_id}/reviews` - Get edge review inbox
+- `GET /api/subscriptions` - List available subscriptions
+- `GET /api/subscriptions/{subscription_id}/graph` - Get workload graph
 
 ### Node Management
-- `PATCH /api/workloads/{workload_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer)
-- `DELETE /api/workloads/{workload_id}/nodes/{node_id}` - Remove node override
-- `PATCH /api/workloads/{workload_id}/nodes/{node_id}/criticality` - Update criticality score
-- `DELETE /api/workloads/{workload_id}/nodes/{node_id}/criticality` - Reset criticality score
+- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer, criticality_score)
+- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}` - Remove node override
 
 ### Edge Management
-- `POST /api/workloads/{workload_id}/edges` - Create manual edge
-- `POST /api/workloads/{workload_id}/edges/{edge_id}/accept` - Accept edge
-- `POST /api/workloads/{workload_id}/edges/{edge_id}/reject` - Reject edge
-- `DELETE /api/workloads/{workload_id}/edges/{edge_id}` - Delete edge
+- `POST /api/subscriptions/{subscription_id}/edges` - Create manual edge
+- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/accept` - Accept edge
+- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reject` - Reject edge
+- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reverse` - Reverse edge direction
+- `DELETE /api/subscriptions/{subscription_id}/edges/{edge_id}` - Delete edge
 
 ### Group Management
-- `GET /api/workloads/{workload_id}/groups` - Get all groups
-- `POST /api/workloads/{workload_id}/groups` - Create a new group
-- `PATCH /api/workloads/{workload_id}/groups/{group_id}` - Update group name
-- `DELETE /api/workloads/{workload_id}/groups/{group_id}` - Delete a group
-- `POST /api/workloads/{workload_id}/groups/{group_id}/nodes` - Add node to group
-- `DELETE /api/workloads/{workload_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
+- `POST /api/subscriptions/{subscription_id}/groups` - Create a new group
+- `PATCH /api/subscriptions/{subscription_id}/groups/{group_id}` - Update group name
+- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}` - Delete a group
+- `POST /api/subscriptions/{subscription_id}/groups/{group_id}/nodes` - Add node to group
+- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
 
 ## Development Workflow
 
@@ -283,9 +286,9 @@ The backend provides the following main endpoints:
    cd backend
    source .venv/bin/activate
    # Collect resources
-   python -m app.collector.run --subscription-id <id>
+   python -m app.collector.run --subscription-id <your-subscription-id>
    # Run LLM annotations
-   python -m app.llm.run --workload-id demo
+   python -m app.llm.run --subscription-id <your-subscription-id>
    ```
 
 ### Refresh Data
@@ -293,8 +296,8 @@ The backend provides the following main endpoints:
 To update the graph with new Azure resources:
 
 1. Re-run the collector: `python -m app.collector.run --subscription-id <id>`
-2. Re-run LLM annotations (optional): `python -m app.llm.run --workload-id demo`
-3. Refresh the browser to see updated graph
+2. Re-run LLM annotations (optional): `python -m app.llm.run --subscription-id <id>`
+3. Click "Reload" in the frontend UI or refresh the browser
 
 ## Configuration Reference
 

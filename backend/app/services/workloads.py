@@ -5,30 +5,37 @@ import json
 from fastapi import HTTPException
 
 from app.graph.from_azure import build_graph_from_resources
-from app.config import COLLECTOR_RESOURCES_PATH
+from app.config import get_resources_path
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.edge_overrides_store import load_overrides
 from app.storage.node_overrides_store import load_node_overrides
 
 
-def _load_collector_resources() -> list[dict]:
-    if not COLLECTOR_RESOURCES_PATH.exists():
+def _load_collector_resources(subscription_id: str) -> list[dict]:
+    resources_path = get_resources_path(subscription_id)
+    if not resources_path.exists():
         raise HTTPException(
             status_code=404,
             detail="No collector output found. Run the ARG collector first.",
         )
 
-    raw = json.loads(COLLECTOR_RESOURCES_PATH.read_text())
+    raw = json.loads(resources_path.read_text())
+    
+    # Handle new format with subscription metadata
+    if isinstance(raw, dict) and "resources" in raw:
+        return raw["resources"]
+    
+    # Fallback for direct list format
     if not isinstance(raw, list):
         raise HTTPException(status_code=500, detail="Collector output is invalid")
 
     return raw
 
 
-def build_workload_snapshot(workload_id: str) -> dict:
-    resources = _load_collector_resources()
-    return build_graph_from_resources(resources, workload_id)
-def get_workload_graph(workload_id: str, *, include_llm: bool = False) -> dict:
+def build_workload_snapshot(subscription_id: str) -> dict:
+    resources = _load_collector_resources(subscription_id)
+    return build_graph_from_resources(resources, subscription_id)
+def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> dict:
     """
     Get the complete workload graph with all data sources.
     
@@ -37,11 +44,11 @@ def get_workload_graph(workload_id: str, *, include_llm: bool = False) -> dict:
     """
     from app.storage.groups_store import load_groups
     
-    snapshot = build_workload_snapshot(workload_id)
-    annotations = load_llm_annotations(workload_id)
-    node_overrides = load_node_overrides(workload_id)
-    edge_overrides = load_overrides(workload_id)
-    groups = load_groups(workload_id)
+    snapshot = build_workload_snapshot(subscription_id)
+    annotations = load_llm_annotations(subscription_id)
+    node_overrides = load_node_overrides(subscription_id)
+    edge_overrides = load_overrides(subscription_id)
+    groups = load_groups(subscription_id)
 
     # Merge LLM annotations into node metadata
     # Priority: node_overrides > llm_annotations > defaults
