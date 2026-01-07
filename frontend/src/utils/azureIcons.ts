@@ -49,10 +49,15 @@ export const getAzureIcon = (resourceType: string): string => {
  * 
  * @param category - Azure service category (e.g. "Compute", "Containers", "Networking")
  * @param serviceName - Azure service name (e.g. "Azure Kubernetes Service", "Virtual Machines")
+ * @param resourceType - Optional Azure resource type (e.g. "microsoft.app/containerapps")
  * @returns Path to the most appropriate icon
  */
-export const getAzureIconSemantic = (category: string, serviceName: string): string => {
-  return resolveAzureIcon(category, serviceName);
+export const getAzureIconSemantic = (
+  category: string,
+  serviceName: string,
+  resourceType?: string
+): string => {
+  return resolveAzureIcon(category, serviceName, resourceType);
 };
 
 export const getAzureIconColor = (resourceType: string): string => {

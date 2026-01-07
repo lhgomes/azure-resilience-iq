@@ -43,6 +43,8 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   const [layer, setLayer] = useState<number | "">("");
   const [color, setColor] = useState<string>("");
   const [icon, setIcon] = useState<string>("");
+  const [iconSearch, setIconSearch] = useState<string>("");
+  const [showIconDropdown, setShowIconDropdown] = useState<boolean>(false);
   const [criticality, setCriticality] = useState<number | "">("");
 
   const UiBadge = ({ title }: { title?: string }) => (
@@ -137,6 +139,28 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
 
   // Check if there are any user overrides to enable the reset button
   const hasAnyOverride = Object.keys(userOverride).length > 0;
+
+  // Build filtered icon options
+  const allIconOptions: { category: string; file: string; path: string }[] = [];
+  Object.entries(AZURE_ICON_MANIFEST).forEach(([category, files]) => {
+    files.forEach(file => {
+      allIconOptions.push({
+        category,
+        file,
+        path: `/Icons/${category}/${file}`
+      });
+    });
+  });
+
+  const filteredIconOptions = iconSearch
+    ? allIconOptions.filter(opt =>
+        opt.file.toLowerCase().includes(iconSearch.toLowerCase()) ||
+        opt.category.toLowerCase().includes(iconSearch.toLowerCase())
+      )
+    : allIconOptions;
+
+  const selectedIconOption = allIconOptions.find(opt => opt.path === icon);
+  const iconDisplayValue = selectedIconOption ? selectedIconOption.file : "";
 
   if (aiLayerEnabled && node.aiAnnotation) {
     const ann = node.aiAnnotation;
@@ -309,28 +333,96 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
           <strong>Icon</strong>
           {iconUserOverridden && <UiBadge title="User input: Icon" />}
         </div>
-        <select
-          value={icon}
-          onChange={e => setIcon(e.target.value)}
-          style={{
-            width: "100%",
-            padding: "8px 10px",
-            background: "#1a1a1a",
-            color: "#fff",
-            border: "1px solid #333"
-          }}
-        >
-          <option value="">Default</option>
-          {Object.entries(AZURE_ICON_MANIFEST).map(([category, files]) => (
-            <optgroup key={category} label={category}>
-              {files.map(file => (
-                <option key={`${category}/${file}`} value={`/Icons/${category}/${file}`}>
-                  {file}
-                </option>
+        <div style={{ position: "relative" }}>
+          <input
+            type="text"
+            value={iconSearch || iconDisplayValue}
+            onChange={e => {
+              setIconSearch(e.target.value);
+              setShowIconDropdown(true);
+            }}
+            onFocus={() => {
+              setIconSearch("");
+              setShowIconDropdown(true);
+            }}
+            onBlur={() => {
+              setTimeout(() => setShowIconDropdown(false), 200);
+            }}
+            placeholder="Search or select icon..."
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              background: "#1a1a1a",
+              color: "#fff",
+              border: "1px solid #333",
+              borderRadius: 4,
+            }}
+          />
+          {showIconDropdown && (
+            <div
+              style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                right: 0,
+                maxHeight: 300,
+                overflowY: "auto",
+                background: "#1a1a1a",
+                border: "1px solid #333",
+                borderRadius: 4,
+                marginTop: 4,
+                zIndex: 1000,
+              }}
+            >
+              <div
+                onClick={() => {
+                  setIcon("");
+                  setIconSearch("");
+                  setShowIconDropdown(false);
+                }}
+                style={{
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  borderBottom: "1px solid #333",
+                  color: "#999",
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = "#2a2a2a"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+              >
+                Default
+              </div>
+              {filteredIconOptions.map(opt => (
+                <div
+                  key={opt.path}
+                  onClick={() => {
+                    setIcon(opt.path);
+                    setIconSearch("");
+                    setShowIconDropdown(false);
+                  }}
+                  style={{
+                    padding: "8px 12px",
+                    cursor: "pointer",
+                    borderBottom: "1px solid #2a2a2a",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#2a2a2a"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 2 }}>
+                    {opt.category}
+                  </div>
+                  <div style={{ color: "#fff" }}>
+                    {opt.file}
+                  </div>
+                </div>
               ))}
-            </optgroup>
-          ))}
-        </select>
+              {filteredIconOptions.length === 0 && (
+                <div style={{ padding: "12px", color: "#666", textAlign: "center" }}>
+                  No icons found
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={{ marginBottom: 14 }}>
