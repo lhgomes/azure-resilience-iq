@@ -1,17 +1,12 @@
 /**
  * Azure Icon Resolver
  * 
- * Deterministically maps LLM-provided semantic metadata (category + service name)
- * to the most appropriate Azure architecture icon from the local icon repository.
+ * Maps Azure resource types and LLM-provided semantic metadata to icons.
  * 
- * Matching strategy:
- * 1. Normalize category to folder name
- * 2. Search for exact/partial match on service name within category folder
- * 3. Prefer generic service icons over plans/sub-resources
- * 4. Fallback to generic icon in same category
- * 5. Final fallback to general All-Resources icon
- * 
- * No hardcoded icon lists. No AI/LLM calls. Pure string matching.
+ * Priority:
+ * 1. LLM-generated icon mappings (based on resource type)
+ * 2. LLM semantic metadata (category + service name) with fuzzy matching
+ * 3. Fallback to generic icons
  */
 
 import AZURE_ICON_MANIFEST, { type IconManifest } from './azureIconManifest';
@@ -198,26 +193,66 @@ function getGenericCategoryIcon(
 }
 
 /**
+ * Find the best matching icon across all categories.
+ * Used as a fallback when category-specific search fails.
+ * Returns { category, filename } or null if no good match found.
+ */
+function findBestIconAcrossAllCategories(
+  serviceName: string,
+  iconManifest: IconManifest
+): { category: string; filename: string } | null {
+  const normalizedService = normalizeServiceName(serviceName);
+  if (!normalizedService) return null;
+  
+  let bestMatch: { category: string; filename: string; score: number } | null = null;
+  
+  // Search across all categories
+  for (const [category, icons] of Object.entries(iconManifest)) {
+    if (!icons || icons.length === 0) continue;
+    
+    for (const icon of icons) {
+      const score = scoreIconMatch(icon, normalizedService);
+      if (!bestMatch || score > bestMatch.score) {
+        bestMatch = { category, filename: icon, score };
+      }
+    }
+  }
+  
+  // Only return if we have a reasonable match (score > 30 for cross-category search)
+  if (bestMatch && bestMatch.score > 30) {
+    return { category: bestMatch.category, filename: bestMatch.filename };
+  }
+  
+  return null;
+}
+
+/**
  * Main resolver function.
  * 
  * @param category - Azure service category from LLM (e.g. "Compute", "Containers")
  * @param serviceName - Azure service name from LLM (e.g. "Azure Kubernetes Service", "Virtual Machines")
+ * @param resourceType - Optional Azure resource type (e.g. "microsoft.app/containerapps")
  * @param iconManifest - Optional pre-built manifest of available icons per category
  * @returns Relative path to icon (e.g. "/Icons/containers/10023-icon-service-Kubernetes-Services.svg")
  */
 export function resolveAzureIcon(
   category: string,
   serviceName: string,
+  resourceType?: string,
   iconManifest: IconManifest = AZURE_ICON_MANIFEST
 ): string {
+  // Note: Icon resolution now happens on backend via iconMappings.json
+  // This function is kept for backwards compatibility and manual overrides
+  
   // Step 1: Normalize category to folder name
   const categoryFolder = normalizeCategoryToFolder(category);
   
   // Step 2: Get available icons for this category from pre-built manifest
   const availableIcons = iconManifest[categoryFolder] || [];
   
-  // Step 3: Try to find best match
+  // Step 3: Try to find best match in expected category
   let matchedIcon: string | null = null;
+  let matchedCategory: string = categoryFolder;
   
   if (availableIcons.length > 0) {
     matchedIcon = findBestIconInCategory(categoryFolder, serviceName, availableIcons);
@@ -228,12 +263,21 @@ export function resolveAzureIcon(
     }
   }
   
-  // Step 5: Construct path
-  if (matchedIcon) {
-    return `${ICON_BASE_PATH}/${categoryFolder}/${matchedIcon}`;
+  // Step 5: If still no match, search across all categories
+  if (!matchedIcon) {
+    const crossCategoryMatch = findBestIconAcrossAllCategories(serviceName, iconManifest);
+    if (crossCategoryMatch) {
+      matchedCategory = crossCategoryMatch.category;
+      matchedIcon = crossCategoryMatch.filename;
+    }
   }
   
-  // Step 6: Final fallback to general All-Resources icon
+  // Step 6: Construct path
+  if (matchedIcon) {
+    return `${ICON_BASE_PATH}/${matchedCategory}/${matchedIcon}`;
+  }
+  
+  // Step 7: Final fallback to general All-Resources icon
   return `${ICON_BASE_PATH}/general/10001-icon-service-All-Resources.svg`;
 }
 
