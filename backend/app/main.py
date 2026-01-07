@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
+from app.services.subscriptions import list_subscriptions
 from app.intent.manual_edge import ManualEdge
 from app.intent.node_override import NodeOverride
 
@@ -23,6 +24,7 @@ from app.storage.groups_store import (
     delete_group,
     add_node_to_group,
     remove_node_from_group,
+    get_group,
     NodeGroup,
 )
 from app.relationships.utils import norm_id
@@ -82,8 +84,15 @@ class AddNodeToGroupRequest(BaseModel):
 def health():
     return {"status": "ok"}
 
-@app.patch("/api/workloads/{workload_id}/nodes/{node_id:path}/criticality")
-def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCriticalityRequest):
+
+@app.get("/api/subscriptions")
+def get_subscriptions():
+    """List all available subscriptions by scanning data directory."""
+    return list_subscriptions()
+
+
+@app.patch("/api/subscriptions/{subscription_id}/nodes/{node_id:path}/criticality")
+def update_criticality_score(subscription_id: str, node_id: str, payload: UpdateCriticalityRequest):
     """Update the criticality score (1-10) for a node. Persists as user override."""
     node_id_norm = norm_id(node_id)
     score = payload.score
@@ -94,7 +103,7 @@ def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCrit
             detail="criticality_score must be an integer between 1 and 10"
         )
 
-    existing = load_node_overrides(workload_id).get(node_id_norm)
+    existing = load_node_overrides(subscription_id).get(node_id_norm)
     
     override = NodeOverride(
         node_id=node_id_norm,
@@ -107,7 +116,7 @@ def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCrit
         criticality_score=score,
     )
 
-    save_node_override(workload_id, override)
+    save_node_override(subscription_id, override)
     
     return {
         "status": "updated",
@@ -115,11 +124,11 @@ def update_criticality_score(workload_id: str, node_id: str, payload: UpdateCrit
         "criticality_score": score
     }
 
-@app.delete("/api/workloads/{workload_id}/nodes/{node_id:path}/criticality")
-def reset_criticality_score(workload_id: str, node_id: str):
+@app.delete("/api/subscriptions/{subscription_id}/nodes/{node_id:path}/criticality")
+def reset_criticality_score(subscription_id: str, node_id: str):
     """Reset criticality score override for a node (reverts to LLM suggestion)."""
     node_id_norm = norm_id(node_id)
-    existing = load_node_overrides(workload_id).get(node_id_norm)
+    existing = load_node_overrides(subscription_id).get(node_id_norm)
     
     if not existing or existing.criticality_score is None:
         raise HTTPException(
@@ -141,22 +150,22 @@ def reset_criticality_score(workload_id: str, node_id: str):
     
     # If all fields are None, delete the entire override
     if all(v is None for k, v in override.model_dump().items() if k != 'node_id' and k != 'created_by'):
-        delete_node_override(workload_id, node_id_norm)
+        delete_node_override(subscription_id, node_id_norm)
     else:
-        save_node_override(workload_id, override)
+        save_node_override(subscription_id, override)
 
     return {
         "status": "deleted",
         "node_id": node_id_norm
     }
 
-@app.patch("/api/workloads/{workload_id}/nodes/{node_id:path}")
-def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
+@app.patch("/api/subscriptions/{subscription_id}/nodes/{node_id:path}")
+def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
     node_id_norm = norm_id(node_id)
     if not payload.model_fields_set:
         raise HTTPException(status_code=400, detail="at least one field is required")
 
-    existing = load_node_overrides(workload_id).get(node_id_norm)
+    existing = load_node_overrides(subscription_id).get(node_id_norm)
 
     name = (
         (payload.name.strip() if payload.name is not None else None)
@@ -217,13 +226,13 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
         and override.criticality_score is None
     ):
         # Nothing left to override; remove record if it exists.
-        deleted = delete_node_override(workload_id, node_id_norm)
+        deleted = delete_node_override(subscription_id, node_id_norm)
         return {
             "status": "deleted" if deleted else "noop",
             "node_id": node_id_norm,
         }
 
-    save_node_override(workload_id, override)
+    save_node_override(subscription_id, override)
     return {
         "status": "updated",
         "node_id": node_id_norm,
@@ -236,18 +245,18 @@ def update_node(workload_id: str, node_id: str, payload: UpdateNodeRequest):
     }
 
 
-@app.delete("/api/workloads/{workload_id}/nodes/{node_id:path}")
-def remove_node_override(workload_id: str, node_id: str):
+@app.delete("/api/subscriptions/{subscription_id}/nodes/{node_id:path}")
+def remove_node_override(subscription_id: str, node_id: str):
     node_id_norm = norm_id(node_id)
-    deleted = delete_node_override(workload_id, node_id_norm)
+    deleted = delete_node_override(subscription_id, node_id_norm)
 
     if not deleted:
         raise HTTPException(status_code=404, detail="Node override not found")
 
     return {"status": "deleted", "node_id": node_id_norm}
 
-@app.post("/api/workloads/{workload_id}/edges")
-def create_manual_edge(workload_id: str, payload: CreateEdgeRequest):
+@app.post("/api/subscriptions/{subscription_id}/edges")
+def create_manual_edge(subscription_id: str, payload: CreateEdgeRequest):
     source = norm_id(payload.source)
     target = norm_id(payload.target)
 
@@ -281,32 +290,32 @@ def create_manual_edge(workload_id: str, payload: CreateEdgeRequest):
         origin="manual",
     )
 
-    save_manual_edge(workload_id, manual_edge)
+    save_manual_edge(subscription_id, manual_edge)
 
     return {"edge": manual_edge}
 
-@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/accept")
-def accept_edge(workload_id: str, edge_id: str):
+@app.post("/api/subscriptions/{subscription_id}/edges/{edge_id:path}/accept")
+def accept_edge(subscription_id: str, edge_id: str):
     override = EdgeOverride(
         edge_id=edge_id,
         decision=EdgeDecision.accepted
     )
-    save_override(workload_id, override)
+    save_override(subscription_id, override)
     return {"status": "accepted", "edge_id": edge_id}
 
-@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/reject")
-def reject_edge(workload_id: str, edge_id: str, reason: str | None = None):
+@app.post("/api/subscriptions/{subscription_id}/edges/{edge_id:path}/reject")
+def reject_edge(subscription_id: str, edge_id: str, reason: str | None = None):
     override = EdgeOverride(
         edge_id=edge_id,
         decision=EdgeDecision.rejected,
         reason=reason
     )
-    save_override(workload_id, override)
+    save_override(subscription_id, override)
     return {"status": "rejected", "edge_id": edge_id}
 
-@app.delete("/api/workloads/{workload_id}/edges/{edge_id:path}")
-def remove_manual_edge(workload_id: str, edge_id: str):
-    deleted = delete_manual_edge(workload_id, edge_id)
+@app.delete("/api/subscriptions/{subscription_id}/edges/{edge_id:path}")
+def remove_manual_edge(subscription_id: str, edge_id: str):
+    deleted = delete_manual_edge(subscription_id, edge_id)
     if not deleted:
         raise HTTPException(
             status_code=404,
@@ -316,11 +325,11 @@ def remove_manual_edge(workload_id: str, edge_id: str):
     return {"status": "deleted", "edge_id": edge_id}
 
 
-@app.post("/api/workloads/{workload_id}/edges/{edge_id:path}/reverse")
-def reverse_manual_edge_direction(workload_id: str, edge_id: str):
+@app.post("/api/subscriptions/{subscription_id}/edges/{edge_id:path}/reverse")
+def reverse_manual_edge_direction(subscription_id: str, edge_id: str):
     """Reverse the direction of a manual edge (swap source and target)."""
     # Load all manual edges
-    edges = load_manual_edges(workload_id)
+    edges = load_manual_edges(subscription_id)
     
     # Find the edge to reverse
     edge_to_reverse = None
@@ -348,30 +357,28 @@ def reverse_manual_edge_direction(workload_id: str, edge_id: str):
     )
     
     # Save the updated edge (this will replace the old one)
-    save_manual_edge(workload_id, reversed_edge)
+    save_manual_edge(subscription_id, reversed_edge)
     
     return {"edge": reversed_edge}
 
 
 # Group endpoints
-@app.get("/api/workloads/{workload_id}/groups")
-def get_groups(workload_id: str):
-    groups = load_groups(workload_id)
+@app.get("/api/subscriptions/{subscription_id}/groups")
+def get_groups(subscription_id: str):
+    groups = load_groups(subscription_id)
     return [g.model_dump() for g in groups]
 
 
-@app.post("/api/workloads/{workload_id}/groups")
-def create_group(workload_id: str, payload: CreateGroupRequest):
+@app.post("/api/subscriptions/{subscription_id}/groups")
+def create_group(subscription_id: str, payload: CreateGroupRequest):
     group = NodeGroup(id=payload.id, name=payload.name, nodes=payload.nodes)
-    save_group(workload_id, group)
+    save_group(subscription_id, group)
     return group.model_dump()
 
 
-@app.patch("/api/workloads/{workload_id}/groups/{group_id}")
-def update_group(workload_id: str, group_id: str, payload: UpdateGroupRequest):
-    from app.storage.groups_store import get_group
-    
-    group = get_group(workload_id, group_id)
+@app.patch("/api/subscriptions/{subscription_id}/groups/{group_id}")
+def update_group(subscription_id: str, group_id: str, payload: UpdateGroupRequest):
+    group = get_group(subscription_id, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
     
@@ -380,39 +387,38 @@ def update_group(workload_id: str, group_id: str, payload: UpdateGroupRequest):
     if payload.nodes is not None:
         group.nodes = payload.nodes
     
-    save_group(workload_id, group)
+    save_group(subscription_id, group)
     return group.model_dump()
 
 
-@app.delete("/api/workloads/{workload_id}/groups/{group_id}")
-def delete_group_endpoint(workload_id: str, group_id: str):
-    deleted = delete_group(workload_id, group_id)
+@app.delete("/api/subscriptions/{subscription_id}/groups/{group_id}")
+def delete_group_endpoint(subscription_id: str, group_id: str):
+    deleted = delete_group(subscription_id, group_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"status": "deleted", "group_id": group_id}
 
 
-@app.post("/api/workloads/{workload_id}/groups/{group_id}/nodes")
-def add_node_endpoint(workload_id: str, group_id: str, payload: AddNodeToGroupRequest):
-    success = add_node_to_group(workload_id, group_id, payload.node_id)
+@app.post("/api/subscriptions/{subscription_id}/groups/{group_id}/nodes")
+def add_node_endpoint(subscription_id: str, group_id: str, payload: AddNodeToGroupRequest):
+    success = add_node_to_group(subscription_id, group_id, payload.node_id)
     if not success:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"status": "added", "group_id": group_id, "node_id": payload.node_id}
 
 
-@app.delete("/api/workloads/{workload_id}/groups/{group_id}/nodes/{node_id:path}")
-def remove_node_endpoint(workload_id: str, group_id: str, node_id: str):
-    success = remove_node_from_group(workload_id, group_id, node_id)
+@app.delete("/api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id:path}")
+def remove_node_endpoint(subscription_id: str, group_id: str, node_id: str):
+    success = remove_node_from_group(subscription_id, group_id, node_id)
     if not success:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"status": "removed", "group_id": group_id, "node_id": node_id}
 
 
-@app.get("/api/workloads/{workload_id}/graph")
-def get_graph(workload_id: str, include_llm: bool = False):
-    return get_workload_graph(workload_id, include_llm=include_llm)
+@app.get("/api/subscriptions/{subscription_id}/graph")
+def get_graph(subscription_id: str, include_llm: bool = False):
+    return get_workload_graph(subscription_id, include_llm=include_llm)
 
-@app.get("/api/workloads/{workload_id}/reviews")
-def review_inbox(workload_id: str):
-    return get_review_inbox(workload_id)
-
+@app.get("/api/subscriptions/{subscription_id}/reviews")
+def review_inbox(subscription_id: str):
+    return get_review_inbox(subscription_id)

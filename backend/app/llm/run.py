@@ -2,12 +2,12 @@
 LLM Annotator CLI runner.
 
 Usage:
-  python -m app.llm.run --workload-id demo
+  python -m app.llm.run --subscription-id 00000000-0000-0000-0000-000000000000
 
 This script:
-1. Loads the graph from the collector output (default: data/collector/resources.json)
+1. Loads the graph from the collector output (data/{subscription_id}/resources/{subscription_id}.json)
 2. Runs the LLM annotator to generate architecture suggestions
-3. Saves annotations to data/llm_annotations/
+3. Saves annotations to data/{subscription_id}/llm_annotations/{subscription_id}.json
 4. Reports success/failures
 
 Requires:
@@ -27,7 +27,7 @@ import argparse
 from dotenv import load_dotenv
 
 from app.graph.from_azure import build_graph_from_resources
-from app.config import COLLECTOR_RESOURCES_PATH
+from app.config import get_resources_path
 from app.llm.annotator import annotate_graph
 from app.storage.llm_annotations_store import save_llm_annotations
 
@@ -40,36 +40,43 @@ LOGGER = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
-COLLECTOR_RESOURCES = COLLECTOR_RESOURCES_PATH
-
 
 def main():
     parser = argparse.ArgumentParser(
         description="Run LLM annotator on collected resources"
     )
     parser.add_argument(
-        "--workload-id",
-        default="demo",
-        help="Workload ID (default: demo)"
+        "--subscription-id",
+        required=True,
+        help="Subscription ID (UUID format)"
     )
     args = parser.parse_args()
 
-    LOGGER.info("Starting LLM annotator for workload: %s", args.workload_id)
+    LOGGER.info("Starting LLM annotator for subscription: %s", args.subscription_id)
 
     # Check if resources exist
-    if not COLLECTOR_RESOURCES.exists():
+    resources_path = get_resources_path(args.subscription_id)
+    if not resources_path.exists():
         LOGGER.error(
             "Collector resources not found at %s. "
-            "Run 'python -m app.collector.run --subscription-id <id>' first.",
-            COLLECTOR_RESOURCES
+            "Run 'python -m app.collector.run --subscription-id %s' first.",
+            resources_path, args.subscription_id
         )
         return 1
 
     try:
         # Load resources and build graph
-        LOGGER.info("Loading resources from %s", COLLECTOR_RESOURCES)
-        resources = json.loads(COLLECTOR_RESOURCES.read_text())
-        graph = build_graph_from_resources(resources, args.workload_id)
+        LOGGER.info("Loading resources from %s", resources_path)
+        resources_data = json.loads(resources_path.read_text())
+        
+        # Handle new format with subscription metadata
+        if isinstance(resources_data, dict) and "resources" in resources_data:
+            resources = resources_data["resources"]
+        else:
+            # Fallback for direct list format
+            resources = resources_data
+        
+        graph = build_graph_from_resources(resources, args.subscription_id)
         LOGGER.info("Loaded graph with %d nodes and %d edges", 
                     len(graph["nodes"]), len(graph["edges"]))
 
@@ -83,7 +90,7 @@ def main():
 
         # Save annotations
         LOGGER.info("Saving annotations...")
-        save_llm_annotations(args.workload_id, annotations)
+        save_llm_annotations(args.subscription_id, annotations)
 
         LOGGER.info(
             "✓ Annotation complete: %d nodes, %d edge suggestions",

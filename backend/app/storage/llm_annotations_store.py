@@ -7,17 +7,16 @@ from app.llm.models import (
     EdgeSuggestionPayload,
 )
 
-from app.storage._json_repo import DATA_DIR, read_json, write_json
-
-BASE = DATA_DIR / "llm_annotations"
-
-
-def _path(workload_id: str) -> Path:
-    return BASE / f"{workload_id}.json"
+from app.storage._json_repo import read_json, write_json
+from app.config import get_llm_annotations_path
 
 
-def load_llm_annotations(workload_id: str) -> LLMAnnotations:
-    raw = read_json(_path(workload_id), default={})
+def _path(subscription_id: str) -> Path:
+    return get_llm_annotations_path(subscription_id)
+
+
+def load_llm_annotations(subscription_id: str) -> LLMAnnotations:
+    raw = read_json(_path(subscription_id), default={})
     if not isinstance(raw, dict):
         return LLMAnnotations(nodes=[], edges=[])
     node_items = raw.get("nodes") or []
@@ -41,6 +40,6 @@ def load_llm_annotations(workload_id: str) -> LLMAnnotations:
     return LLMAnnotations(nodes=nodes, edges=edges)
 
 
-def save_llm_annotations(workload_id: str, annotations: LLMAnnotations):
+def save_llm_annotations(subscription_id: str, annotations: LLMAnnotations):
     payload = annotations.model_dump()
-    write_json(_path(workload_id), payload)
+    write_json(_path(subscription_id), payload)
