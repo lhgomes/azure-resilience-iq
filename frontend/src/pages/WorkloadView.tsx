@@ -18,6 +18,7 @@ import {
   deleteEdge,
   reverseEdgeDirection,
   fetchWorkloadGraph,
+  fetchSubscriptions,
   patchNode,
   rejectEdge,
   resetNode,
@@ -26,6 +27,7 @@ import {
   deleteGroup,
   addNodeToGroup,
   removeNodeFromGroup,
+  type SubscriptionInfo,
 } from "../api/workloads";
 import {
   buildViewGraph,
@@ -37,10 +39,13 @@ import {
   type ViewLevel,
 } from "../domain/graphView";
 
-const WORKLOAD_ID = "demo";
-const STORAGE_KEY = `workload_graph_${WORKLOAD_ID}`;
+// Subscription-aware view: user selects a subscriptionId
 
 const WorkloadView: React.FC = () => {
+  const [subscriptions, setSubscriptions] = useState<SubscriptionInfo[]>([]);
+  const [subscriptionId, setSubscriptionId] = useState<string>("");
+  const [showSubscriptionPicker, setShowSubscriptionPicker] = useState<boolean>(true);
+  const storageKey = useMemo(() => `workload_graph_${subscriptionId}`, [subscriptionId]);
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
@@ -74,7 +79,7 @@ const WorkloadView: React.FC = () => {
 
   const readStoredGraph = (): GraphSnapshot | null => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(storageKey);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) return null;
@@ -86,11 +91,11 @@ const WorkloadView: React.FC = () => {
 
   const persistGraph = (next: GraphSnapshot | null) => {
     if (!next) {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(storageKey);
       return;
     }
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
       /* ignore storage errors */
     }
@@ -106,11 +111,12 @@ const WorkloadView: React.FC = () => {
   };
 
   const fetchGraph = useCallback(async () => {
+    if (!subscriptionId) return;
     try {
       setLoading(true);
       setError(null);
 
-      const raw = await fetchWorkloadGraph(WORKLOAD_ID);
+      const raw = await fetchWorkloadGraph(subscriptionId);
       const normalized = normalizeGraph(raw);
       persistGraph(normalized);
       setGraph(normalized);
@@ -119,6 +125,28 @@ const WorkloadView: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  }, [subscriptionId]);
+
+  // Fetch subscriptions on mount
+  useEffect(() => {
+    fetchSubscriptions()
+      .then(subs => {
+        setSubscriptions(subs);
+        
+        // Try to restore last selected subscription if it still exists
+        const stored = localStorage.getItem("awg_subscription_id");
+        if (stored && subs.some(s => s.id === stored)) {
+          setSubscriptionId(stored);
+          setShowSubscriptionPicker(false);
+        } else {
+          // Invalid/missing stored subscription - clear it and show picker
+          localStorage.removeItem("awg_subscription_id");
+          setShowSubscriptionPicker(true);
+        }
+      })
+      .catch(err => {
+        console.error("Failed to fetch subscriptions:", err);
+      });
   }, []);
 
   // Fit view when filters change
@@ -180,20 +208,26 @@ const WorkloadView: React.FC = () => {
     });
   }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
 
-  // Hydrate from local storage, then fetch fresh graph
+  // Persist subscription selection
   useEffect(() => {
-    const stored = readStoredGraph();
-    if (stored) {
-      setGraph(stored);
+    if (subscriptionId) {
+      localStorage.setItem("awg_subscription_id", subscriptionId);
     }
+  }, [subscriptionId]);
 
+  // Hydrate from local storage for this subscription, then fetch fresh graph
+  useEffect(() => {
+    if (!subscriptionId) return; // Don't fetch until subscription is selected
+    
+    const stored = readStoredGraph();
+    setGraph(stored);
     fetchGraph();
-  }, [fetchGraph]);
+  }, [subscriptionId]); // Only re-fetch when subscription changes
 
   // Accept edge
   const handleAcceptEdge = async (edgeId: string) => {
     try {
-      await acceptEdge(WORKLOAD_ID, edgeId);
+      await acceptEdge(subscriptionId, edgeId);
 
       // Optimistic UI update
       updateGraph(prev =>
@@ -222,7 +256,7 @@ const WorkloadView: React.FC = () => {
   // Reject edge
   const handleRejectEdge = async (edgeId: string) => {
     try {
-      await rejectEdge(WORKLOAD_ID, edgeId);
+      await rejectEdge(subscriptionId, edgeId);
 
       updateGraph(prev =>
         prev
@@ -249,7 +283,7 @@ const WorkloadView: React.FC = () => {
 
   const handleDeleteEdge = async (edgeId: string) => {
     try {
-      await deleteEdge(WORKLOAD_ID, edgeId);
+      await deleteEdge(subscriptionId, edgeId);
 
       updateGraph(prev =>
         prev
@@ -270,7 +304,7 @@ const WorkloadView: React.FC = () => {
 
   const handleReverseEdgeDirection = async (edgeId: string) => {
     try {
-      const result = await reverseEdgeDirection(WORKLOAD_ID, edgeId);
+      const result = await reverseEdgeDirection(subscriptionId, edgeId);
       const reversedEdge = result.edge;
 
       if (reversedEdge) {
@@ -341,7 +375,7 @@ const WorkloadView: React.FC = () => {
     if (!sourceId || !targetId || sourceId === targetId) return;
 
     try {
-      const body = await createManualEdge(WORKLOAD_ID, {
+      const body = await createManualEdge(subscriptionId, {
         source: sourceId,
         target: targetId,
         relationship: "depends_on",
@@ -395,7 +429,7 @@ const WorkloadView: React.FC = () => {
         criticality_score: payload.criticality,
       };
 
-      await patchNode(WORKLOAD_ID, nodeId, nodePatch);
+      await patchNode(subscriptionId, nodeId, nodePatch);
 
       updateGraph(prev => {
         if (!prev) return prev;
@@ -516,14 +550,14 @@ const WorkloadView: React.FC = () => {
       for (const group of graph.groups) {
         for (const nodeId of memberIds) {
           if (group.nodes.includes(nodeId)) {
-            await removeNodeFromGroup(WORKLOAD_ID, group.id, nodeId);
+            await removeNodeFromGroup(subscriptionId, group.id, nodeId);
           }
         }
       }
     }
 
     // Create the new group
-    await createGroup(WORKLOAD_ID, { id: groupId, name: label, nodes: memberIds });
+    await createGroup(subscriptionId, { id: groupId, name: label, nodes: memberIds });
   };
 
 
@@ -541,7 +575,7 @@ const WorkloadView: React.FC = () => {
     );
 
     // Delete the entire group
-    await deleteGroup(WORKLOAD_ID, groupId);
+    await deleteGroup(subscriptionId, groupId);
   };
 
   const renameGroup = async (args: { groupId: string; label: string; memberIds: string[] }) => {
@@ -558,7 +592,7 @@ const WorkloadView: React.FC = () => {
     );
 
     // Update the group name
-    await updateGroup(WORKLOAD_ID, groupId, { name: label });
+    await updateGroup(subscriptionId, groupId, { name: label });
   };
 
   const moveNodeToGroup = async (args: { nodeId: string; groupId: string }) => {
@@ -588,13 +622,13 @@ const WorkloadView: React.FC = () => {
     if (graph.groups) {
       for (const group of graph.groups) {
         if (group.nodes.includes(nodeId) && group.id !== groupId) {
-          await removeNodeFromGroup(WORKLOAD_ID, group.id, nodeId);
+          await removeNodeFromGroup(subscriptionId, group.id, nodeId);
         }
       }
     }
 
     // Add to the new group
-    await addNodeToGroup(WORKLOAD_ID, groupId, nodeId);
+    await addNodeToGroup(subscriptionId, groupId, nodeId);
   };
 
   const handleRemoveNodeFromGroup = async (args: { nodeId: string; groupId: string }) => {
@@ -620,7 +654,7 @@ const WorkloadView: React.FC = () => {
     });
 
     // Remove from the group
-    await removeNodeFromGroup(WORKLOAD_ID, groupId, nodeId);
+    await removeNodeFromGroup(subscriptionId, groupId, nodeId);
   };
 
   const handleNodeRemoveFromGroupClick = (args: { nodeId: string; groupId: string }) => {
@@ -630,7 +664,7 @@ const WorkloadView: React.FC = () => {
 
   const handleResetNode = async (nodeId: string) => {
     try {
-      await resetNode(WORKLOAD_ID, nodeId);
+      await resetNode(subscriptionId, nodeId);
 
       // Remove override from local storage and rebuild graph
       updateGraph(prev => {
@@ -689,6 +723,80 @@ const WorkloadView: React.FC = () => {
       };
     }
   }, [isResizing, handleMouseMove, handleMouseUp]);
+
+  const handleSelectSubscription = (subId: string) => {
+    setSubscriptionId(subId);
+    localStorage.setItem("awg_subscription_id", subId);
+    setShowSubscriptionPicker(false);
+  };
+
+  if (showSubscriptionPicker) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100vh",
+          background: "#0f0f0f",
+          color: "#eee",
+        }}
+      >
+        <div
+          style={{
+            background: "#1a1a1a",
+            border: "1px solid #333",
+            borderRadius: 8,
+            padding: "32px 40px",
+            minWidth: 400,
+            maxWidth: 600,
+          }}
+        >
+          <h2 style={{ margin: "0 0 16px 0", fontSize: 20, fontWeight: 600 }}>
+            Select Subscription
+          </h2>
+          <p style={{ margin: "0 0 20px 0", fontSize: 14, color: "#9AA0A6" }}>
+            Choose a subscription to view its workload graph
+          </p>
+
+          {subscriptions.length === 0 ? (
+            <div style={{ fontSize: 14, color: "#9AA0A6" }}>
+              No subscriptions available. Run the collector first.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {subscriptions.map(sub => (
+                <button
+                  key={sub.id}
+                  onClick={() => handleSelectSubscription(sub.id)}
+                  style={{
+                    padding: "12px 16px",
+                    background: "#2a2a2a",
+                    color: "#fff",
+                    border: "1px solid #444",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 14,
+                    textAlign: "left",
+                    transition: "background 0.2s",
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.background = "#333";
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = "#2a2a2a";
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{sub.name}</div>
+                  <div style={{ fontSize: 12, color: "#9AA0A6" }}>{sub.id}</div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -962,6 +1070,65 @@ const WorkloadView: React.FC = () => {
             {sidebarOpen ? "◀ Hide" : "▶ Show"} Menu
           </button>
           <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Workload Graph</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <label htmlFor="subscriptionId" style={{ fontSize: 12, color: "#9AA0A6" }}>Subscription</label>
+            <select
+              id="subscriptionId"
+              value={subscriptionId}
+              onChange={e => {
+                const newId = e.target.value;
+                setSubscriptionId(newId);
+                localStorage.setItem("awg_subscription_id", newId);
+              }}
+              style={{
+                padding: "6px 8px",
+                background: "#181818",
+                color: "#fff",
+                border: "1px solid #333",
+                borderRadius: 4,
+                fontSize: 12,
+                minWidth: 260,
+                cursor: "pointer",
+              }}
+            >
+              {subscriptions.map(sub => (
+                <option key={sub.id} value={sub.id}>
+                  {sub.name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setShowSubscriptionPicker(true)}
+              style={{
+                padding: "6px 12px",
+                background: "#1f2937",
+                color: "#fff",
+                border: "1px solid #333",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 12
+              }}
+              title="Change subscription"
+            >
+              Change
+            </button>
+            <button
+              onClick={() => fetchGraph()}
+              disabled={!subscriptionId}
+              style={{
+                padding: "6px 12px",
+                background: subscriptionId ? "#1f2937" : "#2a2a2a",
+                color: subscriptionId ? "#fff" : "#777",
+                border: "1px solid #333",
+                borderRadius: 4,
+                cursor: subscriptionId ? "pointer" : "not-allowed",
+                fontSize: 12
+              }}
+              title="Reload graph"
+            >
+              Reload
+            </button>
+          </div>
         </div>
 
         {/* Graph canvas */}

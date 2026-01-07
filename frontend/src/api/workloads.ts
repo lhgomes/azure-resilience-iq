@@ -1,4 +1,9 @@
-export type WorkloadId = string;
+export type SubscriptionId = string;
+
+export interface SubscriptionInfo {
+  id: string;
+  name: string;
+}
 
 export interface RawGraphNode {
   id: string;
@@ -98,35 +103,39 @@ async function apiNoBody(path: string, init?: RequestInit): Promise<void> {
   }
 }
 
-export function workloadPath(workloadId: WorkloadId, suffix: string): string {
-  return `/api/workloads/${encodeURIComponent(workloadId)}${suffix}`;
+export function subscriptionPath(subscriptionId: SubscriptionId, suffix: string): string {
+  return `/api/subscriptions/${encodeURIComponent(subscriptionId)}${suffix}`;
 }
 
-export async function fetchWorkloadGraph(workloadId: WorkloadId): Promise<RawGraphSnapshot> {
-  return await apiJson<RawGraphSnapshot>(workloadPath(workloadId, `/graph`));
+export async function fetchSubscriptions(): Promise<SubscriptionInfo[]> {
+  return await apiJson<SubscriptionInfo[]>("/api/subscriptions");
 }
 
-export async function acceptEdge(workloadId: WorkloadId, edgeId: string): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}/accept`), { method: "POST" });
+export async function fetchWorkloadGraph(subscriptionId: SubscriptionId): Promise<RawGraphSnapshot> {
+  return await apiJson<RawGraphSnapshot>(subscriptionPath(subscriptionId, `/graph`));
 }
 
-export async function rejectEdge(workloadId: WorkloadId, edgeId: string): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}/reject`), { method: "POST" });
+export async function acceptEdge(subscriptionId: SubscriptionId, edgeId: string): Promise<void> {
+  await apiNoBody(subscriptionPath(subscriptionId, `/edges/${encodeURIComponent(edgeId)}/accept`), { method: "POST" });
 }
 
-export async function deleteEdge(workloadId: WorkloadId, edgeId: string): Promise<void> {
-  await apiNoBody(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}`), { method: "DELETE" });
+export async function rejectEdge(subscriptionId: SubscriptionId, edgeId: string): Promise<void> {
+  await apiNoBody(subscriptionPath(subscriptionId, `/edges/${encodeURIComponent(edgeId)}/reject`), { method: "POST" });
 }
 
-export async function reverseEdgeDirection(workloadId: WorkloadId, edgeId: string): Promise<{ edge?: RawGraphEdge; old_edge_id?: string } & Record<string, unknown>> {
-  return await apiJson(workloadPath(workloadId, `/edges/${encodeURIComponent(edgeId)}/reverse`), { method: "POST" });
+export async function deleteEdge(subscriptionId: SubscriptionId, edgeId: string): Promise<void> {
+  await apiNoBody(subscriptionPath(subscriptionId, `/edges/${encodeURIComponent(edgeId)}`), { method: "DELETE" });
+}
+
+export async function reverseEdgeDirection(subscriptionId: SubscriptionId, edgeId: string): Promise<{ edge?: RawGraphEdge; old_edge_id?: string } & Record<string, unknown>> {
+  return await apiJson(subscriptionPath(subscriptionId, `/edges/${encodeURIComponent(edgeId)}/reverse`), { method: "POST" });
 }
 
 export async function createManualEdge(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   payload: { source: string; target: string; relationship: string }
 ): Promise<{ edge?: RawGraphEdge } & Record<string, unknown>> {
-  return await apiJson(workloadPath(workloadId, "/edges"), {
+  return await apiJson(subscriptionPath(subscriptionId, "/edges"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -134,7 +143,7 @@ export async function createManualEdge(
 }
 
 export async function patchNode(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   nodeId: string,
   payload: {
     name?: string;
@@ -145,24 +154,24 @@ export async function patchNode(
   }
 ): Promise<void> {
   // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
-  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/nodes/${encodeURIComponent(nodeId)}`, {
+  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 }
 
-export async function resetNode(workloadId: WorkloadId, nodeId: string): Promise<void> {
+export async function resetNode(subscriptionId: SubscriptionId, nodeId: string): Promise<void> {
   // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
-  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
 }
 
 // Group API functions
 export async function createGroup(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   payload: { id: string; name: string; nodes: string[] }
 ): Promise<NodeGroup> {
-  return await apiJson(`/api/workloads/${encodeURIComponent(workloadId)}/groups`, {
+  return await apiJson(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -170,29 +179,29 @@ export async function createGroup(
 }
 
 export async function updateGroup(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   groupId: string,
   payload: { name?: string; nodes?: string[] }
 ): Promise<NodeGroup> {
-  return await apiJson(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}`, {
+  return await apiJson(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 }
 
-export async function deleteGroup(workloadId: WorkloadId, groupId: string): Promise<void> {
-  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}`, {
+export async function deleteGroup(subscriptionId: SubscriptionId, groupId: string): Promise<void> {
+  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}`, {
     method: "DELETE",
   });
 }
 
 export async function addNodeToGroup(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   groupId: string,
   nodeId: string
 ): Promise<void> {
-  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}/nodes`, {
+  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ node_id: nodeId }),
@@ -200,12 +209,12 @@ export async function addNodeToGroup(
 }
 
 export async function removeNodeFromGroup(
-  workloadId: WorkloadId,
+  subscriptionId: SubscriptionId,
   groupId: string,
   nodeId: string
 ): Promise<void> {
   await apiNoBody(
-    `/api/workloads/${encodeURIComponent(workloadId)}/groups/${encodeURIComponent(groupId)}/nodes/${encodeURIComponent(nodeId)}`,
+    `/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes/${encodeURIComponent(nodeId)}`,
     { method: "DELETE" }
   );
 }
