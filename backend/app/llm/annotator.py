@@ -84,10 +84,23 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 
         - criticality_score:
             Integer 1–10 based on business impact, blast radius, and dependency count.
+            
+            SCORING GUIDELINES (use node's connection_count field)
+            -------------------------------------------------------
+            - Isolated nodes (connection_count = 0): default to 1–3 unless the
+              resource type itself is inherently critical (e.g., standalone key vault,
+              storage account with important data, compliance resources).
+            - Nodes with few dependencies (connection_count 1–2): typically 3–5.
+            - Nodes with moderate dependencies (connection_count 3–5): typically 5–7.
+            - Nodes with many dependencies or high fan-out (connection_count 6+): typically 7–10.
+            - Adjust based on resource type criticality (e.g., AKS, App Service, databases
+              are typically higher; NICs, IP configs are typically lower).
+            
             If the node metadata includes criticality_override (user-authored), treat that
             as the baseline score and only adjust when there is strong evidence that a
             materially different score is warranted. Make the rationale explicit when
             diverging from the override.
+            
             When assessing blast radius and dependency impact, treat user-created or
             accepted edges (source_kind "manual" or status "accepted") as authoritative.
             Use these user relationships to raise or lower criticality based on how they
