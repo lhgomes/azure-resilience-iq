@@ -144,6 +144,7 @@ export function buildAiTooltip(
   if (baseName) items.push({ label: "Original", value: baseName });
   if (ann.priority) items.push({ label: "Priority", value: ann.priority });
   if (ann.criticality_score !== undefined) items.push({ label: "Criticality", value: `${ann.criticality_score}/10` });
+  if (ann.criticality_weight !== undefined) items.push({ label: "Weight", value: `${ann.criticality_weight.toFixed(2)}%` });
   if (ann.confidence !== undefined) items.push({ label: "Confidence", value: `${Math.round((ann.confidence ?? 0) * 100)}%` });
   if (ann.reason) items.push({ label: "Reason", value: ann.reason });
 
