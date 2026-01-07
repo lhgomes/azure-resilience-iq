@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -9,6 +10,32 @@ from app.config import get_resources_path
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.edge_overrides_store import load_overrides
 from app.storage.node_overrides_store import load_node_overrides
+
+# Load icon mappings at module level from backend data directory
+from app.config import DATA_DIR
+
+ICON_MAPPINGS_PATH = DATA_DIR / "iconMappings.json"
+ICON_MAPPINGS = {}
+if ICON_MAPPINGS_PATH.exists():
+    with open(ICON_MAPPINGS_PATH, 'r') as f:
+        ICON_MAPPINGS = json.load(f)
+        print(f"✓ Loaded {len(ICON_MAPPINGS)} icon mappings from {ICON_MAPPINGS_PATH}")
+else:
+    print(f"✗ Icon mappings file not found at {ICON_MAPPINGS_PATH}")
+
+
+def get_icon_for_resource_type(resource_type: str) -> str | None:
+    """Get icon path for a resource type using LLM-generated mappings."""
+    if not resource_type:
+        return None
+    
+    normalized_type = resource_type.lower().strip()
+    icon_path = ICON_MAPPINGS.get(normalized_type)
+    
+    if icon_path:
+        return f"/Icons/{icon_path}"
+    
+    return None
 
 
 def _load_collector_resources(subscription_id: str) -> list[dict]:
@@ -84,6 +111,14 @@ def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> di
         
         if node_ann.azure_service_name:
             node["metadata"]["azure_service_name"] = node_ann.azure_service_name
+        
+        # Compute icon from Azure resource type using LLM-generated mappings
+        # The actual resource type is in metadata.azure_type (e.g., "microsoft.app/containerapps")
+        azure_type = node.get("metadata", {}).get("azure_type")
+        if azure_type and node_id not in node_overrides:
+            icon_path = get_icon_for_resource_type(azure_type)
+            if icon_path:
+                node["metadata"]["icon"] = icon_path
         
         if node_ann.layer is not None:
             node["metadata"]["layer"] = node_ann.layer
