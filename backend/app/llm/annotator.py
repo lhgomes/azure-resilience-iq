@@ -203,6 +203,7 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
 
     try:
         annotations = _validate_and_filter_annotations(raw)
+        annotations = _calculate_criticality_weights(annotations)
     except Exception:
         LOGGER.exception("LLM response failed final validation; returning empty annotations")
         return LLMAnnotations(nodes=[], edges=[])
@@ -219,6 +220,52 @@ def llm_config_enabled() -> bool:
 def _use_real_llm() -> bool:
     flag = os.getenv("USE_REAL_LLM", "false").lower().strip()
     return flag in {"1", "true", "yes", "on"}
+
+
+def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotations:
+    """
+    Calculate criticality_weight for each node based on criticality_score.
+    Excludes nodes with hide_by_default=true.
+    Normalizes weights to sum to exactly 100.
+    """
+    # Collect nodes with scores that should contribute to weight
+    weighted_nodes = []
+    for node_ann in annotations.nodes:
+        ann = node_ann.annotations
+        if ann.hide_by_default:
+            # Hidden nodes get 0 weight
+            ann.criticality_weight = 0.0
+        elif ann.criticality_score is not None:
+            weighted_nodes.append(node_ann)
+        else:
+            # No score means no weight
+            ann.criticality_weight = None
+
+    # Calculate total score for normalization
+    total_score = sum(node.annotations.criticality_score for node in weighted_nodes)
+
+    if total_score > 0:
+        # Distribute 100 points proportionally
+        for node_ann in weighted_nodes:
+            raw_weight = (node_ann.annotations.criticality_score / total_score) * 100.0
+            node_ann.annotations.criticality_weight = round(raw_weight, 2)
+
+        # Adjust for rounding errors to ensure exact sum of 100
+        actual_sum = sum(
+            node.annotations.criticality_weight
+            for node in weighted_nodes
+            if node.annotations.criticality_weight is not None
+        )
+        if actual_sum != 100.0 and weighted_nodes:
+            # Add the difference to the highest-scored node
+            highest_node = max(weighted_nodes, key=lambda n: n.annotations.criticality_score)
+            adjustment = 100.0 - actual_sum
+            highest_node.annotations.criticality_weight += adjustment
+            highest_node.annotations.criticality_weight = round(
+                highest_node.annotations.criticality_weight, 2
+            )
+
+    return annotations
 
 
 def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:

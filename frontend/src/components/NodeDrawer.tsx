@@ -21,6 +21,7 @@ interface AiAnnotation {
   layer?: number;
   priority?: string;
   criticality_score?: number;
+  criticality_weight?: number;
   hide_by_default?: boolean;
   confidence?: number;
   reason?: string;
@@ -468,6 +469,11 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
           {node.aiAnnotation.criticality_score !== undefined && (
             <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 4 }}>
               Criticality: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.criticality_score ?? 0}</span>
+            </div>
+          )}
+          {node.aiAnnotation.criticality_weight !== undefined && (
+            <div style={{ fontSize: 13, color: "#9AA0A6", marginTop: 4 }}>
+              Weight: <span style={{ color: "#e5e5e5" }}>{node.aiAnnotation.criticality_weight.toFixed(2)}%</span>
             </div>
           )}
           {node.aiAnnotation.confidence !== undefined && (

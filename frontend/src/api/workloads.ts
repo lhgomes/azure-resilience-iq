@@ -27,6 +27,7 @@ export interface LlmNodeAnnotationPayload {
   azure_service_category?: string;
   azure_service_name?: string;
   criticality_score?: number;
+  criticality_weight?: number;
   layer?: number;
   priority?: string;
   hide_by_default?: boolean;

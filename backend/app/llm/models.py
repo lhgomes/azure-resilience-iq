@@ -11,6 +11,7 @@ class NodeAnnotationPayload(BaseModel):
     layer: Optional[int] = None
     priority: Optional[str] = None
     criticality_score: Optional[int] = Field(default=None, ge=1, le=10)
+    criticality_weight: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     hide_by_default: Optional[bool] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reason: Optional[str] = None
