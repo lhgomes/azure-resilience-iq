@@ -57,9 +57,9 @@ type GroupState = {
 };
 
 // Layout / sizing constants.
-const NODE_W = 260;
-const NODE_H = 140;
-const GROUP_PAD = 24;
+const NODE_W = 180;
+const NODE_H = 200;
+const GROUP_PAD = 40;
 const COLLAPSED_GROUP_W = 220;
 const COLLAPSED_GROUP_H = 72;
 
@@ -199,7 +199,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           type: n.type,
           criticality_stars:
             typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
+          criticality_score: typeof meta["criticality_score"] === "number" ? (meta["criticality_score"] as number) : undefined,
+          confidence: typeof meta["confidence"] === "number" ? (meta["confidence"] as number) : undefined,
           color: typeof meta["color"] === "string" ? (meta["color"] as string) : undefined,
+          azure_service_category: typeof meta["azure_service_category"] === "string" ? (meta["azure_service_category"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
           user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
@@ -213,7 +216,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   }, [visibleNodes, userLayerEnabled]);
 
   const rfEdges: Edge[] = useMemo(() => {
-    return visibleEdges.map(e => ({
+    const edges = visibleEdges.map(e => ({
       id: e.id,
       source: e.source,
       target: e.target,
@@ -230,6 +233,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       },
       markerEnd: { type: MarkerType.ArrowClosed },
     }));
+    
+    // Debug logging for manual edges
+    const manualEdges = edges.filter(e => e.data.origin === "manual");
+    if (manualEdges.length > 0) {
+      console.log("Manual edges found:", manualEdges);
+    }
+    
+    return edges;
   }, [visibleEdges, userLayerEnabled, selectedEdgeId]);
 
   // Layout using Dagre
