@@ -398,6 +398,8 @@ export function buildViewGraph(args: {
           user_tooltip,
           criticality_score: effectiveCriticality,
           criticality_stars: renderStars(effectiveCriticality ?? 5),
+          confidence: aiLayerEnabled && ann?.confidence !== undefined ? ann.confidence : undefined,
+          azure_service_category: aiLayerEnabled && ann?.azure_service_category ? ann.azure_service_category : undefined,
           user_override: nodeOverride,
           group_id: groupId,
           group_label: groupLabel,
