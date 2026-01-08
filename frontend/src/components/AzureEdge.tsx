@@ -21,6 +21,20 @@ const AzureEdge: React.FC<EdgeProps> = ({
   });
 
   const edgeData = data as any || {};
+  
+  // Debug logging
+  if (edgeData.origin === "manual") {
+    console.log("Rendering manual edge:", {
+      id,
+      sourceX,
+      sourceY,
+      targetX,
+      targetY,
+      edgePath,
+      data: edgeData
+    });
+  }
+  
   const getEdgeColor = (): string => {
     if (edgeData.origin === "manual") return "#22c55e";
     if (edgeData.origin === "llm") return "#f59e0b";
@@ -28,12 +42,15 @@ const AzureEdge: React.FC<EdgeProps> = ({
     return "#5EA0EF"; // ARG edges
   };
 
+  // Manual accepted edges should be solid, others use dash patterns
   const strokeDasharray = 
     edgeData.status === "proposed"
       ? "5,5"
       : edgeData.origin === "heuristic"
       ? "3,3"
-      : "none";
+      : edgeData.origin === "manual" && edgeData.status === "accepted"
+      ? "none"  // Solid line for accepted manual edges
+      : "none";  // Solid line for all other accepted edges
 
   const labelTitleParts: string[] = [];
   if (edgeData.user_customized) {
