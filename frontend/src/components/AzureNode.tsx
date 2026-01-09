@@ -240,7 +240,6 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const gradientColors = getGradientColors();
   const categoryColor = getCategoryColor();
   const categoryLabel = getCategoryLabel();
-  const categoryTextColor = !isCoveredByAPRL() ? "#111827" : "#ffffff";
 
   // Get confidence and criticality from metadata
   const confidence = data.confidence !== undefined 
@@ -286,7 +285,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         style={{
           borderRadius: "12px",
           background: "#ffffff",
-          border: selected ? "3px solid #f59e0b" : "2px solid #e5e7eb",
+          border: selected ? "3px solid #f59e0b" : "2px solid #b7b8baff",
           width: "180px",
           textAlign: "center",
           fontFamily: "Segoe UI, system-ui, sans-serif",
@@ -308,7 +307,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         {/* Category header */}
         <div style={{
           background: categoryColor,
-          color: categoryTextColor,
+          color: "#ffffff",
           padding: "6px 12px",
           fontSize: "10px",
           fontWeight: 700,
