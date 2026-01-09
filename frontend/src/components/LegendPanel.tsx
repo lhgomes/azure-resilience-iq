@@ -14,7 +14,9 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         position: "fixed",
         top: 60,
         right: 20,
-        width: 280,
+        width: 320,
+        maxHeight: "calc(100vh - 100px)",
+        overflowY: "auto",
         background: "#111",
         border: "1px solid #333",
         borderRadius: 6,
@@ -45,42 +47,85 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
 
       <div style={{ fontSize: 12, lineHeight: 1.6 }}>
         <div style={{ marginBottom: 12 }}>
-          <strong>Node colors:</strong>
+          <strong>Node Header Colors (Criticality):</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#0078D4" }}>⬤ Compute (AKS, VM)</span>
+              <span style={{ color: "#b7b8baff" }}>⬤ Gray: Azure-managed (no APRL)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#85a2c6ff" }}>⬤ Network (VNet, Subnet)</span>
+              <span style={{ color: "#22c55e" }}>⬤ Green: Low (1-2/10)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#00B294" }}>⬤ PaaS (SQL, Storage, KeyVault)</span>
+              <span style={{ color: "#84cc16" }}>⬤ Lime: Low-Med (3-4/10)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#16a34a" }}>⬤ Manual (user-created)</span>
+              <span style={{ color: "#eab308" }}>⬤ Yellow: Medium (5-6/10)</span>
+            </div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ color: "#f97316" }}>⬤ Orange: High (7-8/10)</span>
+            </div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ color: "#ef4444" }}>⬤ Red: Critical (9-10/10)</span>
             </div>
           </div>
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <strong>Edge styles:</strong>
+          <strong>Edge Colors:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#0078D4" }}>━ Solid blue: ARG (Azure)</span>
+              <span style={{ color: "#5EA0EF" }}>━ Blue: ARG (Azure Resource Graph)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#16a34a" }}>━ Solid green: Manual</span>
+              <span style={{ color: "#22c55e" }}>━ Green: Manual (user-created)</span>
             </div>
-            <div style={{ marginBottom: 3 }}>╌ Dashed: Heuristic</div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ color: "#f59e0b" }}>━ Orange: AI suggested</span>
+            </div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ color: "#9AA0A6" }}>╌ Gray dashed: Heuristic</span>
+            </div>
           </div>
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <strong>View levels:</strong>
+          <strong>Node Metrics:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
-            <div style={{ marginBottom: 3 }}>L1: Core workload</div>
-            <div style={{ marginBottom: 3 }}>L2: Network + Platform</div>
-            <div style={{ marginBottom: 3 }}>L3: Full + Implementation</div>
+            <div style={{ marginBottom: 3 }}>◎ Confidence (AI analysis)</div>
+            <div style={{ marginBottom: 3 }}>⚡ Criticality score (x/10)</div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <strong>Badges:</strong>
+          <div style={{ marginTop: 4, color: "#9AA0A6" }}>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ 
+                background: "#f59e0b", 
+                color: "#000", 
+                padding: "1px 4px", 
+                borderRadius: 4,
+                fontSize: 9,
+                fontWeight: 700
+              }}>AI</span> AI-enhanced node
+            </div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ 
+                background: "#2ea043", 
+                color: "#fff", 
+                padding: "1px 4px", 
+                borderRadius: 4,
+                fontSize: 9,
+                fontWeight: 700
+              }}>Ui</span> User customized
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 0 }}>
+          <strong>APRL Coverage:</strong>
+          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
+            Services covered by Azure Proactive Resiliency Library show criticality colors. Non-covered services (Azure-managed) show gray.
           </div>
         </div>
       </div>

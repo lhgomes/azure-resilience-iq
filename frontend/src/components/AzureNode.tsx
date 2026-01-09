@@ -167,12 +167,12 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   };
 
   // Category color based on APRL coverage and criticality
-  // - Resources NOT covered by APRL: Blue (Azure fully manages resilience)
+  // - Resources NOT covered by APRL: Light Gray (Azure fully manages resilience)
   // - Resources covered by APRL: Color based on criticality (customer has actions to take)
   const getCategoryColor = () => {
     // Resources NOT covered by APRL are fully managed by Azure
     if (!isCoveredByAPRL()) {
-      return "#2196F3"; // Azure Blue - fully managed by Azure, no APRL guidance needed
+      return "#b7b8baff"; // Light Gray - fully managed by Azure, no APRL guidance needed
     }
     
     // Resources covered by APRL use criticality-based colors
@@ -240,6 +240,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const gradientColors = getGradientColors();
   const categoryColor = getCategoryColor();
   const categoryLabel = getCategoryLabel();
+  const categoryTextColor = !isCoveredByAPRL() ? "#111827" : "#ffffff";
 
   // Get confidence and criticality from metadata
   const confidence = data.confidence !== undefined 
@@ -287,7 +288,6 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           background: "#ffffff",
           border: selected ? "3px solid #f59e0b" : "2px solid #e5e7eb",
           width: "180px",
-          minHeight: "200px",
           textAlign: "center",
           fontFamily: "Segoe UI, system-ui, sans-serif",
           boxShadow: selected 
@@ -308,7 +308,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         {/* Category header */}
         <div style={{
           background: categoryColor,
-          color: "#ffffff",
+          color: categoryTextColor,
           padding: "6px 12px",
           fontSize: "10px",
           fontWeight: 700,
