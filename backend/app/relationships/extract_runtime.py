@@ -5,8 +5,9 @@ Queries Log Analytics workspace for runtime signal data.
 
 from typing import Any, Dict, List
 import json
-import logging
 from datetime import datetime, timedelta
+
+from app.logger import get_logger
 
 try:
     from azure.monitor.query import LogsQueryClient
@@ -14,7 +15,7 @@ try:
 except ImportError:
     HAS_MONITOR_QUERY = False
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 def query_flow_logs(

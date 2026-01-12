@@ -207,6 +207,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
+          metadata: meta,
         };
       })(),
       type: "azure",

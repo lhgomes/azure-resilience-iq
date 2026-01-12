@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Handle, Position } from "reactflow";
 import { getAzureIcon } from "../utils/azureIcons";
 import type { AiTooltip } from "../domain/graphView";
+import ResilienceCircle from "./ResilienceCircle";
 
 interface AzureNodeProps {
   data: {
@@ -20,6 +21,7 @@ interface AzureNodeProps {
     user_tooltip?: AiTooltip;
     groupId?: string;
     onRemoveFromGroup?: () => void;
+    metadata?: Record<string, unknown>;
   };
   isConnectable: boolean;
   selected: boolean;
@@ -29,6 +31,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const [iconError, setIconError] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const [resilience, setResilience] = useState<{ passed: number; failed: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,6 +43,31 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
       });
     }
   }, [showTooltip]);
+
+  // Extract resilience data from node metadata
+  useEffect(() => {
+    if (data.metadata && typeof data.metadata === 'object') {
+      const resilience = (data.metadata as any).resilience;
+      if (resilience && typeof resilience === 'object') {
+        setResilience({
+          passed: (resilience as any).passed_checks || 0,
+          failed: (resilience as any).failed_checks || 0
+        });
+      } else {
+        // No resilience data - treat as total_checks = 0
+        setResilience({
+          passed: 0,
+          failed: 0
+        });
+      }
+    } else {
+      // No metadata at all - treat as total_checks = 0
+      setResilience({
+        passed: 0,
+        failed: 0
+      });
+    }
+  }, [data.metadata]);
 
   const getNodeColor = (): string => {
     if (data.color) return data.color;
@@ -166,16 +194,19 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
     return aprlCoveredTypes.includes(data.type || "");
   };
 
-  // Category color based on APRL coverage and criticality
-  // - Resources NOT covered by APRL: Light Gray (Azure fully manages resilience)
-  // - Resources covered by APRL: Color based on criticality (customer has actions to take)
+  // Category color based on resilience checks availability
+  // - No checks (total_checks = 0): Light Gray (no resilience data)
+  // - Has checks: Color based on criticality (customer has actions to take)
   const getCategoryColor = () => {
-    // Resources NOT covered by APRL are fully managed by Azure
-    if (!isCoveredByAPRL()) {
-      return "#b7b8baff"; // Light Gray - fully managed by Azure, no APRL guidance needed
+    // Get total checks from resilience data if available
+    const totalChecks = resilience ? (resilience.passed + resilience.failed) : 0;
+    
+    // No resilience checks available - show gray
+    if (totalChecks === 0) {
+      return "#b7b8baff"; // Light Gray - no resilience data
     }
     
-    // Resources covered by APRL use criticality-based colors
+    // Has resilience checks - use criticality-based colors
     const score = data.criticality_score ?? 5; // Default to medium if not available
     
     if (score <= 2) {
@@ -358,33 +389,19 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           </div>
         )}
 
-        {/* Icon container with gradient ring */}
+        {/* Icon container - show resilience circle if available, otherwise gradient ring */}
         <div style={{
           padding: "10px 10px 5px",
           display: "flex",
           justifyContent: "center",
           alignItems: "center"
         }}>
-          <div style={{
-            position: "relative",
-            width: "80px",
-            height: "80px",
-            borderRadius: "50%",
-            background: `conic-gradient(from 0deg, ${gradientColors.start}, ${gradientColors.mid}, ${gradientColors.end}, ${gradientColors.start})`,
-            padding: "4px",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center"
-          }}>
-            <div style={{
-              width: "100%",
-              height: "100%",
-              borderRadius: "50%",
-              background: "#ffffff",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center"
-            }}>
+          {resilience ? (
+            <ResilienceCircle 
+              passedChecks={resilience.passed} 
+              failedChecks={resilience.failed}
+              size={80}
+            >
               {iconError ? (
                 <span role="img" aria-label="fallback icon" style={{ fontSize: "32px" }}>
                   📋
@@ -401,8 +418,47 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
                   }}
                 />
               )}
+            </ResilienceCircle>
+          ) : (
+            <div style={{
+              position: "relative",
+              width: "80px",
+              height: "80px",
+              borderRadius: "50%",
+              background: `conic-gradient(from 0deg, ${gradientColors.start}, ${gradientColors.mid}, ${gradientColors.end}, ${gradientColors.start})`,
+              padding: "4px",
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center"
+            }}>
+              <div style={{
+                width: "100%",
+                height: "100%",
+                borderRadius: "50%",
+                background: "#ffffff",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center"
+              }}>
+                {iconError ? (
+                  <span role="img" aria-label="fallback icon" style={{ fontSize: "32px" }}>
+                    📋
+                  </span>
+                ) : (
+                  <img
+                    src={iconUrl}
+                    alt={data.type || "resource"}
+                    onError={() => setIconError(true)}
+                    style={{
+                      width: "48px",
+                      height: "48px",
+                      objectFit: "contain"
+                    }}
+                  />
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Resource name */}
