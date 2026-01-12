@@ -72,6 +72,9 @@ export interface RawGraphSnapshot {
   node_overrides?: Record<string, Record<string, unknown>>;
   edge_overrides?: Record<string, Record<string, unknown>>;
   groups?: NodeGroup[];
+  resilience_evaluations?: {
+    evaluations: Record<string, any>;
+  };
 }
 
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -217,4 +220,21 @@ export async function removeNodeFromGroup(
     `/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes/${encodeURIComponent(nodeId)}`,
     { method: "DELETE" }
   );
+}
+
+export interface ResilienceCheckMetrics {
+  total_checks: number;
+  passed_checks: number;
+  failed_checks: number;
+  pass_percentage: number;
+}
+
+export interface ResilienceSummary {
+  [resourceId: string]: ResilienceCheckMetrics;
+}
+
+export async function getResilienceSummary(
+  subscriptionId: string
+): Promise<ResilienceSummary> {
+  return apiJson(`/api/resilience/evaluate/${subscriptionId}/summary`);
 }

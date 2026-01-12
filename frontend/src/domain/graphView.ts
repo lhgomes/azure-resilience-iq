@@ -403,6 +403,7 @@ export function buildViewGraph(args: {
           user_override: nodeOverride,
           group_id: groupId,
           group_label: groupLabel,
+          resilience: meta.resilience,
         } as Record<string, unknown>,
       };
     })

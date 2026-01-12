@@ -10,6 +10,7 @@ from app.config import get_resources_path
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.edge_overrides_store import load_overrides
 from app.storage.node_overrides_store import load_node_overrides
+from app.storage.resilience_evaluations_store import load_resilience_evaluations
 
 # Load icon mappings at module level from backend data directory
 from app.config import DATA_DIR
@@ -62,12 +63,11 @@ def _load_collector_resources(subscription_id: str) -> list[dict]:
 def build_workload_snapshot(subscription_id: str) -> dict:
     resources = _load_collector_resources(subscription_id)
     return build_graph_from_resources(resources, subscription_id)
-def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> dict:
+def get_workload_graph(subscription_id: str) -> dict:
     """
     Get the complete workload graph with all data sources.
     
     Always returns raw data, LLM annotations, node overrides, edge overrides, and groups.
-    The include_llm parameter is deprecated but kept for backwards compatibility.
     """
     from app.storage.groups_store import load_groups
     
@@ -76,6 +76,24 @@ def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> di
     node_overrides = load_node_overrides(subscription_id)
     edge_overrides = load_overrides(subscription_id)
     groups = load_groups(subscription_id)
+    
+    # Load resilience evaluations if available
+    resilience_data = {}
+    try:
+        resilience_results = load_resilience_evaluations(subscription_id)
+        resilience_evals = resilience_results.get("evaluations", {})
+        resilience_data = {
+            resource_id: {
+                "total_checks": eval_data.get("total_checks", 0),
+                "passed_checks": eval_data.get("passed_checks", 0),
+                "failed_checks": eval_data.get("failed_checks", 0),
+                "pass_percentage": round((eval_data.get("passed_checks", 0) / eval_data.get("total_checks", 1) * 100), 1) if eval_data.get("total_checks", 0) > 0 else 0
+            }
+            for resource_id, eval_data in resilience_evals.items()
+        }
+    except Exception:
+        # Resilience data is optional
+        pass
 
     # Merge LLM annotations into node metadata
     # Priority: node_overrides > llm_annotations > defaults
@@ -138,6 +156,13 @@ def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> di
         if node_ann.reason:
             node["metadata"]["llm_reason"] = node_ann.reason
 
+    # Attach resilience data to each node
+    for node_id, node in nodes_by_id.items():
+        if node_id in resilience_data:
+            if "metadata" not in node:
+                node["metadata"] = {}
+            node["metadata"]["resilience"] = resilience_data[node_id]
+
     return {
         **snapshot,
         "nodes": list(nodes_by_id.values()),
@@ -148,6 +173,7 @@ def get_workload_graph(subscription_id: str, *, include_llm: bool = False) -> di
         },
         "edge_overrides": edge_overrides,
         "groups": [g.model_dump() for g in groups],
+        "resilience_evaluations": resilience_results if resilience_results else {"evaluations": {}},
     }
 
 def get_review_inbox(workload_id: str) -> dict:

@@ -5,6 +5,8 @@ import GraphCanvas, {
   GraphEdge,
   GraphCanvasHandle
 } from "../components/GraphCanvasReactflow";
+import ResilienceSummary from "../components/ResilienceSummary";
+import TabbedView from "../components/TabbedView";
 import EdgeDrawer, {
   EdgeData
 } from "../components/EdgeDrawer";
@@ -47,6 +49,7 @@ const WorkloadView: React.FC = () => {
   const [showSubscriptionPicker, setShowSubscriptionPicker] = useState<boolean>(true);
   const storageKey = useMemo(() => `workload_graph_${subscriptionId}`, [subscriptionId]);
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
+  const [resilience_evaluations, setResilienceEvaluations] = useState<Record<string, any> | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -120,6 +123,11 @@ const WorkloadView: React.FC = () => {
       const normalized = normalizeGraph(raw);
       persistGraph(normalized);
       setGraph(normalized);
+      
+      // Store resilience evaluations if available
+      if (raw.resilience_evaluations) {
+        setResilienceEvaluations(raw.resilience_evaluations.evaluations || {});
+      }
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
@@ -1131,73 +1139,103 @@ const WorkloadView: React.FC = () => {
           </div>
         </div>
 
-        {/* Graph canvas */}
-        <div style={{ flex: 1, height: "100%" }}>
-          <ReactFlowProvider>
-            <GraphCanvas
-              ref={graphCanvasRef}
-              nodes={nodesForView}
-              edges={edgesForView}
-                selectedEdgeId={selectedEdge?.id ?? null}
-              userLayerEnabled={userLayerEnabled}
-              maxImportance={maxImportance}
-              onNodeSelected={handleNodeSelected}
-              onEdgeCreate={handleCreateManualLink}
-              onNodeRename={handleRenameNode}
-              onGroupCreate={applyGroupToNodes}
-              groupCreateRequest={groupCreateRequest}
-              onSelectionStateChange={state => {
-                const prevSelection = lastGroupToolbarSelectionRef.current;
-                lastGroupToolbarSelectionRef.current = state;
-                setGroupToolbarSelection(state);
+        {/* Tabbed View: Graph and Resilience */}
+        <div style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column" }}>
+          <TabbedView
+            tabs={[
+              {
+                label: "Graph",
+                icon: "📊",
+                content: (
+                  <div style={{ width: "100%", height: "100%" }}>
+                    <ReactFlowProvider>
+                      <GraphCanvas
+                        ref={graphCanvasRef}
+                        nodes={nodesForView}
+                        edges={edgesForView}
+                        selectedEdgeId={selectedEdge?.id ?? null}
+                        userLayerEnabled={userLayerEnabled}
+                        maxImportance={maxImportance}
+                        onNodeSelected={handleNodeSelected}
+                        onEdgeCreate={handleCreateManualLink}
+                        onNodeRename={handleRenameNode}
+                        onGroupCreate={applyGroupToNodes}
+                        groupCreateRequest={groupCreateRequest}
+                        onSelectionStateChange={state => {
+                          const prevSelection = lastGroupToolbarSelectionRef.current;
+                          lastGroupToolbarSelectionRef.current = state;
+                          setGroupToolbarSelection(state);
 
-                // Initialize toolbar name when mode changes or selecting a different group.
-                if (state.selectedGroupId) {
-                  lastSuggestedGroupNameRef.current = "";
-                  setGroupToolbarName(prev => {
-                    if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
-                      return state.selectedGroupLabel ?? "";
-                    }
-                    return prev;
-                  });
-                } else if (state.selectedNodeIds.length > 1) {
-                  const suggested = suggestGroupName(state.selectedNodeIds);
-                  setGroupToolbarName(prev => {
-                    const shouldReplace =
-                      prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
-                    if (!shouldReplace) return prev;
+                          // Initialize toolbar name when mode changes or selecting a different group.
+                          if (state.selectedGroupId) {
+                            lastSuggestedGroupNameRef.current = "";
+                            setGroupToolbarName(prev => {
+                              if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
+                                return state.selectedGroupLabel ?? "";
+                              }
+                              return prev;
+                            });
+                          } else if (state.selectedNodeIds.length > 1) {
+                            const suggested = suggestGroupName(state.selectedNodeIds);
+                            setGroupToolbarName(prev => {
+                              const shouldReplace =
+                                prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
+                              if (!shouldReplace) return prev;
 
-                    lastSuggestedGroupNameRef.current = suggested;
-                    return suggested;
-                  });
-                } else {
-                  lastSuggestedGroupNameRef.current = "";
-                  setGroupToolbarName("");
-                }
-              }}
-              onMoveNodeToGroup={moveNodeToGroup}
-              onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
-              onEdgeSelected={(e) => {
-                if (!e) {
-                  setSelectedEdge(null);
-                  return;
-                }
+                              lastSuggestedGroupNameRef.current = suggested;
+                              return suggested;
+                            });
+                          } else {
+                            lastSuggestedGroupNameRef.current = "";
+                            setGroupToolbarName("");
+                          }
+                        }}
+                        onMoveNodeToGroup={moveNodeToGroup}
+                        onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
+                        onEdgeSelected={(e) => {
+                          if (!e) {
+                            setSelectedEdge(null);
+                            return;
+                          }
 
-                setSelectedNode(null);
-                setSelectedEdge({
-                  id: e.id,
-                  source: e.source,
-                  target: e.target,
-                  relationship: e.relationship,
-                  confidence: e.confidence,
-                  status: e.status as any,
-                  evidence: e.evidence,
-                  origin: e.origin,
-                  raw: e,
-                });
-              }}
-            />
-          </ReactFlowProvider>
+                          setSelectedNode(null);
+                          setSelectedEdge({
+                            id: e.id,
+                            source: e.source,
+                            target: e.target,
+                            relationship: e.relationship,
+                            confidence: e.confidence,
+                            status: e.status as any,
+                            evidence: e.evidence,
+                            origin: e.origin,
+                            raw: e,
+                          });
+                        }}
+                      />
+                    </ReactFlowProvider>
+                  </div>
+                ),
+              },
+              {
+                label: "Overview",
+                icon: "🛡️",
+                content: resilience_evaluations ? (
+                  <ResilienceSummary
+                    evaluations={resilience_evaluations}
+                    graphData={graph}
+                    viewLevel={viewLevel}
+                    resourceGroupFilter={resourceGroupFilter}
+                    serviceFilter={serviceFilter}
+                  />
+                ) : (
+                  <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
+                    No resilience data available
+                  </div>
+                ),
+              },
+            ]}
+            defaultTab={0}
+          />
         </div>
       </div>
 
