@@ -63,17 +63,22 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
             If unsure, fall back to the existing resource name.
 
         - azure_service_category:
-            Azure architecture icon category corresponding to the official Azure
-            Architecture Icons taxonomy, such as:
+            Azure architecture category corresponding to the official Azure
+            Architecture taxonomy, such as:
             Compute, Containers, Networking, Databases, Storage, Identity,
-            Integration, Security, ManagementAndGovernance.
+            Integration, Security, Management And Governance.
+            
+            CRITICAL: Category names MUST be 20 characters or less.
+            Use these exact abbreviations for long names:
+            - "Mngmt & Governance" (NOT "Management And Governance")
+            - "AI/ML" (NOT "AI + Machine Learning" or "Artificial Intelligence")
+            
             If unsure, choose the broader category.
 
         - azure_service_name:
             Official Azure service name as shown in Azure Portal.
             This value will be used by the application to deterministically map
             to the correct Azure architecture icon.
-            Do NOT return icon filenames, URLs, or SVG names.
 
         - layer:
             Integer value: 0, 1, or 2, following the layering guidance above.
@@ -138,13 +143,6 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         - Only suggest an edge when confidence ≥ 0.5.
         - Use status "proposed" only.
         - Never assert authoritative relationships.
-
-        ICON CLASSIFICATION RULES
-        -------------------------
-        - Do NOT invent new Azure services or categories.
-        - Use official Azure Portal naming conventions.
-        - Do NOT output icon filenames, SVG names, URLs, or asset paths.
-        - These fields are used for deterministic icon mapping by the application.
 
         OUTPUT FORMAT (JSON ONLY)
         -------------------------
@@ -286,9 +284,18 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
     Enforce contract on LLM response: validate priority and layer values.
     Drop invalid items with WARN logs instead of failing the whole batch.
     Auto-correct layer values to valid range (0-2).
+    Auto-abbreviate long category names (>20 chars).
     """
     allowed_priorities = {"critical", "important", "supporting"}
     allowed_layers = {0, 1, 2}
+    
+    # Category abbreviation mapping
+    category_abbreviations = {
+        "Management And Governance": "Mngmt & Governance",
+        "Management and Governance": "Mngmt & Governance",
+        "AI + Machine Learning": "AI/ML",
+        "Artificial Intelligence": "AI/ML",
+    }
 
     valid_nodes = []
     for item in raw.get("nodes") or []:
@@ -297,6 +304,7 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
             ann = item.get("annotations") or {}
             priority = ann.get("priority")
             layer = ann.get("layer")
+            category = ann.get("azure_service_category")
 
             # Validate priority
             if priority and priority not in allowed_priorities:
@@ -322,6 +330,21 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
                         node_id, layer, allowed_layers
                     )
                     continue
+
+            # Auto-abbreviate long category names
+            if category:
+                if category in category_abbreviations:
+                    original = category
+                    ann["azure_service_category"] = category_abbreviations[category]
+                    LOGGER.info(
+                        "Auto-abbreviated category for %s: '%s' → '%s'",
+                        node_id, original, ann["azure_service_category"]
+                    )
+                elif len(category) > 20:
+                    LOGGER.warning(
+                        "Category name too long for %s: '%s' (%d chars). Consider adding abbreviation.",
+                        node_id, category, len(category)
+                    )
 
             valid_nodes.append(item)
         except Exception:
