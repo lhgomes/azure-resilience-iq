@@ -132,6 +132,10 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 
         - hide_by_default:
             true ONLY if the resource is low-signal or noisy at architecture level.
+            Do NOT set hide_by_default=true for any resource that is on a critical path
+            or directly feeds/protects a component with criticality_score ≥ 3 (e.g.,
+            storage backing a VM, disks, NICs, subnets, NSGs, PIPs, load balancers
+            for active workloads). Keep those visible.
 
         - confidence:
             Numeric value between 0 and 1 reflecting certainty of the annotation.

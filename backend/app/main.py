@@ -31,7 +31,6 @@ from app.storage.groups_store import (
     NodeGroup,
 )
 from app.relationships.utils import norm_id
-from app.resilience.refresh import refresh_annotations_and_scores
 
 # Load environment variables from .env file (if it exists)
 # This allows setting AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, etc.
@@ -433,28 +432,3 @@ def get_graph(subscription_id: str):
 @app.get("/api/subscriptions/{subscription_id}/reviews")
 def review_inbox(subscription_id: str):
     return get_review_inbox(subscription_id)
-@app.post("/api/subscriptions/{subscription_id}/refresh")
-def refresh_subscription(subscription_id: str):
-    """
-    Refresh annotations and resilience scores after user changes.
-    
-    Triggers:
-    1. Re-run LLM annotator with user overrides and manual edges in context
-    2. Recalculate criticality weights
-    3. Re-run resilience scoring with updated weights
-    
-    Returns:
-        - status: "success" or "partial" or error details
-        - message: Human-readable status message
-        - nodes_annotated: Number of nodes re-annotated
-        - edges_suggested: Number of edge suggestions
-        - evaluations_updated: Number of evaluations re-scored
-    """
-    try:
-        result = refresh_annotations_and_scores(subscription_id)
-        return result
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        LOGGER.exception("Refresh failed for subscription %s", subscription_id)
-        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")

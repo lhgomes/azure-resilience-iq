@@ -75,8 +75,6 @@ class APRLEvaluationResult:
     resource_type: str
     resource_name: str
     checks: List[Dict[str, Any]]  # List of all checks performed with status (pass/fail)
-    scores: Dict[str, float]  # Scores per category
-    overall_score: float
 
 
 class APRLCatalog:
@@ -216,26 +214,17 @@ class APRLEvaluator:
     Takes workload resources and evaluates them against APRL recommendations
     to identify resilience gaps and provide recommendations.
     """
-
-    @staticmethod
-    def _normalize_category(name: str) -> str:
-        """Normalize category names for matching (case/spacing agnostic)."""
-        return "".join(ch for ch in name if ch.isalnum()).lower()
     
-    def __init__(self, catalog: APRLCatalog, category_weights: Dict[str, float], aoai_client: Optional[object] = None):
+    def __init__(self, catalog: APRLCatalog, aoai_client: Optional[object] = None):
         """
         Initialize evaluator.
         
         Args:
             catalog: Loaded APRLCatalog
-            category_weights: Weights for each resilience category
             aoai_client: Optional Azure OpenAI client for LLM strategy generation
         """
         self.catalog = catalog
         self.aoai_client = aoai_client
-        self.category_weights = {
-            self._normalize_category(cat): weight for cat, weight in category_weights.items()
-        }
 
     @staticmethod
     def _inject_resource_filter(kql_query: str, resource_ids: List[str]) -> str:
@@ -519,7 +508,6 @@ class APRLEvaluator:
         resource_id: str,
         resource_name: str,
         resource_type: str,
-        criticality_weight: float = 1.0
     ) -> APRLEvaluationResult:
         """
         Evaluate a single resource against APRL recommendations.
@@ -528,10 +516,9 @@ class APRLEvaluator:
             resource_id: Azure resource ID
             resource_name: Display name
             resource_type: Azure resource type
-            criticality_weight: Criticality weight (0-100)
         
         Returns:
-            Evaluation result with findings and scores
+            Evaluation result with findings
         """
         # Get all APRL recommendations for this resource type
         recommendations = self.catalog.get_recommendations_by_resource_type(resource_type)
@@ -542,63 +529,32 @@ class APRLEvaluator:
                 resource_type=resource_type,
                 resource_name=resource_name,
                 checks=[],
-                scores={cat: 100.0 for cat in self.category_weights.keys()},
-                overall_score=100.0,
             )
         
-        # Group recommendations by category
-        by_category = {}
-        for rec in recommendations:
-            if rec.category not in by_category:
-                by_category[rec.category] = []
-            by_category[rec.category].append(rec)
-        
-        # Evaluate per category (in real scenario, would check actual resource config)
-        category_scores = {}
+        # Collect all recommendations as checks
         all_findings = []
-        
-        for category, recs in by_category.items():
-            # Simple scoring: assume all recommendations as potential findings
-            # In real implementation, would check actual resource properties
-            
-            # Placeholder: assume 50% compliance rate for demo
-            compliance_rate = 0.5
-            category_score = compliance_rate * 100
-            category_scores[category] = category_score
-            
-            # Create findings for each recommendation
-            for rec in recs:
-                all_findings.append({
-                    "recommendation_id": rec.guid,
-                    "description": rec.description,
-                    "category": rec.category,
-                    "impact": rec.impact,
-                    "long_description": rec.long_description,
-                    "potential_benefits": rec.potential_benefits,
-                    "learn_more": rec.learn_more_links,
-                })
-        
-        # Calculate weighted overall score
-        overall_score = self._calculate_weighted_score(category_scores)
-        
-        # Apply criticality weight to findings
-        for finding in all_findings:
-            finding["criticality_weight"] = criticality_weight
+        for rec in recommendations:
+            all_findings.append({
+                "recommendation_id": rec.guid,
+                "description": rec.description,
+                "category": rec.category,
+                "impact": rec.impact,
+                "long_description": rec.long_description,
+                "potential_benefits": rec.potential_benefits,
+                "learn_more": rec.learn_more_links,
+            })
         
         return APRLEvaluationResult(
             resource_id=resource_id,
             resource_type=resource_type,
             resource_name=resource_name,
             checks=all_findings,
-            scores=category_scores,
-            overall_score=overall_score,
         )
 
     def evaluate_resources_batch(
         self,
         resource_type: str,
         resources: List[Dict[str, Any]],
-        criticality_weights: Dict[str, float],
         subscription_id: str,
         detail_log: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, APRLEvaluationResult]:
@@ -611,7 +567,7 @@ class APRLEvaluator:
 
         recommendations = self.catalog.get_recommendations_by_resource_type(resource_type)
 
-        # If APRL has no rules for this type, return perfect scores
+        # If APRL has no rules for this type, return empty results
         if not recommendations:
             for res in resources:
                 rid = res.get("id")
@@ -620,22 +576,11 @@ class APRLEvaluator:
                     resource_type=resource_type,
                     resource_name=res.get("name", "Unknown"),
                     checks=[],
-                    scores={cat: 100.0 for cat in self.category_weights.keys()},
-                    overall_score=100.0,
                 )
             return results
 
-        # Totals per category (same for all resources of this type)
-        category_totals: Dict[str, int] = {}
-        display_categories: Dict[str, str] = {}
-        for rec in recommendations:
-            cat_norm = self._normalize_category(rec.category)
-            category_totals[cat_norm] = category_totals.get(cat_norm, 0) + 1
-            display_categories.setdefault(cat_norm, rec.category)
-
         # Per-resource tracking
         checks_map: Dict[str, List[Dict[str, Any]]] = {rid: [] for rid in resource_ids}
-        category_fail_counts: Dict[str, Dict[str, int]] = {rid: {} for rid in resource_ids}
         
         # Collect items that need batch LLM guidance (no KQL, heuristic inconclusive)
         pending_items = []
@@ -737,7 +682,6 @@ class APRLEvaluator:
                                 "long_description": rec.long_description,
                                 "potential_benefits": rec.potential_benefits,
                                 "learn_more": rec.learn_more_links,
-                                "criticality_weight": criticality_weights.get(rid, 1.0),
                                 "status": "pending",
                                 "validation_source": "PendingReview"
                             })
@@ -800,13 +744,9 @@ class APRLEvaluator:
                         "long_description": rec.long_description,
                         "potential_benefits": rec.potential_benefits,
                         "learn_more": learn_more,
-                        "criticality_weight": criticality_weights.get(rid, 1.0),
                         "status": "fail" if is_failed else "pass",
                         "validation_source": source
                     })
-                    if is_failed:
-                        cat_norm = self._normalize_category(rec.category)
-                        category_fail_counts[rid][cat_norm] = category_fail_counts[rid].get(cat_norm, 0) + 1
 
             if detail_log is not None:
                 detail_log.append(detail_entry)
@@ -833,44 +773,17 @@ class APRLEvaluator:
             if not rid:
                 continue
 
-            cat_scores: Dict[str, float] = {}
-            for cat_norm, total in category_totals.items():
-                failed = category_fail_counts[rid].get(cat_norm, 0)
-                score = 100.0 if total == 0 else round(100.0 * (1 - failed / total), 1)
-                cat_scores[cat_norm] = score
-
-            overall = self._calculate_weighted_score(cat_scores)
-
-            # Restore display categories (best-effort) using original category strings where possible
-            display_scores = {}
-            for cat_norm, total in category_totals.items():
-                display_label = display_categories.get(cat_norm, cat_norm)
-                display_scores[display_label] = cat_scores.get(cat_norm, 100.0)
+            if rid not in checks_map:
+                continue
 
             results[rid] = APRLEvaluationResult(
                 resource_id=rid,
                 resource_type=resource_type,
                 resource_name=res.get("name", "Unknown"),
                 checks=checks_map[rid],
-                scores=display_scores,
-                overall_score=overall,
             )
 
         return results
-    
-    def _calculate_weighted_score(self, category_scores: Dict[str, float]) -> float:
-        """Calculate weighted overall score based on category weights."""
-        total = 0.0
-
-        normalized_scores = {
-            self._normalize_category(cat): score for cat, score in category_scores.items()
-        }
-
-        for category, weight in self.category_weights.items():
-            score = normalized_scores.get(category, 0.0)
-            total += score * weight
-
-        return round(total, 2)
 
 
 def load_aprl_catalog(settings) -> APRLCatalog:

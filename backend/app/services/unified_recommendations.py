@@ -281,8 +281,7 @@ class UnifiedRecommendationsService:
                         'evaluation': {
                             'resource_type': evaluation.get('resource_type'),
                             'resource_name': evaluation.get('resource_name'),
-                            'scores': evaluation.get('scores'),
-                            'overall_score': evaluation.get('overall_score')
+
                         }
                     }
                 })

@@ -5,6 +5,23 @@ import { getAzureIcon } from "../utils/azureIcons";
 import type { AiTooltip } from "../domain/graphView";
 import ResilienceCircle from "./ResilienceCircle";
 
+// Weight icon component - uses Power icon to represent element importance
+const WeightIcon: React.FC<{ size?: number; color?: string }> = ({ size = 14 }) => (
+  <img 
+    src="/Icons/general/10824-icon-service-Power.svg" 
+    alt="weight" 
+    style={{ width: `${size}px`, height: `${size}px` }}
+  />
+);
+
+// Confidence icon component
+const ConfidenceIcon: React.FC<{ size?: number; color?: string }> = ({ size = 14, color = "#6b7280" }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="1.5" />
+    <circle cx="12" cy="12" r="3" fill={color} />
+  </svg>
+);
+
 interface AzureNodeProps {
   data: {
     label: string;
@@ -13,6 +30,7 @@ interface AzureNodeProps {
     criticality_stars?: string;
     criticality_score?: number;
     confidence?: number;
+    element_weight?: number;
     color?: string;
     azure_service_category?: string;
     ai_annotation?: boolean;
@@ -31,7 +49,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const [iconError, setIconError] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
-  const [resilience, setResilience] = useState<{ passed: number; failed: number } | null>(null);
+  const [resilience, setResilience] = useState<{ score: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -44,28 +62,22 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
     }
   }, [showTooltip]);
 
-  // Extract resilience data from node metadata
+  // Extract resilience score from node metadata
   useEffect(() => {
     if (data.metadata && typeof data.metadata === 'object') {
       const resilience = (data.metadata as any).resilience;
       if (resilience && typeof resilience === 'object') {
-        setResilience({
-          passed: (resilience as any).passed_checks || 0,
-          failed: (resilience as any).failed_checks || 0
-        });
+        const score = (resilience as any).resilience_score;
+        if (score !== undefined && score !== null) {
+          setResilience({ score });
+        } else {
+          setResilience(null);
+        }
       } else {
-        // No resilience data - treat as total_checks = 0
-        setResilience({
-          passed: 0,
-          failed: 0
-        });
+        setResilience(null);
       }
     } else {
-      // No metadata at all - treat as total_checks = 0
-      setResilience({
-        passed: 0,
-        failed: 0
-      });
+      setResilience(null);
     }
   }, [data.metadata]);
 
@@ -97,112 +109,18 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   };
 
   const nodeColor = getNodeColor();
-  const isLightColor = ["#50e6ff", "#b3e0ff", "#00bcf2", "#5EA0EF", "#ffffff"].includes(nodeColor);
-  const textColor = isLightColor ? "#000000" : "#ffffff";
-  const borderColor = isLightColor ? "#0078d4" : "#333";
   const iconUrl = data.icon || getAzureIcon(data.type || "resource");
-
-  // Services covered by Azure APRL (Azure Proactive Resiliency Library)
-  // https://github.com/Azure/Azure-Proactive-Resiliency-Library-v2
-  // Resources NOT in this list are fully managed by Azure (blue header)
-  const isCoveredByAPRL = () => {
-    const aprlCoveredTypes = [
-      // Compute
-      "vm", // Virtual Machines
-      "vmss", // Virtual Machine Scale Sets
-      "aks", // Azure Kubernetes Service
-      "app_service", // App Service
-      "function_app", // Azure Functions
-      "container_instances", // Azure Container Instances
-      "container_registry", // Azure Container Registry (ACR)
-      "batch", // Azure Batch
-      "service_fabric", // Service Fabric
-      "avs", // Azure VMware Solution
-      
-      // Storage
-      "storage", // Storage Accounts
-      "netapp", // Azure NetApp Files
-      "disk", // Managed Disks
-      "recovery_services_vault", // Recovery Services Vault
-      
-      // Databases
-      "sql", // Azure SQL Database
-      "sql_managed_instance", // SQL Managed Instance
-      "cosmos_db", // Cosmos DB
-      "mysql", // Azure Database for MySQL
-      "postgresql", // Azure Database for PostgreSQL
-      "mariadb", // Azure Database for MariaDB
-      "redis", // Azure Cache for Redis
-      "synapse", // Azure Synapse Analytics
-      
-      // Networking
-      "vnet", // Virtual Network
-      "nic", // Network Interface
-      "vpn_gateway", // VPN Gateway
-      "expressroute", // ExpressRoute
-      "application_gateway", // Application Gateway
-      "load_balancer", // Load Balancer
-      "traffic_manager", // Traffic Manager
-      "front_door", // Azure Front Door
-      "firewall", // Azure Firewall
-      "bastion", // Azure Bastion
-      "nat_gateway", // NAT Gateway
-      "pip", // Public IP Addresses
-      "private_endpoint", // Private Endpoints
-      "virtual_wan", // Virtual WAN
-      "dns", // Azure DNS
-      
-      // Security & Identity
-      "keyvault", // Key Vault
-      "app_gateway_waf", // Application Gateway WAF
-      
-      // Integration
-      "api_management", // API Management
-      "service_bus", // Service Bus
-      "event_hub", // Event Hubs
-      "event_grid", // Event Grid
-      "logic_apps", // Logic Apps
-      
-      // AI + Machine Learning
-      "cognitive_services", // Cognitive Services
-      "machine_learning", // Azure Machine Learning
-      "search", // Azure AI Search
-      "openai", // Azure OpenAI
-      
-      // Analytics
-      "data_factory", // Data Factory
-      "databricks", // Azure Databricks
-      "stream_analytics", // Stream Analytics
-      "hdinsight", // HDInsight
-      "analysis_services", // Analysis Services
-      
-      // Management & Governance
-      "automation", // Azure Automation
-      "backup", // Azure Backup
-      "site_recovery", // Azure Site Recovery
-      "monitor", // Azure Monitor
-      
-      // Web
-      "cdn", // Azure CDN
-      "static_web_apps", // Static Web Apps
-      
-      // IoT
-      "iot_hub", // IoT Hub
-      "notification_hubs", // Notification Hubs
-    ];
-    
-    return aprlCoveredTypes.includes(data.type || "");
-  };
 
   // Category color based on resilience checks availability
   // - No checks (total_checks = 0): Light Gray (no resilience data)
   // - Has checks: Color based on criticality (customer has actions to take)
   const getCategoryColor = () => {
-    // Get total checks from resilience data if available
-    const totalChecks = resilience ? (resilience.passed + resilience.failed) : 0;
+    // Check if resilience score exists
+    const hasResilienceScore = data.metadata && 
+      (data.metadata as any).resilience?.resilience_score !== undefined;
     
     // No resilience checks available - show gray
-    if (totalChecks === 0) {
+    if (!hasResilienceScore) {
       return "#b7b8baff"; // Light Gray - no resilience data
     }
     
@@ -249,36 +167,16 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
     }
   };
 
-  // Gradient colors for the ring around the icon
-  const getGradientColors = () => {
-    switch (data.type) {
-      case "vm":
-      case "aks":
-        return { start: "#FF6B6B", mid: "#4ECDC4", end: "#45B7D1" };
-      case "storage":
-      case "sql":
-      case "keyvault":
-        return { start: "#FFB347", mid: "#FFCC33", end: "#FFA07A" };
-      case "vnet":
-      case "subnet":
-      case "nsg":
-        return { start: "#9B59B6", mid: "#E91E63", end: "#FF9800" };
-      default:
-        return { start: "#667EEA", mid: "#764BA2", end: "#F093FB" };
-    }
-  };
-
-  const gradientColors = getGradientColors();
   const categoryColor = getCategoryColor();
   const categoryLabel = getCategoryLabel();
 
-  // Get confidence and criticality from metadata
+  // Get confidence and element weight from metadata
   const confidence = data.confidence !== undefined 
     ? `${Math.round((data.confidence as number) * 100)}%` 
     : "N/A";
   
-  const criticality = data.criticality_score !== undefined
-    ? `${data.criticality_score}/10`
+  const elementWeight = data.element_weight !== undefined
+    ? `${data.element_weight.toFixed(2)}%`
     : "N/A";
 
   return (
@@ -389,17 +287,16 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           </div>
         )}
 
-        {/* Icon container - show resilience circle if available, otherwise gradient ring */}
+        {/* Icon container - show resilience circle if available, otherwise gray circle */}
         <div style={{
           padding: "10px 10px 5px",
           display: "flex",
           justifyContent: "center",
           alignItems: "center"
         }}>
-          {resilience ? (
+          {data.metadata && (data.metadata as any).resilience?.resilience_score !== undefined ? (
             <ResilienceCircle 
-              passedChecks={resilience.passed} 
-              failedChecks={resilience.failed}
+              score={resilience?.score ?? 0}
               size={80}
             >
               {iconError ? (
@@ -425,7 +322,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
               width: "80px",
               height: "80px",
               borderRadius: "50%",
-              background: `conic-gradient(from 0deg, ${gradientColors.start}, ${gradientColors.mid}, ${gradientColors.end}, ${gradientColors.start})`,
+              background: "#b7b8baff",
               padding: "4px",
               display: "flex",
               justifyContent: "center",
@@ -489,7 +386,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
               justifyContent: "center",
               gap: "4px"
             }}>
-              <span style={{ fontSize: "10px", color: "#6b7280" }}>◎</span>
+              <ConfidenceIcon size={14} color="#6b7280" />
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937" }}>
                 {confidence}
               </span>
@@ -502,9 +399,9 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
               justifyContent: "center",
               gap: "4px"
             }}>
-              <span style={{ fontSize: "10px", color: "#6b7280" }}>⚡</span>
+              <WeightIcon size={14} color="#6b7280" />
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937" }}>
-                {criticality}
+                {elementWeight}
               </span>
             </div>
           </div>
