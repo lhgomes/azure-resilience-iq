@@ -1,0 +1,2184 @@
+import React, { useState, useMemo, useEffect, useCallback } from "react";
+import * as XLSX from "xlsx";
+import { canonicalTypeForNode, normalizeTypeString } from "../domain/graphView";
+import { saveOverride, getOverrides, deleteOverride, getCheckOverride } from "../api/resilience";
+import { calculateResilienceScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
+interface ResilienceCheck {
+  status: "pass" | "fail";
+  description: string;
+  category: string;
+  impact: "High" | "Medium" | "Low";
+  criticality_weight: number;
+  recommendation_id: string;
+  long_description?: string;
+  potential_benefits?: string;
+  learn_more?: Array<{ name: string; url: string }>;
+  validation_source?: string;
+  contribution_percent?: number;  // Dynamically calculated % contribution to filtered view
+  impact_weight?: number;  // Impact weight (0.1, 0.3, 0.5)
+  is_critical?: boolean;  // True if High impact
+}
+
+interface ResilienceEvaluation {
+  resource_id: string;
+  resource_type: string;
+  resource_name: string;
+  checks: ResilienceCheck[];
+  findings: ResilienceCheck[];
+}
+
+interface ResilienceOverride {
+  resource_id: string;
+  recommendation_id: string;
+  status: "pass" | "fail";
+  overridden_at?: string;
+  overridden_by?: string;
+  check_uuid?: string;
+}
+
+interface LLMAnnotation {
+  display_name?: string;
+  azure_service_category?: string;
+  azure_service_name?: string;
+  criticality_weight?: number;
+  criticality_score?: number;
+  confidence?: number;
+  hide_by_default?: boolean;
+}
+
+interface ResilienceSummaryProps {
+  evaluations: Record<string, ResilienceEvaluation>;
+  workloadScore?: number;  // Overall resilience score (0.0-1.0)
+  subscriptionId?: string;  // Needed for saving overrides
+  graphData?: {
+    nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
+    llm_annotations?: {
+      nodes?: Array<{
+        node_id: string;
+        annotations: LLMAnnotation;
+      }>;
+    };
+  };
+  overrides?: Record<string, ResilienceOverride>;
+  viewLevel?: ViewLevel;
+  resourceGroupFilter?: Set<string>;
+  serviceFilter?: Set<string>;
+}
+
+type ViewLevel = "overview" | "network" | "full";
+
+const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
+  const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};
+  if (!overrides) return overrideMap;
+
+  Object.entries(overrides).forEach(([checkUuid, override]) => {
+    const key = `${override.resource_id}_${override.recommendation_id}`;
+    const validationSource = (override.overridden_by || "").toLowerCase() === "user"
+      ? "User"
+      : override.overridden_by || "";
+
+    overrideMap[key] = {
+      status: override.status,
+      validation_source: validationSource,
+      check_uuid: checkUuid,
+    };
+  });
+
+  return overrideMap;
+};
+
+// Resilience score donut (0-100% gradient)
+const ScoreDonut: React.FC<{
+  score: number;  // 0.0-1.0
+  size?: number;
+}> = ({ score, size = 140 }) => {
+  const percentage = score * 100;
+  const angle = (percentage / 100) * 360;
+  
+  // Color based on score
+  const getScoreColor = () => {
+    if (percentage >= 80) return "#10b981";  // Green
+    if (percentage >= 60) return "#f59e0b";  // Orange
+    if (percentage >= 40) return "#f97316";  // Dark orange
+    return "#dc2626";  // Red
+  };
+
+  const scoreColor = getScoreColor();
+  
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: "50%",
+        background: `conic-gradient(
+          from 0deg,
+          ${scoreColor} 0deg ${angle}deg,
+          #e5e7eb ${angle}deg 360deg
+        )`,
+        padding: "4px",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          borderRadius: "50%",
+          background: "#ffffff",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          flexDirection: "column",
+          position: "relative",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "20px",
+            fontWeight: 700,
+            color: "#1f2937",
+          }}
+        >
+          {percentage.toFixed(0)}%
+        </span>
+        <span style={{ fontSize: "10px", color: "#6b7280" }}>Resilience</span>
+      </div>
+    </div>
+  );
+};
+
+// Reusable donut chart component
+const DonutChart: React.FC<{
+  passed: number;
+  failed: number;
+  size?: number;
+}> = ({ passed, failed, size = 140 }) => {
+  const total = passed + failed;
+  if (total === 0) {
+    return (
+      <div
+        style={{
+          width: `${size}px`,
+          height: `${size}px`,
+          borderRadius: "50%",
+          background: "#e5e7eb",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <span style={{ fontSize: "12px", color: "#6b7280", fontWeight: 600 }}>N/A</span>
+      </div>
+    );
+  }
+
+  const passPercentage = (passed / total) * 100;
+  const conicGradient = `conic-gradient(
+    from 0deg,
+    #10b981 0deg ${(passPercentage / 100) * 360}deg,
+    #ef4444 ${(passPercentage / 100) * 360}deg 360deg
+  )`;
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: "50%",
+        background: conicGradient,
+        padding: "4px",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          borderRadius: "50%",
+          background: "#ffffff",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          flexDirection: "column",
+          position: "relative",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "20px",
+            fontWeight: 700,
+            color: "#1f2937",
+          }}
+        >
+          {passPercentage.toFixed(0)}%
+        </span>
+        <span style={{ fontSize: "10px", color: "#6b7280" }}>Pass</span>
+      </div>
+    </div>
+  );
+};
+
+type SortColumn = "resource" | "recommendation" | "category" | "impact" | "status" | "benefit" | "weight" | "validated_by";
+
+const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
+  evaluations,
+  workloadScore,
+  subscriptionId,
+  graphData,
+  overrides,
+  viewLevel,
+  resourceGroupFilter,
+  serviceFilter,
+}) => {
+  const [expandedResource, setExpandedResource] = useState<string | null>(null);
+  const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail">("fail");
+  const [breakdownView, setBreakdownView] = useState<"category" | "impact" | "service">("category");
+  const [sortColumn, setSortColumn] = useState<SortColumn>("weight");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [filterCategory, setFilterCategory] = useState<string | null>(null);
+  const [filterImpact, setFilterImpact] = useState<string | null>(null);
+  const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
+  const [resourceFilter, setResourceFilter] = useState("");
+  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>>({});
+
+  // Fetch weights from backend once and reuse across all calculations
+  const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
+  const [impactWeights, setImpactWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.impactWeights);
+
+  // Load weights from backend
+  useEffect(() => {
+    const loadWeights = async () => {
+      try {
+        const response = await fetch('/api/resilience/weights');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.category_weights) {
+            setCategoryWeights(data.category_weights);
+          }
+          if (data.impact_weights) {
+            setImpactWeights(data.impact_weights);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load weights from backend, using defaults:', error);
+      }
+    };
+    loadWeights();
+  }, []);
+
+  // Apply overrides provided by parent (preferred path) or fetch when not provided
+  useEffect(() => {
+    if (overrides) {
+      setUserOverrides(buildOverrideMap(overrides));
+    }
+  }, [overrides]);
+
+  useEffect(() => {
+    if (!subscriptionId || overrides) return;
+
+    const loadOverrides = async () => {
+      try {
+        const response = await getOverrides(subscriptionId);
+        setUserOverrides(buildOverrideMap(response.overrides));
+      } catch (error) {
+        console.error("Failed to load overrides:", error);
+        // Continue without overrides
+      }
+    };
+
+    loadOverrides();
+  }, [subscriptionId, overrides]);
+
+  // Create annotation lookup
+  const annotationMap = useMemo(() => {
+    const map = new Map<string, LLMAnnotation>();
+    if (graphData?.llm_annotations?.nodes) {
+      graphData.llm_annotations.nodes.forEach(node => {
+        map.set(node.node_id, node.annotations);
+      });
+    }
+    return map;
+  }, [graphData]);
+
+  // Helper function to get element weight from graph annotations
+  const getElementWeight = useCallback((resourceId: string): number => {
+    const annotation = annotationMap.get(resourceId);
+    return annotation?.criticality_weight ?? 1.0;
+  }, [annotationMap]);
+
+  // Helper function to calculate resilience score for a single resource
+  // Uses shared utility - SINGLE SOURCE OF TRUTH
+  const calculateResourceScore = useCallback((resourceId: string, checks: any[]): number => {
+    const elementWeight = getElementWeight(resourceId);
+    const weights: ResilienceWeights = { categoryWeights, impactWeights };
+    return calculateResilienceScore(checks, elementWeight, weights);
+  }, [getElementWeight, categoryWeights, impactWeights]);
+
+  // Map resourceId -> resilience score for use by graph nodes
+  const resourceScores = useMemo(() => {
+    const scores = new Map<string, number>();
+    Object.entries(evaluations).forEach(([resourceId, evaluation]: [string, any]) => {
+      const checks = evaluation.checks || evaluation.findings || [];
+      const score = calculateResourceScore(resourceId, checks);
+      scores.set(resourceId, score);
+    });
+    return scores;
+  }, [evaluations, calculateResourceScore]);
+
+  // Map resourceId -> canonical type key (must match WorkloadSidebar service filter semantics)
+  const resourceIdToServiceKey = useMemo(() => {
+    const map = new Map<string, string>();
+    const nodes = graphData?.nodes ?? [];
+    for (const n of nodes) {
+      const id = String(n?.id ?? "").toLowerCase();
+      if (!id) continue;
+      map.set(id, canonicalTypeForNode(n as any));
+    }
+    return map;
+  }, [graphData?.nodes]);
+
+  // Initialize filters with all available options if not provided
+  const allResourceGroups = useMemo(() => {
+    const groups = new Set<string>();
+    Object.keys(evaluations).forEach(resourceId => {
+      const parts = resourceId.split("/").filter(p => p);
+      const partsLower = parts.map(p => p.toLowerCase());
+      const rgIndex = partsLower.indexOf("resourcegroups");
+      if (rgIndex !== -1 && rgIndex + 1 < parts.length) {
+        groups.add(String(parts[rgIndex + 1]).toLowerCase());
+      }
+    });
+    return groups;
+  }, [evaluations]);
+
+  // WorkloadSidebar's service filter stores canonical node type keys (see buildViewGraph typeAllowed).
+  const allServiceKeys = useMemo(() => {
+    const keys = new Set<string>();
+    if (resourceIdToServiceKey.size > 0) {
+      for (const v of resourceIdToServiceKey.values()) {
+        const key = String(v ?? "").toLowerCase();
+        if (key) keys.add(key);
+      }
+      return keys;
+    }
+    // Fallback: derive from evaluation.resource_type when graph nodes aren't available.
+    Object.values(evaluations).forEach((evaluation: any) => {
+      const key = normalizeTypeString(evaluation?.resource_type);
+      if (key) keys.add(String(key).toLowerCase());
+    });
+    return keys;
+  }, [evaluations, resourceIdToServiceKey]);
+
+  // Default to all filters selected if not provided or empty
+  const effectiveResourceGroupFilter = useMemo(() => {
+    if (!resourceGroupFilter || resourceGroupFilter.size === 0) {
+      return allResourceGroups.size > 0 ? allResourceGroups : new Set<string>();
+    }
+    return new Set(Array.from(resourceGroupFilter).map(v => String(v).toLowerCase()));
+  }, [resourceGroupFilter, allResourceGroups]);
+
+  const effectiveServiceFilter = useMemo(() => {
+    if (!serviceFilter || serviceFilter.size === 0) {
+      return allServiceKeys.size > 0 ? allServiceKeys : new Set<string>();
+    }
+    return new Set(Array.from(serviceFilter).map(v => String(v).toLowerCase()));
+  }, [serviceFilter, allServiceKeys]);
+
+  const resourceMatchesFilters = (resourceId: string, evaluation?: any): boolean => {
+    // Check resource group filter
+    if (effectiveResourceGroupFilter.size > 0) {
+      // Extract resource group from Azure resource ID
+      // Format: /subscriptions/sub-id/resourceGroups/group-name/providers/...
+      const parts = resourceId.split("/").filter(p => p);
+      const partsLower = parts.map(p => p.toLowerCase());
+      const rgIndex = partsLower.indexOf("resourcegroups");
+      const resourceGroup =
+        rgIndex !== -1 && rgIndex + 1 < parts.length
+          ? String(parts[rgIndex + 1]).toLowerCase()
+          : null;
+
+      if (resourceGroup && !effectiveResourceGroupFilter.has(resourceGroup)) {
+        return false;
+      }
+    }
+
+    // Check service filter
+    if (effectiveServiceFilter.size > 0) {
+      const keyFromGraph = resourceIdToServiceKey.get(resourceId.toLowerCase());
+      const keyFromEval = normalizeTypeString(evaluation?.resource_type);
+      const serviceKey = String((keyFromGraph ?? keyFromEval ?? "") as string).toLowerCase();
+      if (serviceKey && !effectiveServiceFilter.has(serviceKey)) return false;
+    }
+
+    return true;
+  };
+
+  const filteredEvaluationEntries = useMemo(() => {
+    return Object.entries(evaluations).filter(([resourceId, evaluation]) =>
+      resourceMatchesFilters(resourceId, evaluation)
+    );
+  }, [evaluations, effectiveResourceGroupFilter, effectiveServiceFilter, resourceIdToServiceKey]);
+
+  const getResourceDisplayName = (resourceId: string, defaultName: string): string => {
+    // Check if this is a subscription-level resource (/subscriptions/{id})
+    const parts = resourceId.split("/").filter(p => p);
+    if (parts.length === 2 && parts[0] === "subscriptions") {
+      return "Subscription level";
+    }
+    return defaultName;
+  };
+
+  const getImpactColor = (impact: string) => {
+    switch (impact) {
+      case "High":
+        return "#dc2626";
+      case "Medium":
+        return "#f59e0b";
+      case "Low":
+        return "#10b981";
+      default:
+        return "#6b7280";
+    }
+  };
+
+  // Apply user overrides to ALL evaluations (not filtered by left-side drawer)
+  // Used for breakdown calculations (category, impact, service)
+  const allEvaluationsWithOverrides = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(evaluations).map(([resourceId, evaluation]: [string, any]) => {
+        const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
+          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          
+          if (override) {
+            return {
+              ...finding,
+              status: override.status,
+              validation_source: override.validation_source,
+            };
+          }
+          return finding;
+        });
+        
+        // Recalculate passed/failed counts
+        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
+        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
+        
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: evaluation.findings ? checksOrFindings : undefined,
+            checks: evaluation.checks ? checksOrFindings : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: checksOrFindings.length,
+          }
+        ];
+      })
+    );
+  }, [evaluations, userOverrides]);
+
+  // Apply user overrides to filtered evaluations (used for table display)
+  const evaluationsWithOverrides = useMemo(() => {
+    return Object.fromEntries(
+      filteredEvaluationEntries.map(([resourceId, evaluation]) => {
+        const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
+          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          
+          if (override) {
+            return {
+              ...finding,
+              status: override.status,
+              validation_source: override.validation_source,
+            };
+          }
+          return finding;
+        });
+        
+        // Recalculate passed/failed counts
+        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
+        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
+        
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: evaluation.findings ? checksOrFindings : undefined,
+            checks: evaluation.checks ? checksOrFindings : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: checksOrFindings.length,
+          }
+        ];
+      })
+    );
+  }, [filteredEvaluationEntries, userOverrides]);
+
+  const stats = useMemo(() => {
+    let totalChecks = 0;
+    let passedChecks = 0;
+    let failedChecks = 0;
+    const resourceList: Array<ResilienceEvaluation & { resourceId: string }> = [];
+
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      // Calculate counts from checks array
+      const checks = evaluation.checks || [];
+      const evalTotal = checks.length;
+      const evalPassed = checks.filter((c: any) => c.status === 'pass').length;
+      const evalFailed = checks.filter((c: any) => c.status === 'fail').length;
+      
+      totalChecks += evalTotal;
+      passedChecks += evalPassed;
+      failedChecks += evalFailed;
+      resourceList.push({ ...evaluation, resourceId });
+    });
+
+    const passPercentage = totalChecks > 0 ? passedChecks / totalChecks : 0;
+
+    return { totalChecks, passedChecks, failedChecks, passPercentage, resourceList };
+  }, [evaluationsWithOverrides]);
+
+  // Calculate adjusted workload score based on overrides
+  // Formula: Check Weight = Element Weight × Category Weight × Impact Weight
+  // Normalized Weight = Check Weight / Sum of all Check Weights
+  // Score = Sum of normalized weights for passed checks
+  const adjustedWorkloadScore = useMemo(() => {
+    
+    // First pass: calculate total weight for normalization
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+
+    // Second pass: calculate score with normalized weights
+    let passedWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        if (finding.status === "pass") {
+          passedWeight += normalizedWeight;
+        }
+      });
+    });
+
+    return passedWeight;
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
+
+  const resourceFilterOptions = useMemo(() => {
+    const seen = new Set<string>();
+    stats.resourceList.forEach(resource => {
+      const annotationName = annotationMap.get(resource.resourceId)?.display_name || resource.resource_name || "";
+      const displayName = getResourceDisplayName(resource.resourceId, annotationName);
+      if (displayName) seen.add(displayName);
+    });
+    return Array.from(seen).sort((a, b) => a.localeCompare(b));
+  }, [stats.resourceList, annotationMap]);
+
+  // Breakdown by resilience category - uses contribution % for consistency
+  // Formula: Category Score = Sum(passed contribution %) / Sum(all contribution %)
+  const categoryBreakdown = useMemo(() => {
+    // Re-calculate contribution % here to avoid circular dependency
+    
+    // First, calculate total weight for all checks (same as totalWeightForDrawerFilters)
+    let totalWeight = 0;
+    const allChecks: any[] = [];
+    
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+        allChecks.push({
+          ...finding,
+          elementWeight,
+          category,
+          checkWeight,
+          normalizedWeight: 0 // will be set in second pass
+        });
+      });
+    });
+    
+    // Second pass: normalize and calculate contribution %
+    allChecks.forEach(check => {
+      check.normalizedWeight = totalWeight > 0 ? check.checkWeight / totalWeight : 0;
+      check.contribution_percent = check.normalizedWeight * 100;
+    });
+    
+    // Third pass: build category breakdown
+    const breakdown = new Map<string, { 
+      total: number; 
+      passed: number; 
+      failed: number; 
+      totalContribution: number;
+      passedContribution: number;
+    }>();
+    
+    allChecks.forEach((check: any) => {
+      const existing = breakdown.get(check.category) || { 
+        total: 0, 
+        passed: 0, 
+        failed: 0, 
+        totalContribution: 0, 
+        passedContribution: 0 
+      };
+      
+      existing.total++;
+      existing.totalContribution += check.contribution_percent;
+      
+      if (check.status === "pass") {
+        existing.passed++;
+        existing.passedContribution += check.contribution_percent;
+      } else {
+        existing.failed++;
+      }
+      
+      breakdown.set(check.category, existing);
+    });
+
+    return Array.from(breakdown.entries())
+      .map(([name, stats]) => ({
+        name,
+        ...stats,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        // Score = passed contribution % / total contribution % for this category
+        resilienceScore: stats.totalContribution > 0 ? stats.passedContribution / stats.totalContribution : 0,
+      }))
+      .sort((a, b) => b.totalContribution - a.totalContribution);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
+
+  // Breakdown by impact level
+  const impactBreakdown = useMemo(() => {
+    const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
+    
+    // First pass: calculate total weight
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+    
+    // Second pass: build breakdown with normalized weights
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const impact = finding.impact || "Unknown";
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        const existing = breakdown.get(impact) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
+        existing.total++;
+        existing.totalWeight += normalizedWeight;
+        if (finding.status === "pass") {
+          existing.passed++;
+          existing.passedWeight += normalizedWeight;
+        } else {
+          existing.failed++;
+        }
+        breakdown.set(impact, existing);
+      });
+    });
+
+    return Array.from(breakdown.entries())
+      .map(([name, stats]) => ({
+        name,
+        ...stats,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
+      }))
+      .sort((a, b) => b.totalWeight - a.totalWeight);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
+
+  // Failed counts for impact levels (High/Medium/Low) for tooltip and donut
+  const failedImpactCounts = useMemo(() => {
+    const getFailed = (name: string) => impactBreakdown.find(i => i.name === name)?.failed || 0;
+    const high = getFailed("High");
+    const medium = getFailed("Medium");
+    const low = getFailed("Low");
+    const total = high + medium + low;
+    return { high, medium, low, total };
+  }, [impactBreakdown]);
+
+  // Breakdown by Azure service category
+  const serviceBreakdown = useMemo(() => {
+    const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
+    
+    // First pass: calculate total weight
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+    
+    // Second pass: build breakdown with normalized weights
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const annotation = annotationMap.get(resourceId);
+      const serviceCategory = annotation?.azure_service_category || "Other";
+      
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        const existing = breakdown.get(serviceCategory) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
+        existing.total++;
+        existing.totalWeight += normalizedWeight;
+        if (finding.status === "pass") {
+          existing.passed++;
+          existing.passedWeight += normalizedWeight;
+        } else {
+          existing.failed++;
+        }
+        breakdown.set(serviceCategory, existing);
+      });
+    });
+
+    return Array.from(breakdown.entries())
+      .map(([name, stats]) => ({
+        name,
+        ...stats,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
+      }))
+      .sort((a, b) => b.totalWeight - a.totalWeight);
+  }, [evaluationsWithOverrides, annotationMap, impactWeights, categoryWeights, getElementWeight]);
+
+  // Get unique validation sources from data
+  const validationSources = useMemo(() => {
+    const sources = new Set<string>();
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]) => {
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        if (finding.validation_source) {
+          const val = (finding.validation_source || "").toLowerCase() === "user" ? "User" : finding.validation_source;
+          sources.add(val);
+        }
+      });
+    });
+    return Array.from(sources).sort();
+  }, [evaluationsWithOverrides]);
+
+  const filteredFindings = useMemo(() => {
+    const normalizedResourceFilter = resourceFilter.trim().toLowerCase();
+    let findings = filteredEvaluationEntries.flatMap(([resourceId, evaluation]) => {
+      // Use findings if available, otherwise fall back to checks
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      return checksOrFindings
+        .map((f: any) => {
+          // Apply override status if exists
+          const overrideKey = `${resourceId}_${f.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          const currentStatus = override?.status || f.status;
+          const currentValidationSource = override?.validation_source || f.validation_source;
+          
+          const valSource = (currentValidationSource || "").toLowerCase() === "user" ? "User" : currentValidationSource;
+          return {
+            ...f,
+            status: currentStatus,
+            validation_source: valSource,
+            resourceId,
+            resourceName: evaluation.resource_name,
+          };
+        })
+        .filter((f: any) => filterStatus === "all" || f.status === filterStatus)
+        .filter((f: any) => !filterCategory || f.category === filterCategory)
+        .filter((f: any) => !filterImpact || f.impact === filterImpact)
+        .filter((f: any) => !filterValidationSource || f.validation_source === filterValidationSource);
+    });
+
+    if (normalizedResourceFilter) {
+      findings = findings.filter(finding => {
+        const annotationName = annotationMap.get(finding.resourceId)?.display_name || finding.resourceName || "";
+        const resourceLabel = getResourceDisplayName(finding.resourceId, annotationName);
+        return resourceLabel.toLowerCase().includes(normalizedResourceFilter);
+      });
+    }
+
+    // Sorting
+    findings.sort((a, b) => {
+      let aVal: any = "";
+      let bVal: any = "";
+
+      switch (sortColumn) {
+        case "resource":
+          aVal = annotationMap.get(a.resourceId)?.display_name || a.resourceName;
+          bVal = annotationMap.get(b.resourceId)?.display_name || b.resourceName;
+          break;
+        case "recommendation":
+          aVal = a.description;
+          bVal = b.description;
+          break;
+        case "category":
+          aVal = a.category;
+          bVal = b.category;
+          break;
+        case "impact":
+          const impactOrder = { "High": 3, "Medium": 2, "Low": 1 };
+          aVal = impactOrder[a.impact as keyof typeof impactOrder] || 0;
+          bVal = impactOrder[b.impact as keyof typeof impactOrder] || 0;
+          break;
+        case "weight":
+          // Calculate weight on the fly: element_weight × category_weight × impact_weight
+          const getResourceWeight = (finding: any) => {
+            const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
+              const evaluation = evaluationsWithOverrides[key];
+              const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+              return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+            });
+            const elementWeight = resourceId ? getElementWeight(resourceId) : 1.0;
+            const category = finding.category || "Other";
+            const impactWeight = impactWeights[finding.impact] || 0.1;
+            const categoryWeight = categoryWeights[category] || 0.05;
+            return elementWeight * categoryWeight * impactWeight;
+          };
+          aVal = getResourceWeight(a);
+          bVal = getResourceWeight(b);
+          break;
+        case "status":
+          aVal = a.status === "pass" ? 1 : 0;
+          bVal = b.status === "pass" ? 1 : 0;
+          break;
+        case "validated_by":
+          aVal = a.validation_source || "";
+          bVal = b.validation_source || "";
+          break;
+        case "benefit":
+          aVal = a.potential_benefits || "";
+          bVal = b.potential_benefits || "";
+          break;
+      }
+
+      if (typeof aVal === "string") {
+        aVal = aVal.toLowerCase();
+        bVal = bVal.toLowerCase();
+        return sortDirection === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+      }
+      return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
+    });
+
+    return findings;
+  }, [filteredEvaluationEntries, filterStatus, filterCategory, filterImpact, filterValidationSource, resourceFilter, sortColumn, sortDirection, annotationMap, userOverrides]);
+
+  // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
+  // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
+  const totalWeightForDrawerFilters = useMemo(() => {
+    let total = 0;
+
+    filteredEvaluationEntries.forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        total += elementWeight * categoryWeight * impactWeight;
+      });
+    });
+
+    return total;
+  }, [filteredEvaluationEntries, impactWeights, categoryWeights, getElementWeight]);
+
+  // Calculate contribution_percent dynamically based on visible filtered checks
+  const findingsWithContribution = useMemo(() => {
+    // Use totalWeightForDrawerFilters calculated from left-side drawer filters only
+    // This way, the weight doesn't change when using right-side "Findings Details" filters
+
+    // Add dynamic contribution_percent to each finding and apply user overrides
+    
+    return filteredFindings.map(finding => {
+      const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
+        const evaluation = evaluationsWithOverrides[key];
+        const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+        return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+      });
+      const elementWeight = resourceId ? getElementWeight(resourceId) : 1.0;
+      const category = finding.category || "Other";
+      const impactWeight = impactWeights[finding.impact] || 0.1;
+      const categoryWeight = categoryWeights[category] || 0.05;
+      const rawWeight = elementWeight * categoryWeight * impactWeight;
+      const checkWeight = totalWeightForDrawerFilters > 0 ? rawWeight / totalWeightForDrawerFilters : 0;
+      
+      return {
+        ...finding,
+        contribution_percent: checkWeight * 100  // Already normalized, just convert to percentage
+      };
+    });
+  }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
+
+  const handleStatusOverride = async (resourceId: string, recommendationId: string, currentStatus: string) => {
+    if (!subscriptionId) {
+      console.error("Cannot save override: subscription ID not provided");
+      return;
+    }
+
+    const overrideKey = `${resourceId}_${recommendationId}`;
+    const newStatus = currentStatus === "fail" ? "pass" : "fail";
+    
+    // Optimistically update UI
+    setUserOverrides(prev => ({
+      ...prev,
+      [overrideKey]: {
+        status: newStatus,
+        validation_source: "User"
+      }
+    }));
+
+    // Save to backend
+    try {
+      const saved = await saveOverride(
+        subscriptionId,
+        resourceId,
+        recommendationId,
+        newStatus,
+        "user"
+      );
+      // Persist the returned check_uuid into our local map
+      const overrideKeySaved = `${resourceId}_${recommendationId}`;
+      setUserOverrides(prev => ({
+        ...prev,
+        [overrideKeySaved]: {
+          status: newStatus as "pass" | "fail",
+          validation_source: "User",
+          check_uuid: saved?.check_uuid,
+        },
+      }));
+      console.log(`Override saved for ${resourceId} / ${recommendationId}: ${newStatus}`);
+    } catch (error) {
+      console.error("Failed to save override:", error);
+      // Revert optimistic update on error
+      setUserOverrides(prev => {
+        const updated = { ...prev };
+        delete updated[overrideKey];
+        return updated;
+      });
+      alert("Failed to save override. Please try again.");
+    }
+  };
+
+  const handleDeleteOverride = async (resourceId: string, recommendationId: string) => {
+    if (!subscriptionId) return;
+    const overrideKey = `${resourceId}_${recommendationId}`;
+
+    // Determine the backend override id (check_uuid)
+    let checkUuid = userOverrides[overrideKey]?.check_uuid;
+    if (!checkUuid) {
+      try {
+        const found = await getCheckOverride(subscriptionId, resourceId, recommendationId);
+        checkUuid = found?.check_uuid;
+      } catch (e) {
+        console.warn("getCheckOverride failed", e);
+      }
+    }
+
+    if (!checkUuid) {
+      console.error("No check_uuid found for override deletion", { resourceId, recommendationId });
+      return;
+    }
+
+    try {
+      await deleteOverride(subscriptionId, checkUuid);
+      // Remove from local state
+      setUserOverrides(prev => {
+        const updated = { ...prev } as Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>;
+        delete updated[overrideKey];
+        return updated;
+      });
+    } catch (e) {
+      console.error("deleteOverride failed", e);
+      alert("Failed to delete override. Please try again.");
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    return status === "pass" ? "#10b981" : "#ef4444";
+  };
+
+  const exportToExcel = () => {
+    // Prepare data for export
+    const exportData = findingsWithContribution.map(finding => ({
+      "Resource": annotationMap.get(
+        Object.keys(evaluationsWithOverrides).find(key => {
+          const evaluation = evaluationsWithOverrides[key];
+          const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+          return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+        }) || ""
+      )?.display_name || finding.description?.substring(0, 30) || "Unknown",
+      "Recommendation": finding.description,
+      "Category": finding.category,
+      "Impact": finding.impact,
+      "Contribution %": finding.contribution_percent?.toFixed(2) || "0.00",
+      "Status": finding.status === "pass" ? "Passed" : "Failed",
+      "Validated By": finding.validation_source || "APRL",
+      "Benefit": finding.potential_benefits || ""
+    }));
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportData);
+
+    // Set column widths
+    const colWidths = [
+      { wch: 20 },  // Resource
+      { wch: 40 },  // Recommendation
+      { wch: 18 },  // Category
+      { wch: 10 },  // Impact
+      { wch: 15 },  // Contribution %
+      { wch: 10 },  // Status
+      { wch: 15 },  // Validated By
+      { wch: 30 },  // Benefit
+    ];
+    ws["!cols"] = colWidths;
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, "Findings");
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const filename = `resilience-findings-${timestamp}.xlsx`;
+
+    // Write file
+    XLSX.writeFile(wb, filename);
+  };
+  const getRiskLevel = (passPercentage: number) => {
+    const percentage = passPercentage * 100;  // Convert 0-1 to 0-100
+    if (percentage >= 80) return { level: "Low Risk", color: "#10b981", badge: "✓" };
+    if (percentage >= 60) return { level: "Medium Risk", color: "#f97316", badge: "!" };
+    if (percentage >= 40) return { level: "High Risk", color: "#ef4444", badge: "⚠" };
+    return { level: "Critical", color: "#7c2d12", badge: "🔴" };
+  };
+
+  const riskLevel = getRiskLevel(stats.passPercentage);
+
+  const toggleSort = (column: SortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection(prev => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortColumn(column);
+      setSortDirection("desc");
+    }
+  };
+
+  const sortIndicator = (column: SortColumn) => {
+    if (sortColumn !== column) return "";
+    return sortDirection === "asc" ? "▲" : "▼";
+  };
+
+  return (
+    <div style={{ padding: "24px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
+      {/* Header Section - Overview Card */}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "12px",
+          padding: "24px",
+          marginBottom: "24px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+          border: "1px solid #e5e7eb",
+        }}
+      >
+        <h1
+          style={{
+            margin: "0 0 24px",
+            fontSize: "24px",
+            fontWeight: 700,
+            color: "#1f2937",
+          }}
+        >
+          Resilience Overview
+        </h1>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto auto auto 1fr auto",
+            gap: "24px",
+            alignItems: "flex-start",
+          }}
+        >
+          {/* Resilience Score Donut */}
+          {adjustedWorkloadScore !== undefined && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+              <ScoreDonut score={adjustedWorkloadScore} size={140} />
+              <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 600, color: "#1f2937" }}>
+                Overall Score
+              </div>
+            </div>
+          )}
+
+          {/* Pass/Fail Donut Chart */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+            <DonutChart passed={stats.passedChecks} failed={stats.failedChecks} size={140} />
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: "12px", fontWeight: 600, color: riskLevel.color }}>
+                {riskLevel.level}
+              </div>
+            </div>
+          </div>
+
+          {/* Impact Donut Chart - All three levels */}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+            <div
+              title={`Failed items: ${failedImpactCounts.total} (High: ${failedImpactCounts.high}, Medium: ${failedImpactCounts.medium}, Low: ${failedImpactCounts.low})`}
+              style={{
+                position: "relative",
+                width: "140px",
+                height: "140px",
+                borderRadius: "50%",
+                background: (() => {
+                  const { high, medium, low, total } = failedImpactCounts;
+                  if (total === 0) return "#e5e7eb";
+                  const highPct = (high / total) * 100;
+                  const mediumPct = (medium / total) * 100;
+                  const lowPct = (low / total) * 100;
+                  return `conic-gradient(
+                    from 0deg,
+                    #dc2626 0deg ${(highPct / 100) * 360}deg,
+                    #f59e0b ${(highPct / 100) * 360}deg ${((highPct + mediumPct) / 100) * 360}deg,
+                    #10b981 ${((highPct + mediumPct) / 100) * 360}deg 360deg
+                  )`;
+                })(),
+                padding: "4px",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: "50%",
+                  background: "#ffffff",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                  flexDirection: "column",
+                }}
+              >
+                <span style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>
+                  {failedImpactCounts.total}
+                </span>
+                <span style={{ fontSize: "10px", color: "#6b7280" }}>Failed</span>
+              </div>
+            </div>
+            <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 600, color: "#1f2937" }}>
+              Impact
+            </div>
+          </div>
+
+          {/* Main Stats + Category + Impact bars */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
+                <div
+                style={{
+                  padding: "10px",
+                  background: "#dee7f3",
+                  borderRadius: "8px",
+                  borderLeft: "3px solid #448eef",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#5a606b", marginBottom: "4px" }}>Total Checks</div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "#448eef" }}>
+                  {stats.totalChecks}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: "10px",
+                  background: "#ecfdf5",
+                  borderRadius: "8px",
+                  borderLeft: "3px solid #10b981",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Passed</div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "#10b981" }}>
+                  {stats.passedChecks}
+                </div>
+              </div>
+              <div
+                style={{
+                  padding: "10px",
+                  background: "#fee2e2",
+                  borderRadius: "8px",
+                  borderLeft: "3px solid #ef4444",
+                }}
+              >
+                <div style={{ fontSize: "11px", color: "#6b7280", marginBottom: "4px" }}>Failed</div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "#ef4444" }}>
+                  {stats.failedChecks}
+                </div>
+              </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Resources Grid */}
+      <div style={{ marginBottom: "24px" }}>
+        {/* Internal Tabs */}
+        <div
+          style={{
+            display: "flex",
+            borderBottom: "2px solid #e5e7eb",
+            marginBottom: "16px",
+            gap: "0",
+          }}
+        >
+          <button
+            onClick={() => setBreakdownView("category")}
+            style={{
+              padding: "12px 20px",
+              border: "none",
+              background: breakdownView === "category" ? "#fff" : "transparent",
+              color: breakdownView === "category" ? "#0078d4" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: breakdownView === "category" ? 600 : 500,
+              borderBottom: breakdownView === "category" ? "3px solid #0078d4" : "none",
+              marginBottom: "-2px",
+              transition: "all 0.2s ease",
+            }}
+          >
+            By Resilience Category
+          </button>
+          <button
+            onClick={() => setBreakdownView("impact")}
+            style={{
+              padding: "12px 20px",
+              border: "none",
+              background: breakdownView === "impact" ? "#fff" : "transparent",
+              color: breakdownView === "impact" ? "#0078d4" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: breakdownView === "impact" ? 600 : 500,
+              borderBottom: breakdownView === "impact" ? "3px solid #0078d4" : "none",
+              marginBottom: "-2px",
+              transition: "all 0.2s ease",
+            }}
+          >
+            By Impact Level
+          </button>
+          <button
+            onClick={() => setBreakdownView("service")}
+            style={{
+              padding: "12px 20px",
+              border: "none",
+              background: breakdownView === "service" ? "#fff" : "transparent",
+              color: breakdownView === "service" ? "#0078d4" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: breakdownView === "service" ? 600 : 500,
+              borderBottom: breakdownView === "service" ? "3px solid #0078d4" : "none",
+              marginBottom: "-2px",
+              transition: "all 0.2s ease",
+            }}
+          >
+            By Azure Service
+          </button>
+        </div>
+
+        {/* Breakdown Grid */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+            gap: "8px",
+          }}
+        >
+          {breakdownView === "category" &&
+            categoryBreakdown.map((item) => (
+              <div
+                key={item.name}
+                style={{
+                  background: "#fff",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", marginBottom: "10px" }}>
+                  {item.name}
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <ScoreDonut score={item.resilienceScore} size={80} />
+                </div>
+
+                <div style={{ marginTop: "8px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      height: "6px",
+                      borderRadius: "999px",
+                      overflow: "hidden",
+                      background: "#e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${item.total ? (item.passed / item.total) * 100 : 0}%`,
+                        background: "#10b981",
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: `${item.total ? (item.failed / item.total) * 100 : 0}%`,
+                        background: "#ef4444",
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+          {breakdownView === "impact" &&
+            impactBreakdown.map((item) => (
+              <div
+                key={item.name}
+                style={{
+                  background: "#fff",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <div style={{ fontSize: "12px", fontWeight: 600, color: getImpactColor(item.name), marginBottom: "10px" }}>
+                  {item.name} Impact
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <ScoreDonut score={item.resilienceScore} size={80} />
+                </div>
+
+                <div style={{ marginTop: "8px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      height: "6px",
+                      borderRadius: "999px",
+                      overflow: "hidden",
+                      background: "#e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${item.total ? (item.passed / item.total) * 100 : 0}%`,
+                        background: "#10b981",
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: `${item.total ? (item.failed / item.total) * 100 : 0}%`,
+                        background: "#ef4444",
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+          {breakdownView === "service" &&
+            serviceBreakdown.map((item) => (
+              <div
+                key={item.name}
+                style={{
+                  background: "#fff",
+                    borderRadius: "6px",
+                  padding: "12px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", marginBottom: "10px" }}>
+                  {item.name}
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <ScoreDonut score={item.resilienceScore} size={80} />
+                </div>
+
+                <div style={{ marginTop: "8px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      height: "6px",
+                      borderRadius: "999px",
+                      overflow: "hidden",
+                      background: "#e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${item.total ? (item.passed / item.total) * 100 : 0}%`,
+                        background: "#10b981",
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: `${item.total ? (item.failed / item.total) * 100 : 0}%`,
+                        background: "#ef4444",
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+        </div>
+      </div>
+
+      {/* Filter and Findings Table */}
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: "12px",
+          padding: "10px",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+          border: "1px solid #e5e7eb",
+        }}
+      >
+        {/* Filter Buttons */}
+        <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end" }}>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "6px" }}>
+            Findings Details
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+
+          <button
+            onClick={() => setFilterStatus("fail")}
+            style={{
+              padding: "6px 16px",
+              borderRadius: "6px",
+              border: filterStatus === "fail" ? "2px solid #ef4444" : "1px solid #d1d5db",
+              background: filterStatus === "fail" ? "#fee2e2" : "#fff",
+              color: filterStatus === "fail" ? "#ef4444" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            Failed
+          </button>
+          <button
+            onClick={() => setFilterStatus("pass")}
+            style={{
+              padding: "6px 16px",
+              borderRadius: "6px",
+              border: filterStatus === "pass" ? "2px solid #10b981" : "1px solid #d1d5db",
+              background: filterStatus === "pass" ? "#ecfdf5" : "#fff",
+              color: filterStatus === "pass" ? "#10b981" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            Passed
+          </button>
+          <button
+            onClick={() => setFilterStatus("all")}
+            style={{
+              padding: "6px 16px",
+              borderRadius: "6px",
+              border: filterStatus === "all" ? "2px solid #0078d4" : "1px solid #d1d5db",
+              background: filterStatus === "all" ? "#e0f2fe" : "#fff",
+              color: filterStatus === "all" ? "#0078d4" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            All
+          </button>
+          </div>
+        </label>
+
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", minWidth: "220px", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
+            Resource
+            <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <input
+                list="resource-filter-options"
+                value={resourceFilter}
+                onChange={(e) => setResourceFilter(e.target.value)}
+                placeholder="Type to search resources"
+                style={{
+                  flex: 1,
+                  padding: "6px 8px",
+                  borderRadius: "4px",
+                  border: "1px solid #d1d5db",
+                  fontSize: "12px",
+                }}
+                autoComplete="off"
+              />
+              {resourceFilter && (
+                <button
+                  type="button"
+                  onClick={() => setResourceFilter("")}
+                  style={{
+                    border: "none",
+                    background: "#f3f4f6",
+                    color: "#6b7280",
+                    borderRadius: "4px",
+                    padding: "6px 10px",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <datalist id="resource-filter-options">
+              {resourceFilterOptions.map(name => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </label>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "8px" , marginLeft: "10px" }}>
+            Category
+            <select
+              value={filterCategory ?? ""}
+              onChange={(e) => setFilterCategory(e.target.value || null)}
+              style={{ padding: "6px 8px", borderRadius: "4px", border: "1px solid #d1d5db", fontSize: "12px" }}
+            >
+              <option value="">All</option>
+              {categoryBreakdown.map(cat => (
+                <option key={cat.name} value={cat.name}>
+                  {cat.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
+            Impact
+            <select
+              value={filterImpact ?? ""}
+              onChange={(e) => setFilterImpact(e.target.value || null)}
+              style={{ padding: "6px 8px", borderRadius: "4px", border: "1px solid #d1d5db", fontSize: "12px" }}
+            >
+              <option value="">All</option>
+              {impactBreakdown.map(impact => (
+                <option key={impact.name} value={impact.name}>
+                  {impact.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
+            Validated By
+            <select
+              value={filterValidationSource ?? ""}
+              onChange={(e) => setFilterValidationSource(e.target.value || null)}
+              style={{ padding: "6px 8px", borderRadius: "4px", border: "1px solid #d1d5db", fontSize: "12px" }}
+            >
+              <option value="">All</option>
+              {validationSources.map(source => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+          </label>
+          </div>
+          
+          {/* Export Button */}
+          <button
+            onClick={exportToExcel}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "6px",
+              border: "1px solid #d1d5db",
+              background: "#fff",
+              color: "#0078d4",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              transition: "all 0.2s",
+              height: "fit-content",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "#e0f2fe";
+              e.currentTarget.style.borderColor = "#0078d4";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "#fff";
+              e.currentTarget.style.borderColor = "#d1d5db";
+            }}
+          >
+            <span>📥</span>
+            Export to Excel
+          </button>
+        </div>
+
+        {/* Findings Table */}
+        <div
+          style={{
+            overflowX: "auto",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+          }}
+        >
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: "12px",
+            }}
+          >
+            <thead>
+              <tr
+                style={{
+                  background: "#f9fafb",
+                  borderBottom: "2px solid #e5e7eb",
+                }}
+              >
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "left",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("resource")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Resource</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("resource")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "left",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("recommendation")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Recommendation</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("recommendation")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "left",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("benefit")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Benefit</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("benefit")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "left",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("category")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Category</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("category")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("impact")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "center",
+                      alignItems: "center",
+                      gap: "6px",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Impact</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("impact")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
+                    fontSize: "12px",
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("weight")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                    title="Percentage contribution to current filtered view (recalculated dynamically)"
+                  >
+                    <span>Weight</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("weight")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("status")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "center",
+                      alignItems: "center",
+                      gap: "6px",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span>Status</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("status")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
+                    fontSize: "12px",
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("validated_by")}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "#374151",
+                      margin: "0 auto",
+                    }}
+                  >
+                    <span>Validated By</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("validated_by")}</span>
+                  </button>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {findingsWithContribution.map((finding, idx) => (
+                <tr
+                  key={idx}
+                  title={finding.long_description || ""}
+                  style={{
+                    borderBottom: "1px solid #e5e7eb",
+                    background: idx % 2 === 0 ? "#fff" : "#f9fafb",
+                  }}
+                >
+                  <td style={{ padding: "12px", color: "#374151" }}>
+                    <div style={{ fontWeight: 600 }}>
+                      {getResourceDisplayName(finding.resourceId, annotationMap.get(finding.resourceId)?.display_name || finding.resourceName)}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "11px",
+                        color: "#6b7280",
+                        marginTop: "2px",
+                      }}
+                    >
+                      {annotationMap.get(finding.resourceId)?.azure_service_category || finding.resourceId.split("/")[7]}
+                    </div>
+                  </td>
+                  <td style={{ padding: "12px", color: "#374151" }}>
+                    <span>{finding.description}</span>
+                    {finding.validation_source === "LLM" && (finding.learn_more as any)?.llm_reasoning && (
+                      <span
+                        style={{
+                          marginLeft: "8px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: "18px",
+                          height: "18px",
+                          borderRadius: "999px",
+                          background: "#e0f2fe",
+                          color: "#1d4ed8",
+                          cursor: "help",
+                          fontSize: "12px",
+                          fontWeight: 800,
+                          border: "1px solid #bfdbfe",
+                        }}
+                        title={(finding.learn_more as any)?.llm_reasoning}
+                      >
+                        i
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: "12px", color: "#374151" }}>
+                    {finding.potential_benefits ? (
+                      (finding.learn_more as any)?.url ? (
+                        <a
+                          href={(finding.learn_more as any).url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
+                          title={(finding.learn_more as any).name || "Learn more"}
+                        >
+                          {finding.potential_benefits}
+                        </a>
+                      ) : (
+                        finding.potential_benefits
+                      )
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td style={{ padding: "12px", color: "#374151" }}>
+                    {finding.category}
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
+                      color: getImpactColor(finding.impact),
+                      fontWeight: 600,
+                    }}
+                  >
+                    {finding.impact}
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
+                      fontSize: "11px",
+                      color: "#6b7280",
+                      fontWeight: 500,
+                    }}
+                    title={`Contributes ${finding.contribution_percent?.toFixed(2)}% to current filtered view`}
+                  >
+                    {finding.contribution_percent ? `${finding.contribution_percent.toFixed(1)}%` : "—"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ position: "relative", display: "inline-block" }}>
+                        <span
+                          style={{
+                            display: "inline-block",
+                            padding: "4px 8px",
+                            borderRadius: "4px",
+                            background: finding.status === "pass" ? "#ecfdf5" : "#fee2e2",
+                            color: getStatusColor(finding.status),
+                            fontWeight: 600,
+                            fontSize: "11px",
+                          }}
+                        >
+                          {finding.status.toUpperCase()}
+                        </span>
+                        {finding.status === "fail" && (
+                          <button
+                            type="button"
+                            onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.status)}
+                            style={{
+                              position: "absolute",
+                              top: "-10px",
+                              right: "-10px",
+                              width: "22px",
+                              height: "22px",
+                              borderRadius: "50%",
+                              background: "#10b981",
+                              border: "2px solid #fff",
+                              color: "#fff",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "12px",
+                              padding: "0",
+                              fontWeight: "bold",
+                            }}
+                            title="Override to pass"
+                          >
+                            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "12px", height: "12px" }} />
+                          </button>
+                        )}
+                        {finding.status === "pass" && (finding.validation_source?.toLowerCase() === "user") && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteOverride(finding.resourceId, finding.recommendation_id)}
+                            style={{
+                              position: "absolute",
+                              top: "-10px",
+                              right: "-10px",
+                              width: "22px",
+                              height: "22px",
+                              borderRadius: "50%",
+                              background: "#ef4444",
+                              border: "2px solid #fff",
+                              color: "#fff",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              padding: 0,
+                              zIndex: 1,
+                            }}
+                            title="Remove override"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <line x1="6" y1="6" x2="18" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                              <line x1="18" y1="6" x2="6" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
+                    }}
+                  >
+                    {finding.validation_source ? (
+                      (() => {
+                        const src = (finding.validation_source || '').toLowerCase();
+                        const label = src === 'aprl' ? 'APRL' : src === 'llm' ? 'LLM' : src === 'heuristic' ? 'Heuristic' : src === 'pendingreview' ? 'PendingReview' : src === 'user' ? 'User' : finding.validation_source;
+                        const bg = src === 'aprl' ? '#dbeafe' : src === 'llm' ? '#fef3c7' : src === 'heuristic' ? '#e0e7ff' : src === 'user' ? '#dcfce7' : src === 'pendingreview' ? '#f3e8ff' : '#e5e7eb';
+                        const fg = src === 'aprl' ? '#1e40af' : src === 'llm' ? '#92400e' : src === 'heuristic' ? '#3730a3' : src === 'user' ? '#166534' : src === 'pendingreview' ? '#6b21a8' : '#374151';
+                        const bd = src === 'aprl' ? '#bfdbfe' : src === 'llm' ? '#fde68a' : src === 'heuristic' ? '#c7d2fe' : src === 'user' ? '#bbf7d0' : src === 'pendingreview' ? '#e9d5ff' : '#d1d5db';
+                        return (
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: 600,
+                              background: bg,
+                              color: fg,
+                              border: `1px solid ${bd}`,
+                            }}
+                            title={`Confirmed by ${label}`}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()
+                    ) : (
+                      <span style={{ color: "#9ca3af", fontSize: "11px" }}>—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {findingsWithContribution.length === 0 && (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "32px",
+              color: "#6b7280",
+            }}
+          >
+            No findings match the selected filter.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ResilienceSummary;

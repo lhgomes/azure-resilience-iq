@@ -1,0 +1,41 @@
+# Application Configuration
+# Centralized configuration for all application settings
+
+# Logging Configuration
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  # Can be overridden by LOG_LEVEL environment variable
+  level: "INFO"
+
+# LLM Configuration
+llm:
+  # Enable/disable LLM annotation feature (true/false)
+  use_real_llm: true
+  
+  # Enable/disable LLM annotations in API responses (true/false)
+  annotation_enabled: true
+
+# Resilience Analysis Configuration
+resilience:
+  # Category weights for resilience scoring
+  # Must sum to 1.0 (normalized automatically if not)
+  category_weights:
+    "HighAvailability": 0.30
+    "DisasterRecovery": 0.20
+    "Scalability": 0.20
+    "MonitoringAndAlerting": 0.15
+    "Security": 0.10
+    "OtherBestPractices": 0.05
+
+  # Impact-to-weight mapping for individual checks
+  # Higher impact checks count more toward category score
+  impact_weights:
+    "High": 0.6
+    "Medium": 0.3
+    "Low": 0.1
+  
+  # APRL v2 directory (relative to backend directory, or absolute path)
+  aprl_root: "aprl"
+  
+  # Rules directory for resilience checks
+  rules_dir: "./config/resiliency_rules"

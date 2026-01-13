@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from .models import LLMAnnotations
 from .summarizer import summarize_graph_for_llm
 from app.graph.builder import edge_id
+from app.settings import get_settings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -131,6 +132,10 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 
         - hide_by_default:
             true ONLY if the resource is low-signal or noisy at architecture level.
+            Do NOT set hide_by_default=true for any resource that is on a critical path
+            or directly feeds/protects a component with criticality_score ≥ 3 (e.g.,
+            storage backing a VM, disks, NICs, subnets, NSGs, PIPs, load balancers
+            for active workloads). Keep those visible.
 
         - confidence:
             Numeric value between 0 and 1 reflecting certainty of the annotation.
@@ -224,13 +229,25 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
 
 
 def llm_config_enabled() -> bool:
-    flag = os.getenv("LLM_ANNOTATION_ENABLED", "true").lower().strip()
-    return flag in {"1", "true", "yes", "on"}
+    """Check if LLM annotations are enabled from app config."""
+    try:
+        settings = get_settings()
+        return settings.is_annotation_enabled()
+    except RuntimeError:
+        # Fallback to environment variable if settings not initialized
+        flag = os.getenv("LLM_ANNOTATION_ENABLED", "true").lower().strip()
+        return flag in {"1", "true", "yes", "on"}
 
 
 def _use_real_llm() -> bool:
-    flag = os.getenv("USE_REAL_LLM", "false").lower().strip()
-    return flag in {"1", "true", "yes", "on"}
+    """Check if real LLM should be used from app config."""
+    try:
+        settings = get_settings()
+        return settings.use_real_llm()
+    except RuntimeError:
+        # Fallback to environment variable if settings not initialized
+        flag = os.getenv("USE_REAL_LLM", "false").lower().strip()
+        return flag in {"1", "true", "yes", "on"}
 
 
 def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotations:

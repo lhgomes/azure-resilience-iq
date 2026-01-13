@@ -24,6 +24,7 @@ export interface GraphNode {
   id: string;
   name: string;
   type: string;
+  element_weight?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -201,12 +202,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
             typeof meta["criticality_stars"] === "string" ? (meta["criticality_stars"] as string) : undefined,
           criticality_score: typeof meta["criticality_score"] === "number" ? (meta["criticality_score"] as number) : undefined,
           confidence: typeof meta["confidence"] === "number" ? (meta["confidence"] as number) : undefined,
+          element_weight: typeof n.element_weight === "number" ? n.element_weight : undefined,
           color: typeof meta["color"] === "string" ? (meta["color"] as string) : undefined,
           azure_service_category: typeof meta["azure_service_category"] === "string" ? (meta["azure_service_category"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
           user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
+          metadata: meta,
         };
       })(),
       type: "azure",
