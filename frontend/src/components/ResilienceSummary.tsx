@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import * as XLSX from "xlsx";
 import { canonicalTypeForNode, normalizeTypeString } from "../domain/graphView";
-
+import { saveOverride, getOverrides, deleteOverride, getCheckOverride } from "../api/resilience";
 interface ResilienceCheck {
   status: "pass" | "fail";
   description: string;
@@ -11,6 +12,10 @@ interface ResilienceCheck {
   long_description?: string;
   potential_benefits?: string;
   learn_more?: Array<{ name: string; url: string }>;
+  validation_source?: string;
+  contribution_percent?: number;  // Dynamically calculated % contribution to filtered view
+  impact_weight?: number;  // Impact weight (0.1, 0.3, 0.5)
+  is_critical?: boolean;  // True if High impact
 }
 
 interface ResilienceEvaluation {
@@ -34,6 +39,8 @@ interface LLMAnnotation {
 
 interface ResilienceSummaryProps {
   evaluations: Record<string, ResilienceEvaluation>;
+  workloadScore?: number;  // Overall resilience score (0.0-1.0)
+  subscriptionId?: string;  // Needed for saving overrides
   graphData?: {
     nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
     llm_annotations?: {
@@ -49,6 +56,70 @@ interface ResilienceSummaryProps {
 }
 
 type ViewLevel = "overview" | "network" | "full";
+
+// Resilience score donut (0-100% gradient)
+const ScoreDonut: React.FC<{
+  score: number;  // 0.0-1.0
+  size?: number;
+}> = ({ score, size = 140 }) => {
+  const percentage = score * 100;
+  const angle = (percentage / 100) * 360;
+  
+  // Color based on score
+  const getScoreColor = () => {
+    if (percentage >= 80) return "#10b981";  // Green
+    if (percentage >= 60) return "#f59e0b";  // Orange
+    if (percentage >= 40) return "#f97316";  // Dark orange
+    return "#dc2626";  // Red
+  };
+
+  const scoreColor = getScoreColor();
+  
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: `${size}px`,
+        height: `${size}px`,
+        borderRadius: "50%",
+        background: `conic-gradient(
+          from 0deg,
+          ${scoreColor} 0deg ${angle}deg,
+          #e5e7eb ${angle}deg 360deg
+        )`,
+        padding: "4px",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          borderRadius: "50%",
+          background: "#ffffff",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          flexDirection: "column",
+          position: "relative",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "20px",
+            fontWeight: 700,
+            color: "#1f2937",
+          }}
+        >
+          {percentage.toFixed(0)}%
+        </span>
+        <span style={{ fontSize: "10px", color: "#6b7280" }}>Resilience</span>
+      </div>
+    </div>
+  );
+};
 
 // Reusable donut chart component
 const DonutChart: React.FC<{
@@ -124,10 +195,12 @@ const DonutChart: React.FC<{
   );
 };
 
-type SortColumn = "resource" | "recommendation" | "category" | "impact" | "status" | "benefit";
+type SortColumn = "resource" | "recommendation" | "category" | "impact" | "status" | "benefit" | "weight" | "validated_by";
 
 const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   evaluations,
+  workloadScore,
+  subscriptionId,
   graphData,
   viewLevel,
   resourceGroupFilter,
@@ -136,11 +209,43 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail">("fail");
   const [breakdownView, setBreakdownView] = useState<"category" | "impact" | "service">("category");
-  const [sortColumn, setSortColumn] = useState<SortColumn>("impact");
+  const [sortColumn, setSortColumn] = useState<SortColumn>("weight");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [filterCategory, setFilterCategory] = useState<string | null>(null);
   const [filterImpact, setFilterImpact] = useState<string | null>(null);
+  const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
   const [resourceFilter, setResourceFilter] = useState("");
+  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string; original_status?: "pass" | "fail" }>>({});
+
+  // Load overrides on component mount
+  useEffect(() => {
+    if (!subscriptionId) return;
+
+    const loadOverrides = async () => {
+      try {
+        const response = await getOverrides(subscriptionId);
+        
+        // Convert overrides record to key-value map
+        const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};
+        Object.entries(response.overrides).forEach(([_uuid, override]) => {
+          const key = `${override.resource_id}_${override.recommendation_id}`;
+          const valSource = (override.overridden_by || "").toLowerCase() === "user" ? "User" : override.overridden_by || "";
+          overrideMap[key] = {
+            status: override.status as "pass" | "fail",
+            validation_source: valSource,
+            check_uuid: override.check_uuid || (_uuid as string),
+          };
+        });
+        
+        setUserOverrides(overrideMap);
+      } catch (error) {
+        console.error("Failed to load overrides:", error);
+        // Continue without overrides
+      }
+    };
+
+    loadOverrides();
+  }, [subscriptionId]);
 
   // Create annotation lookup
   const annotationMap = useMemo(() => {
@@ -269,23 +374,152 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     }
   };
 
+  // Apply user overrides to ALL evaluations (not filtered by left-side drawer)
+  // Used for breakdown calculations (category, impact, service)
+  const allEvaluationsWithOverrides = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(evaluations).map(([resourceId, evaluation]: [string, any]) => {
+        const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
+          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          
+          if (override) {
+            return {
+              ...finding,
+              status: override.status,
+              validation_source: override.validation_source,
+            };
+          }
+          return finding;
+        });
+        
+        // Recalculate passed/failed counts
+        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
+        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
+        
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: evaluation.findings ? checksOrFindings : undefined,
+            checks: evaluation.checks ? checksOrFindings : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: checksOrFindings.length,
+          }
+        ];
+      })
+    );
+  }, [evaluations, userOverrides]);
+
+  // Apply user overrides to filtered evaluations (used for table display)
+  const evaluationsWithOverrides = useMemo(() => {
+    return Object.fromEntries(
+      filteredEvaluationEntries.map(([resourceId, evaluation]) => {
+        const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
+          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          
+          if (override) {
+            return {
+              ...finding,
+              status: override.status,
+              validation_source: override.validation_source,
+            };
+          }
+          return finding;
+        });
+        
+        // Recalculate passed/failed counts
+        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
+        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
+        
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: evaluation.findings ? checksOrFindings : undefined,
+            checks: evaluation.checks ? checksOrFindings : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: checksOrFindings.length,
+          }
+        ];
+      })
+    );
+  }, [filteredEvaluationEntries, userOverrides]);
+
   const stats = useMemo(() => {
     let totalChecks = 0;
     let passedChecks = 0;
     let failedChecks = 0;
     const resourceList: Array<ResilienceEvaluation & { resourceId: string }> = [];
 
-    filteredEvaluationEntries.forEach(([resourceId, evaluation]) => {
-      totalChecks += evaluation.total_checks;
-      passedChecks += evaluation.passed_checks;
-      failedChecks += evaluation.failed_checks;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      // Ensure we're working with integers (counts, not percentages)
+      const evalTotal = Math.round(evaluation.total_checks || 0);
+      const evalPassed = Math.round(evaluation.passed_checks || 0);
+      const evalFailed = Math.round(evaluation.failed_checks || 0);
+      
+      totalChecks += evalTotal;
+      passedChecks += evalPassed;
+      failedChecks += evalFailed;
       resourceList.push({ ...evaluation, resourceId });
     });
 
-    const passPercentage = totalChecks > 0 ? (passedChecks / totalChecks) * 100 : 0;
+    const passPercentage = totalChecks > 0 ? passedChecks / totalChecks : 0;
 
     return { totalChecks, passedChecks, failedChecks, passPercentage, resourceList };
-  }, [filteredEvaluationEntries]);
+  }, [evaluationsWithOverrides]);
+
+  // Calculate adjusted workload score based on overrides
+  // Formula: Check Weight = Element Weight × Category Weight × Impact Weight
+  // Normalized Weight = Check Weight / Sum of all Check Weights
+  // Score = Sum of normalized weights for passed checks
+  const adjustedWorkloadScore = useMemo(() => {
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
+    
+    // First pass: calculate total weight for normalization
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+
+    // Second pass: calculate score with normalized weights
+    let passedWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        if (finding.status === "pass") {
+          passedWeight += normalizedWeight;
+        }
+      });
+    });
+
+    return passedWeight;
+  }, [evaluationsWithOverrides]);
 
   const resourceFilterOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -296,57 +530,152 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
     return Array.from(seen).sort((a, b) => a.localeCompare(b));
   }, [stats.resourceList, annotationMap]);
-
-  // Breakdown by resilience category (HighAvailability, Scalability, etc.)
+  // Breakdown by resilience category - uses contribution % for consistency
+  // Formula: Category Score = Sum(passed contribution %) / Sum(all contribution %)
   const categoryBreakdown = useMemo(() => {
-    const breakdown = new Map<string, { total: number; passed: number; failed: number }>();
+    // Re-calculate contribution % here to avoid circular dependency
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
     
-    filteredEvaluationEntries.forEach(([, evaluation]) => {
+    // First, calculate total weight for all checks (same as totalWeightForDrawerFilters)
+    let totalWeight = 0;
+    const allChecks: any[] = [];
+    
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
       const checksOrFindings = evaluation.findings || evaluation.checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const existing = breakdown.get(category) || { total: 0, passed: 0, failed: 0 };
-        existing.total++;
-        if (finding.status === "pass") existing.passed++;
-        else existing.failed++;
-        breakdown.set(category, existing);
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+        allChecks.push({
+          ...finding,
+          elementWeight,
+          category,
+          checkWeight,
+          normalizedWeight: 0 // will be set in second pass
+        });
       });
+    });
+    
+    // Second pass: normalize and calculate contribution %
+    allChecks.forEach(check => {
+      check.normalizedWeight = totalWeight > 0 ? check.checkWeight / totalWeight : 0;
+      check.contribution_percent = check.normalizedWeight * 100;
+    });
+    
+    // Third pass: build category breakdown
+    const breakdown = new Map<string, { 
+      total: number; 
+      passed: number; 
+      failed: number; 
+      totalContribution: number;
+      passedContribution: number;
+    }>();
+    
+    allChecks.forEach((check: any) => {
+      const existing = breakdown.get(check.category) || { 
+        total: 0, 
+        passed: 0, 
+        failed: 0, 
+        totalContribution: 0, 
+        passedContribution: 0 
+      };
+      
+      existing.total++;
+      existing.totalContribution += check.contribution_percent;
+      
+      if (check.status === "pass") {
+        existing.passed++;
+        existing.passedContribution += check.contribution_percent;
+      } else {
+        existing.failed++;
+      }
+      
+      breakdown.set(check.category, existing);
     });
 
     return Array.from(breakdown.entries())
       .map(([name, stats]) => ({
         name,
         ...stats,
-        passPercentage: stats.total > 0 ? (stats.passed / stats.total) * 100 : 0,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        // Score = passed contribution % / total contribution % for this category
+        resilienceScore: stats.totalContribution > 0 ? stats.passedContribution / stats.totalContribution : 0,
       }))
-      .sort((a, b) => b.failed - a.failed);
-  }, [filteredEvaluationEntries]);
+      .sort((a, b) => b.totalContribution - a.totalContribution);
+  }, [evaluationsWithOverrides]);
 
   // Breakdown by impact level
   const impactBreakdown = useMemo(() => {
-    const breakdown = new Map<string, { total: number; passed: number; failed: number }>();
+    const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
     
-    filteredEvaluationEntries.forEach(([, evaluation]) => {
-      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
+    
+    // First pass: calculate total weight
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+    
+    // Second pass: build breakdown with normalized weights
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const impact = finding.impact || "Unknown";
-        const existing = breakdown.get(impact) || { total: 0, passed: 0, failed: 0 };
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        const existing = breakdown.get(impact) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
         existing.total++;
-        if (finding.status === "pass") existing.passed++;
-        else existing.failed++;
+        existing.totalWeight += normalizedWeight;
+        if (finding.status === "pass") {
+          existing.passed++;
+          existing.passedWeight += normalizedWeight;
+        } else {
+          existing.failed++;
+        }
         breakdown.set(impact, existing);
       });
     });
 
-    const order = ["High", "Medium", "Low", "Unknown"];
     return Array.from(breakdown.entries())
       .map(([name, stats]) => ({
         name,
         ...stats,
-        passPercentage: stats.total > 0 ? (stats.passed / stats.total) * 100 : 0,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
       }))
-      .sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
-  }, [filteredEvaluationEntries]);
+      .sort((a, b) => b.totalWeight - a.totalWeight);
+  }, [evaluationsWithOverrides]);
 
   // Failed counts for impact levels (High/Medium/Low) for tooltip and donut
   const failedImpactCounts = useMemo(() => {
@@ -360,18 +689,54 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
 
   // Breakdown by Azure service category
   const serviceBreakdown = useMemo(() => {
-    const breakdown = new Map<string, { total: number; passed: number; failed: number }>();
+    const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
     
-    filteredEvaluationEntries.forEach(([resourceId, evaluation]: [string, any]) => {
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
+    
+    // First pass: calculate total weight
+    let totalWeight = 0;
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const checkWeight = elementWeight * categoryWeight * impactWeight;
+        totalWeight += checkWeight;
+      });
+    });
+    
+    // Second pass: build breakdown with normalized weights
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
       const annotation = annotationMap.get(resourceId);
       const serviceCategory = annotation?.azure_service_category || "Other";
       
-      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
-        const existing = breakdown.get(serviceCategory) || { total: 0, passed: 0, failed: 0 };
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+        const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
+        const existing = breakdown.get(serviceCategory) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
         existing.total++;
-        if (finding.status === "pass") existing.passed++;
-        else existing.failed++;
+        existing.totalWeight += normalizedWeight;
+        if (finding.status === "pass") {
+          existing.passed++;
+          existing.passedWeight += normalizedWeight;
+        } else {
+          existing.failed++;
+        }
         breakdown.set(serviceCategory, existing);
       });
     });
@@ -380,10 +745,26 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       .map(([name, stats]) => ({
         name,
         ...stats,
-        passPercentage: stats.total > 0 ? (stats.passed / stats.total) * 100 : 0,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
       }))
-      .sort((a, b) => b.failed - a.failed);
-  }, [filteredEvaluationEntries, annotationMap]);
+      .sort((a, b) => b.totalWeight - a.totalWeight);
+  }, [evaluationsWithOverrides, annotationMap]);
+
+  // Get unique validation sources from data
+  const validationSources = useMemo(() => {
+    const sources = new Set<string>();
+    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]) => {
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        if (finding.validation_source) {
+          const val = (finding.validation_source || "").toLowerCase() === "user" ? "User" : finding.validation_source;
+          sources.add(val);
+        }
+      });
+    });
+    return Array.from(sources).sort();
+  }, [evaluationsWithOverrides]);
 
   const filteredFindings = useMemo(() => {
     const normalizedResourceFilter = resourceFilter.trim().toLowerCase();
@@ -391,14 +772,26 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       // Use findings if available, otherwise fall back to checks
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       return checksOrFindings
+        .map((f: any) => {
+          // Apply override status if exists
+          const overrideKey = `${resourceId}_${f.recommendation_id}`;
+          const override = userOverrides[overrideKey];
+          const currentStatus = override?.status || f.status;
+          const currentValidationSource = override?.validation_source || f.validation_source;
+          
+          const valSource = (currentValidationSource || "").toLowerCase() === "user" ? "User" : currentValidationSource;
+          return {
+            ...f,
+            status: currentStatus,
+            validation_source: valSource,
+            resourceId,
+            resourceName: evaluation.resource_name,
+          };
+        })
         .filter((f: any) => filterStatus === "all" || f.status === filterStatus)
         .filter((f: any) => !filterCategory || f.category === filterCategory)
         .filter((f: any) => !filterImpact || f.impact === filterImpact)
-        .map((finding: any) => ({
-          ...finding,
-          resourceId,
-          resourceName: evaluation.resource_name,
-        }));
+        .filter((f: any) => !filterValidationSource || f.validation_source === filterValidationSource);
     });
 
     if (normalizedResourceFilter) {
@@ -432,9 +825,39 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           aVal = impactOrder[a.impact as keyof typeof impactOrder] || 0;
           bVal = impactOrder[b.impact as keyof typeof impactOrder] || 0;
           break;
+        case "weight":
+          // Calculate weight on the fly: element_weight × category_weight × impact_weight
+          const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+          const categoryWeightMap: Record<string, number> = {
+            HighAvailability: 0.30,
+            DisasterRecovery: 0.20,
+            Scalability: 0.20,
+            MonitoringAndAlerting: 0.15,
+            Security: 0.10,
+            OtherBestPractices: 0.05,
+          };
+          const getResourceWeight = (finding: any) => {
+            const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
+              const evaluation = evaluationsWithOverrides[key];
+              const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+              return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+            });
+            const elementWeight = resourceId ? (evaluationsWithOverrides[resourceId] as any).component_weight || 1.0 : 1.0;
+            const category = finding.category || "Other";
+            const impactWeight = impactWeightMap[finding.impact] || 0.1;
+            const categoryWeight = categoryWeightMap[category] || 0.05;
+            return elementWeight * categoryWeight * impactWeight;
+          };
+          aVal = getResourceWeight(a);
+          bVal = getResourceWeight(b);
+          break;
         case "status":
           aVal = a.status === "pass" ? 1 : 0;
           bVal = b.status === "pass" ? 1 : 0;
+          break;
+        case "validated_by":
+          aVal = a.validation_source || "";
+          bVal = b.validation_source || "";
           break;
         case "benefit":
           aVal = a.potential_benefits || "";
@@ -451,16 +874,211 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return findings;
-  }, [filteredEvaluationEntries, filterStatus, filterCategory, filterImpact, resourceFilter, sortColumn, sortDirection, annotationMap]);
+  }, [filteredEvaluationEntries, filterStatus, filterCategory, filterImpact, filterValidationSource, resourceFilter, sortColumn, sortDirection, annotationMap, userOverrides]);
+
+  // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
+  // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
+  const totalWeightForDrawerFilters = useMemo(() => {
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
+    let total = 0;
+
+    filteredEvaluationEntries.forEach(([, evaluation]: [string, any]) => {
+      const elementWeight = evaluation.component_weight || 1.0;
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeightMap[finding.impact] || 0.1;
+        const categoryWeight = categoryWeightMap[category] || 0.05;
+        total += elementWeight * categoryWeight * impactWeight;
+      });
+    });
+
+    return total;
+  }, [filteredEvaluationEntries]);
+
+  // Calculate contribution_percent dynamically based on visible filtered checks
+  const findingsWithContribution = useMemo(() => {
+    // Use totalWeightForDrawerFilters calculated from left-side drawer filters only
+    // This way, the weight doesn't change when using right-side "Findings Details" filters
+
+    // Add dynamic contribution_percent to each finding and apply user overrides
+    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
+    const categoryWeightMap: Record<string, number> = {
+      HighAvailability: 0.30,
+      DisasterRecovery: 0.20,
+      Scalability: 0.20,
+      MonitoringAndAlerting: 0.15,
+      Security: 0.10,
+      OtherBestPractices: 0.05,
+    };
+    
+    return filteredFindings.map(finding => {
+      const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
+        const evaluation = evaluationsWithOverrides[key];
+        const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+        return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+      });
+      const elementWeight = resourceId ? (evaluationsWithOverrides[resourceId] as any).component_weight || 1.0 : 1.0;
+      const category = finding.category || "Other";
+      const impactWeight = impactWeightMap[finding.impact] || 0.1;
+      const categoryWeight = categoryWeightMap[category] || 0.05;
+      const rawWeight = elementWeight * categoryWeight * impactWeight;
+      const checkWeight = totalWeightForDrawerFilters > 0 ? rawWeight / totalWeightForDrawerFilters : 0;
+      
+      return {
+        ...finding,
+        contribution_percent: checkWeight * 100  // Already normalized, just convert to percentage
+      };
+    });
+  }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides]);
+
+  const handleStatusOverride = async (resourceId: string, recommendationId: string, currentStatus: string) => {
+    if (!subscriptionId) {
+      console.error("Cannot save override: subscription ID not provided");
+      return;
+    }
+
+    const overrideKey = `${resourceId}_${recommendationId}`;
+    const newStatus = currentStatus === "fail" ? "pass" : "fail";
+    
+    // Optimistically update UI
+    setUserOverrides(prev => ({
+      ...prev,
+      [overrideKey]: {
+        status: newStatus,
+        validation_source: "User"
+      }
+    }));
+
+    // Save to backend
+    try {
+      const saved = await saveOverride(
+        subscriptionId,
+        resourceId,
+        recommendationId,
+        newStatus,
+        "user"
+      );
+      // Persist the returned check_uuid into our local map
+      const overrideKeySaved = `${resourceId}_${recommendationId}`;
+      setUserOverrides(prev => ({
+        ...prev,
+        [overrideKeySaved]: {
+          status: newStatus as "pass" | "fail",
+          validation_source: "User",
+          check_uuid: saved?.check_uuid,
+        },
+      }));
+      console.log(`Override saved for ${resourceId} / ${recommendationId}: ${newStatus}`);
+    } catch (error) {
+      console.error("Failed to save override:", error);
+      // Revert optimistic update on error
+      setUserOverrides(prev => {
+        const updated = { ...prev };
+        delete updated[overrideKey];
+        return updated;
+      });
+      alert("Failed to save override. Please try again.");
+    }
+  };
+
+  const handleDeleteOverride = async (resourceId: string, recommendationId: string) => {
+    if (!subscriptionId) return;
+    const overrideKey = `${resourceId}_${recommendationId}`;
+
+    // Determine the backend override id (check_uuid)
+    let checkUuid = userOverrides[overrideKey]?.check_uuid;
+    if (!checkUuid) {
+      try {
+        const found = await getCheckOverride(subscriptionId, resourceId, recommendationId);
+        checkUuid = found?.check_uuid;
+      } catch (e) {
+        console.warn("getCheckOverride failed", e);
+      }
+    }
+
+    if (!checkUuid) {
+      console.error("No check_uuid found for override deletion", { resourceId, recommendationId });
+      return;
+    }
+
+    try {
+      await deleteOverride(subscriptionId, checkUuid);
+      // Remove from local state
+      setUserOverrides(prev => {
+        const updated = { ...prev } as Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>;
+        delete updated[overrideKey];
+        return updated;
+      });
+    } catch (e) {
+      console.error("deleteOverride failed", e);
+      alert("Failed to delete override. Please try again.");
+    }
+  };
 
   const getStatusColor = (status: string) => {
     return status === "pass" ? "#10b981" : "#ef4444";
   };
 
+  const exportToExcel = () => {
+    // Prepare data for export
+    const exportData = findingsWithContribution.map(finding => ({
+      "Resource": annotationMap.get(
+        Object.keys(evaluationsWithOverrides).find(key => {
+          const evaluation = evaluationsWithOverrides[key];
+          const checks = (evaluation as any).findings || (evaluation as any).checks || [];
+          return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
+        }) || ""
+      )?.display_name || finding.description?.substring(0, 30) || "Unknown",
+      "Recommendation": finding.description,
+      "Category": finding.category,
+      "Impact": finding.impact,
+      "Contribution %": finding.contribution_percent?.toFixed(2) || "0.00",
+      "Status": finding.status === "pass" ? "Passed" : "Failed",
+      "Validated By": finding.validation_source || "APRL",
+      "Benefit": finding.potential_benefits || ""
+    }));
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(exportData);
+
+    // Set column widths
+    const colWidths = [
+      { wch: 20 },  // Resource
+      { wch: 40 },  // Recommendation
+      { wch: 18 },  // Category
+      { wch: 10 },  // Impact
+      { wch: 15 },  // Contribution %
+      { wch: 10 },  // Status
+      { wch: 15 },  // Validated By
+      { wch: 30 },  // Benefit
+    ];
+    ws["!cols"] = colWidths;
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, "Findings");
+
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const filename = `resilience-findings-${timestamp}.xlsx`;
+
+    // Write file
+    XLSX.writeFile(wb, filename);
+  };
   const getRiskLevel = (passPercentage: number) => {
-    if (passPercentage >= 80) return { level: "Low Risk", color: "#10b981", badge: "✓" };
-    if (passPercentage >= 60) return { level: "Medium Risk", color: "#f97316", badge: "!" };
-    if (passPercentage >= 40) return { level: "High Risk", color: "#ef4444", badge: "⚠" };
+    const percentage = passPercentage * 100;  // Convert 0-1 to 0-100
+    if (percentage >= 80) return { level: "Low Risk", color: "#10b981", badge: "✓" };
+    if (percentage >= 60) return { level: "Medium Risk", color: "#f97316", badge: "!" };
+    if (percentage >= 40) return { level: "High Risk", color: "#ef4444", badge: "⚠" };
     return { level: "Critical", color: "#7c2d12", badge: "🔴" };
   };
 
@@ -507,11 +1125,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "auto auto 1fr auto",
+            gridTemplateColumns: "auto auto auto 1fr auto",
             gap: "24px",
             alignItems: "flex-start",
           }}
         >
+          {/* Resilience Score Donut */}
+          {adjustedWorkloadScore !== undefined && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+              <ScoreDonut score={adjustedWorkloadScore} size={140} />
+              <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 600, color: "#1f2937" }}>
+                Overall Score
+              </div>
+            </div>
+          )}
+
           {/* Pass/Fail Donut Chart */}
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
             <DonutChart passed={stats.passedChecks} failed={stats.failedChecks} size={140} />
@@ -710,21 +1338,14 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                 <div
                   style={{
                     display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "8px",
+                    justifyContent: "center",
+                    marginBottom: "12px",
                   }}
                 >
-                  <DonutChart passed={item.passed} failed={item.failed} size={60} />
-                  <div style={{ textAlign: "right", flex: 1, marginLeft: "12px" }}>
-                    <div style={{ fontSize: "10px", color: "#6b7280", marginBottom: "2px" }}>Checks</div>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>
-                      {item.total}
-                    </div>
-                  </div>
+                  <ScoreDonut score={item.resilienceScore} size={80} />
                 </div>
 
-                <div style={{ marginTop: "4px" }}>
+                <div style={{ marginTop: "8px" }}>
                   <div
                     style={{
                       display: "flex",
@@ -749,6 +1370,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -774,21 +1396,14 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                 <div
                   style={{
                     display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "8px",
+                    justifyContent: "center",
+                    marginBottom: "12px",
                   }}
                 >
-                  <DonutChart passed={item.passed} failed={item.failed} size={60} />
-                  <div style={{ textAlign: "right", flex: 1, marginLeft: "12px" }}>
-                    <div style={{ fontSize: "10px", color: "#6b7280", marginBottom: "2px" }}>Checks</div>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>
-                      {item.total}
-                    </div>
-                  </div>
+                  <ScoreDonut score={item.resilienceScore} size={80} />
                 </div>
 
-                <div style={{ marginTop: "4px" }}>
+                <div style={{ marginTop: "8px" }}>
                   <div
                     style={{
                       display: "flex",
@@ -813,6 +1428,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -838,21 +1454,14 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                 <div
                   style={{
                     display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "8px",
+                    justifyContent: "center",
+                    marginBottom: "12px",
                   }}
                 >
-                  <DonutChart passed={item.passed} failed={item.failed} size={60} />
-                  <div style={{ textAlign: "right", flex: 1, marginLeft: "12px" }}>
-                    <div style={{ fontSize: "10px", color: "#6b7280", marginBottom: "2px" }}>Checks</div>
-                    <div style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>
-                      {item.total}
-                    </div>
-                  </div>
+                  <ScoreDonut score={item.resilienceScore} size={80} />
                 </div>
 
-                <div style={{ marginTop: "4px" }}>
+                <div style={{ marginTop: "8px" }}>
                   <div
                     style={{
                       display: "flex",
@@ -877,6 +1486,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -896,7 +1506,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         }}
       >
         {/* Filter Buttons */}
-        <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "8px" }}>
+        <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end" }}>
           <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "6px" }}>
             Findings Details
             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
@@ -1020,6 +1631,53 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
               ))}
             </select>
           </label>
+          <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
+            Validated By
+            <select
+              value={filterValidationSource ?? ""}
+              onChange={(e) => setFilterValidationSource(e.target.value || null)}
+              style={{ padding: "6px 8px", borderRadius: "4px", border: "1px solid #d1d5db", fontSize: "12px" }}
+            >
+              <option value="">All</option>
+              {validationSources.map(source => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+          </label>
+          </div>
+          
+          {/* Export Button */}
+          <button
+            onClick={exportToExcel}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "6px",
+              border: "1px solid #d1d5db",
+              background: "#fff",
+              color: "#0078d4",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              transition: "all 0.2s",
+              height: "fit-content",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "#e0f2fe";
+              e.currentTarget.style.borderColor = "#0078d4";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "#fff";
+              e.currentTarget.style.borderColor = "#d1d5db";
+            }}
+          >
+            <span>📥</span>
+            Export to Excel
+          </button>
         </div>
 
         {/* Findings Table */}
@@ -1195,6 +1853,37 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     padding: "12px",
                     textAlign: "center",
                     fontWeight: 600,
+                    fontSize: "12px",
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("weight")}
+                    style={{
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      padding: 0,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                      color: "inherit",
+                      cursor: "pointer",
+                    }}
+                    title="Percentage contribution to current filtered view (recalculated dynamically)"
+                  >
+                    <span>Weight</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("weight")}</span>
+                  </button>
+                </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
                     color: "#374151",
                   }}
                 >
@@ -1220,10 +1909,39 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("status")}</span>
                   </button>
                 </th>
+                <th
+                  style={{
+                    padding: "12px",
+                    textAlign: "center",
+                    fontWeight: 600,
+                    fontSize: "12px",
+                    color: "#374151",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleSort("validated_by")}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "4px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "#374151",
+                      margin: "0 auto",
+                    }}
+                  >
+                    <span>Validated By</span>
+                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("validated_by")}</span>
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {filteredFindings.map((finding, idx) => (
+              {findingsWithContribution.map((finding, idx) => (
                 <tr
                   key={idx}
                   title={finding.long_description || ""}
@@ -1247,19 +1965,37 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     </div>
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    {finding.description}
+                    <span>{finding.description}</span>
+                    {finding.validation_source === "LLM" && (finding.learn_more as any)?.llm_reasoning && (
+                      <span
+                        style={{
+                          marginLeft: "6px",
+                          color: "#f59e0b",
+                          cursor: "help",
+                          fontSize: "14px",
+                          fontWeight: 700,
+                        }}
+                        title={(finding.learn_more as any)?.llm_reasoning}
+                      >
+                        ?
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    {finding.learn_more && finding.learn_more.length > 0 ? (
-                      <a
-                        href={finding.learn_more[0].url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
-                        title={finding.learn_more[0].name || "Learn more"}
-                      >
-                        {finding.potential_benefits || "—"}
-                      </a>
+                    {finding.potential_benefits ? (
+                      (finding.learn_more as any)?.url ? (
+                        <a
+                          href={(finding.learn_more as any).url}
+                          target="_blank"
+                          rel="noreferrer"
+                          style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
+                          title={(finding.learn_more as any).name || "Learn more"}
+                        >
+                          {finding.potential_benefits}
+                        </a>
+                      ) : (
+                        finding.potential_benefits
+                      )
                     ) : (
                       "—"
                     )}
@@ -1281,21 +2017,128 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     style={{
                       padding: "12px",
                       textAlign: "center",
+                      fontSize: "11px",
+                      color: "#6b7280",
+                      fontWeight: 500,
+                    }}
+                    title={`Contributes ${finding.contribution_percent?.toFixed(2)}% to current filtered view`}
+                  >
+                    {finding.contribution_percent ? `${finding.contribution_percent.toFixed(1)}%` : "—"}
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
                     }}
                   >
-                    <span
-                      style={{
-                        display: "inline-block",
-                        padding: "4px 8px",
-                        borderRadius: "4px",
-                        background: finding.status === "pass" ? "#ecfdf5" : "#fee2e2",
-                        color: getStatusColor(finding.status),
-                        fontWeight: 600,
-                        fontSize: "11px",
-                      }}
-                    >
-                      {finding.status.toUpperCase()}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ position: "relative", display: "inline-block" }}>
+                        <span
+                          style={{
+                            display: "inline-block",
+                            padding: "4px 8px",
+                            borderRadius: "4px",
+                            background: finding.status === "pass" ? "#ecfdf5" : "#fee2e2",
+                            color: getStatusColor(finding.status),
+                            fontWeight: 600,
+                            fontSize: "11px",
+                          }}
+                        >
+                          {finding.status.toUpperCase()}
+                        </span>
+                        {finding.status === "fail" && (
+                          <button
+                            type="button"
+                            onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.status)}
+                            style={{
+                              position: "absolute",
+                              top: "-10px",
+                              right: "-10px",
+                              width: "22px",
+                              height: "22px",
+                              borderRadius: "50%",
+                              background: "#10b981",
+                              border: "2px solid #fff",
+                              color: "#fff",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "12px",
+                              padding: "0",
+                              fontWeight: "bold",
+                            }}
+                            title="Override to pass"
+                          >
+                            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "12px", height: "12px" }} />
+                          </button>
+                        )}
+                        {finding.status === "pass" && (finding.validation_source?.toLowerCase() === "user") && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteOverride(finding.resourceId, finding.recommendation_id)}
+                            style={{
+                              position: "absolute",
+                              top: "-10px",
+                              right: "-10px",
+                              width: "22px",
+                              height: "22px",
+                              borderRadius: "50%",
+                              background: "#ef4444",
+                              border: "2px solid #fff",
+                              color: "#fff",
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              padding: 0,
+                              zIndex: 1,
+                            }}
+                            title="Remove override"
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <line x1="6" y1="6" x2="18" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                              <line x1="18" y1="6" x2="6" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td
+                    style={{
+                      padding: "12px",
+                      textAlign: "center",
+                    }}
+                  >
+                    {finding.validation_source ? (
+                      (() => {
+                        const src = (finding.validation_source || '').toLowerCase();
+                        const label = src === 'aprl' ? 'APRL' : src === 'llm' ? 'LLM' : src === 'heuristic' ? 'Heuristic' : src === 'pendingreview' ? 'PendingReview' : src === 'user' ? 'User' : finding.validation_source;
+                        const bg = src === 'aprl' ? '#dbeafe' : src === 'llm' ? '#fef3c7' : src === 'heuristic' ? '#e0e7ff' : src === 'user' ? '#dcfce7' : src === 'pendingreview' ? '#f3e8ff' : '#e5e7eb';
+                        const fg = src === 'aprl' ? '#1e40af' : src === 'llm' ? '#92400e' : src === 'heuristic' ? '#3730a3' : src === 'user' ? '#166534' : src === 'pendingreview' ? '#6b21a8' : '#374151';
+                        const bd = src === 'aprl' ? '#bfdbfe' : src === 'llm' ? '#fde68a' : src === 'heuristic' ? '#c7d2fe' : src === 'user' ? '#bbf7d0' : src === 'pendingreview' ? '#e9d5ff' : '#d1d5db';
+                        return (
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: 600,
+                              background: bg,
+                              color: fg,
+                              border: `1px solid ${bd}`,
+                            }}
+                            title={`Confirmed by ${label}`}
+                          >
+                            {label}
+                          </span>
+                        );
+                      })()
+                    ) : (
+                      <span style={{ color: "#9ca3af", fontSize: "11px" }}>—</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1303,7 +2146,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           </table>
         </div>
 
-        {filteredFindings.length === 0 && (
+        {findingsWithContribution.length === 0 && (
           <div
             style={{
               textAlign: "center",

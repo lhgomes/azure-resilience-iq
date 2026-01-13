@@ -50,6 +50,7 @@ const WorkloadView: React.FC = () => {
   const storageKey = useMemo(() => `workload_graph_${subscriptionId}`, [subscriptionId]);
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
   const [resilience_evaluations, setResilienceEvaluations] = useState<Record<string, any> | null>(null);
+  const [resilience_data, setResilienceData] = useState<any | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -75,6 +76,10 @@ const WorkloadView: React.FC = () => {
   }>({ selectedNodeIds: [], selectedGroupId: null });
   const [groupToolbarName, setGroupToolbarName] = useState<string>("");
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ nonce: number; label: string } | null>(null);
+
+  // Track if user has made changes requiring refresh
+  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
@@ -126,6 +131,7 @@ const WorkloadView: React.FC = () => {
       
       // Store resilience evaluations if available
       if (raw.resilience_evaluations) {
+        setResilienceData(raw.resilience_evaluations);
         setResilienceEvaluations(raw.resilience_evaluations.evaluations || {});
       }
     } catch (err: any) {
@@ -236,6 +242,9 @@ const WorkloadView: React.FC = () => {
   const handleAcceptEdge = async (edgeId: string) => {
     try {
       await acceptEdge(subscriptionId, edgeId);
+
+      // Mark as needing refresh
+      setNeedsRefresh(true);
 
       // Optimistic UI update
       updateGraph(prev =>
@@ -391,6 +400,9 @@ const WorkloadView: React.FC = () => {
       const created = body.edge;
 
       if (created) {
+        // Mark as needing refresh
+        setNeedsRefresh(true);
+
         const newEdge: GraphEdge = {
           id: created.id,
            source: created.source,
@@ -438,6 +450,9 @@ const WorkloadView: React.FC = () => {
       };
 
       await patchNode(subscriptionId, nodeId, nodePatch);
+
+      // Mark as needing refresh
+      setNeedsRefresh(true);
 
       updateGraph(prev => {
         if (!prev) return prev;
@@ -700,6 +715,39 @@ const WorkloadView: React.FC = () => {
       setSelectedNode(null);
     } catch (err) {
       console.error("Failed to reset node", err);
+    }
+  };
+
+  const handleRefreshAnnotationsAndScores = async () => {
+    if (!subscriptionId) return;
+    
+    try {
+      setIsRefreshing(true);
+      setError(null);
+
+      const response = await fetch(
+        `/api/subscriptions/${subscriptionId}/refresh`,
+        { method: "POST" }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Refresh failed");
+      }
+
+      const result = await response.json();
+      console.info("Refresh completed", result);
+
+      // Refresh the graph from server
+      await fetchGraph();
+
+      // Clear the dirty flag
+      setNeedsRefresh(false);
+    } catch (err: any) {
+      console.error("Failed to refresh annotations and scores:", err.message);
+      setError(err.message);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -1132,10 +1180,56 @@ const WorkloadView: React.FC = () => {
                 cursor: subscriptionId ? "pointer" : "not-allowed",
                 fontSize: 12
               }}
-              title="Reload graph"
+              title="Reload graph from server"
             >
               Reload
             </button>
+            
+            {/* Refresh annotations and scores button with badge */}
+            {needsRefresh && (
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => handleRefreshAnnotationsAndScores()}
+                  disabled={isRefreshing}
+                  style={{
+                    padding: "6px 12px",
+                    background: isRefreshing ? "#444" : "#2ea043",
+                    color: "#fff",
+                    border: "1px solid #4a7c4e",
+                    borderRadius: 4,
+                    cursor: isRefreshing ? "wait" : "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                  title="Re-run LLM annotations and resilience scoring based on your changes"
+                >
+                  {isRefreshing ? "Refreshing..." : "✓ Refresh Annotations & Scores"}
+                </button>
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "-8px",
+                    right: "-8px",
+                    background: "#ff6b6b",
+                    color: "#fff",
+                    borderRadius: "50%",
+                    width: 16,
+                    height: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}
+                  title="Updates pending"
+                >
+                  !
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1222,6 +1316,8 @@ const WorkloadView: React.FC = () => {
                 content: resilience_evaluations ? (
                   <ResilienceSummary
                     evaluations={resilience_evaluations}
+                    workloadScore={resilience_data?.workload_score}
+                    subscriptionId={subscriptionId}
                     graphData={graph}
                     viewLevel={viewLevel}
                     resourceGroupFilter={resourceGroupFilter}

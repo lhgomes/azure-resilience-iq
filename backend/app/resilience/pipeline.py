@@ -91,9 +91,16 @@ class ResiliencePipeline:
             components=components,
         )
         
+        # Adapt evaluator output format to scorer input format
+        # Evaluator returns: {"workload_name", "evaluation_timestamp", "components": [...]}
+        # Scorer expects: {"resources": [...]} with full checks including impact field
+        scorer_input = {
+            "resources": evaluation_results.get("components", [])
+        }
+        
         # Step 2: Score the results
         print("Calculating resilience scores...")
-        scoring_results = self.scorer.score_workload(evaluation_results)
+        scoring_results = self.scorer.score_workload(scorer_input)
         
         # Step 3: Combine results
         final_output = {
@@ -118,21 +125,20 @@ class ResiliencePipeline:
         """
         recommendations = []
         
-        # Analyze category scores
-        category_scores = scoring_results.get("category_scores", {})
+        # Analyze category breakdown (new field name)
+        category_breakdown = scoring_results.get("category_breakdown", {})
         
-        for category, details in category_scores.items():
+        for category, details in category_breakdown.items():
             score = details.get("score", 0)
-            failed = details.get("failed", 0)
             
-            # Generate recommendation if score is below 0.8 (80%) and there are failures
-            if score < 0.8 and failed > 0:
+            # Generate recommendation if score is below 0.8 (80%)
+            if score < 0.8:
                 recommendations.append({
                     "category": category,
-                    "priority": self._calculate_priority(score, failed),
-                    "message": f"Improve {category}: {failed} checks failing",
+                    "priority": self._calculate_priority(score, details.get("passed", 0), details.get("failed", 0)),
+                    "message": f"Improve {category}: {details.get('failed', 0)} checks failing",
                     "score": score,
-                    "failing_checks": failed,
+                    "failing_checks": details.get("failed", 0),
                 })
         
         # Sort by priority (highest first)
@@ -143,16 +149,17 @@ class ResiliencePipeline:
         
         return recommendations
     
-    def _calculate_priority(self, score: float, failures: int) -> float:
+    def _calculate_priority(self, score: float, passed: int, failures: int) -> float:
         """
         Calculate recommendation priority (0.0 to 1.0).
         
         Args:
             score: Current score (0.0 to 1.0)
+            passed: Number of passing checks
             failures: Number of failing checks
             
         Returns:
             Priority score
         """
         # Priority is higher for lower scores and more failures
-        return (1.0 - score) * (1.0 + failures / 10.0)
+        return (1.0 - score) * (1.0 + failures / max(1, passed + failures))

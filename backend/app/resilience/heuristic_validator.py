@@ -484,6 +484,188 @@ RETURN ONLY VALID JSON."""
             LOGGER.warning(f"LLM full resource analysis failed for {aprl_guid}: {e}")
             return False, None
 
+    def generate_user_guidance(
+        self,
+        description: str,
+        long_description: str,
+        potential_benefits: str,
+        impact: str,
+    ) -> str:
+        """
+        Generate specific user guidance for manual validation when automated checks cannot be performed.
+        """
+        if not self.aoai_client:
+            return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
+        
+        import os
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        if not deployment:
+            return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
+        
+        prompt = f"""You are an Azure resilience expert. Create clear, specific user guidance for manually validating this recommendation.
+
+Recommendation: {description}
+Impact Level: {impact}
+
+Details:
+{long_description}
+
+Benefits:
+{potential_benefits}
+
+Generate concise, actionable steps for a user to MANUALLY validate whether their Azure resource complies with this recommendation.
+
+Include:
+1. Specific things to check in Azure Portal or Azure CLI
+2. What properties or configurations to look for
+3. Why this matters for resilience
+4. Where to find the setting in Azure Portal
+
+Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
+        
+        try:
+            response = self.aoai_client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a helpful Azure guide. Provide clear, actionable guidance for manual validation steps.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=200,
+            )
+            
+            guidance = response.choices[0].message.content.strip()
+            LOGGER.info(f"Generated user guidance for manual validation")
+            return guidance
+            
+        except Exception as e:
+            LOGGER.warning(f"Failed to generate user guidance via LLM: {e}")
+            return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
+
+    def generate_batch_user_guidance(
+        self,
+        pending_items: List[Dict[str, str]],
+    ) -> Dict[str, Dict[str, str]]:
+        """Generate user guidance for multiple pending recommendations in one LLM call."""
+        if not pending_items:
+            return {}
+
+        if not self.aoai_client:
+            return {
+                item['id']: {
+                    'quick_header': 'Manual review required',
+                    'practical_guide': 'Please consult the Azure Well-Architected Framework documentation.'
+                }
+                for item in pending_items
+            }
+
+        import os
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        if not deployment:
+            return {
+                item['id']: {
+                    'quick_header': 'Manual review required',
+                    'practical_guide': 'Please consult the Azure Well-Architected Framework documentation.'
+                }
+                for item in pending_items
+            }
+
+        recommendations_text = ""
+        for item in pending_items:
+            recommendations_text += f"""
+ID: {item['id']}
+Title: {item['description']}
+Impact: {item['impact']}
+Details: {item['long_description']}
+Benefits: {item['potential_benefits']}
+---"""
+
+        prompt = f"""You are an Azure resilience expert. For each recommendation below, generate TWO things:
+1. A QUICK HEADER (max 10 words) that summarizes what to check
+2. A PRACTICAL GUIDE (max 150 words) with specific validation steps
+
+Respond in JSON format ONLY, with this structure:
+{{
+  "recommendations": [
+    {{
+      "id": "the-recommendation-id",
+      "quick_header": "Check if backup is enabled and retention is set",
+      "practical_guide": "Go to Azure Portal > [Resource Type] > Backup. Verify backup is enabled and retention policy meets your requirements. Can also use: az backup vault list --resource-group <rg-name>. See: https://learn.microsoft.com/azure/backup/backup-overview"
+    }},
+    ...
+  ]
+}}
+
+RECOMMENDATIONS TO PROCESS:{recommendations_text}
+
+Requirements for practical guides:
+- Include specific Azure Portal navigation path
+- Include Azure CLI command example if applicable
+- Include official Microsoft documentation link
+- Focus on what to verify, not how to implement
+- Be actionable in 5 minutes
+- Keep under 150 words per guide
+
+RETURN ONLY VALID JSON, no markdown, no explanations."""
+
+        try:
+            LOGGER.info(f"Generating batch user guidance for {len(pending_items)} pending items")
+
+            response = self.aoai_client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert Azure compliance guide. Generate only valid JSON responses.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=2000,
+            )
+
+            response_text = response.choices[0].message.content.strip()
+
+            try:
+                parsed = json.loads(response_text)
+            except json.JSONDecodeError:
+                import re
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                if not json_match:
+                    raise
+                parsed = json.loads(json_match.group())
+
+            result: Dict[str, Dict[str, str]] = {}
+            for rec in parsed.get('recommendations', []):
+                rec_id = rec.get('id')
+                if rec_id:
+                    result[rec_id] = {
+                        'quick_header': rec.get('quick_header', 'Manual review required'),
+                        'practical_guide': rec.get('practical_guide', '')
+                    }
+
+            LOGGER.info(f"✓ Generated guidance for {len(result)} recommendations")
+            return result
+
+        except Exception as e:
+            LOGGER.warning(f"Failed to generate batch user guidance via LLM: {e}")
+            return {
+                item['id']: {
+                    'quick_header': 'Manual review required',
+                    'practical_guide': 'Unable to generate automated guidance. Please consult Azure documentation.'
+                }
+                for item in pending_items
+            }
+
     def apply_strategy(
         self,
         strategy: ValidationStrategy,
