@@ -412,6 +412,7 @@ class APRLEvaluator:
                 if not hasattr(strategy, 'llm_reasoning'):
                     strategy.llm_reasoning = llm_reasoning
                     strategy.llm_analysis_used = True
+                    strategy.strategy_type = "llm"  # Mark as LLM-based for validation_source
                 is_failing = llm_fails
                 LOGGER.info(
                     f"✓ LLM full analysis: {'FAILS' if llm_fails else 'PASSES'} - {llm_reasoning[:100]}"
@@ -601,7 +602,7 @@ class APRLEvaluator:
         subscription_id: str,
         detail_log: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, APRLEvaluationResult]:
-        """Evaluate all resources of a type with one KQL per recommendation."""
+        """Evaluate all resources of a type with one KQL per recommendation, batch pending guidance."""
 
         results: Dict[str, APRLEvaluationResult] = {}
         resource_ids = [r.get("id") for r in resources if r.get("id")]
@@ -635,6 +636,11 @@ class APRLEvaluator:
         # Per-resource tracking
         checks_map: Dict[str, List[Dict[str, Any]]] = {rid: [] for rid in resource_ids}
         category_fail_counts: Dict[str, Dict[str, int]] = {rid: {} for rid in resource_ids}
+        
+        # Collect items that need batch LLM guidance (no KQL, heuristic inconclusive)
+        pending_items = []
+        pending_map = {}  # (rid, rec.guid) -> index in checks_map[rid]
+        strategy_map = {}  # (rid, rec.guid) -> (is_failing, strategy)
 
         # Execute each recommendation's KQL once, scoped to the resources of this type
         for rec in recommendations:
@@ -689,7 +695,7 @@ class APRLEvaluator:
                     detail_entry["status"] = "error_transient"
             else:
                 detail_entry["status"] = "missing_kql"
-                # Try property-based fallback checks using heuristic validator
+                # Try property-based fallback checks using heuristic validator with LLM escalation
                 LOGGER.debug(
                     "No KQL for %s recommendation=%s; trying heuristic validation",
                     resource_type,
@@ -707,8 +713,38 @@ class APRLEvaluator:
                             resource=res,
                             impact=rec.impact,  # Pass impact for escalation logic
                         )
-                        if is_failing:
-                            failing_ids.add(rid)
+                        
+                        # Store strategy for later processing
+                        strategy_map[(rid, rec.guid)] = (is_failing, strategy)
+                        
+                        # If no strategy found or confidence too low, mark for pending review
+                        if not strategy or strategy.confidence < 0.5:
+                            # No viable validation strategy - needs manual review
+                            idx = len(checks_map[rid])
+                            pending_items.append({
+                                "id": f"{rid}:{rec.guid}",
+                                "description": rec.description,
+                                "impact": rec.impact,
+                                "long_description": rec.long_description,
+                                "potential_benefits": rec.potential_benefits
+                            })
+                            pending_map[(rid, rec.guid)] = idx
+                            checks_map[rid].append({
+                                "recommendation_id": rec.guid,
+                                "description": rec.description,
+                                "category": rec.category,
+                                "impact": rec.impact,
+                                "long_description": rec.long_description,
+                                "potential_benefits": rec.potential_benefits,
+                                "learn_more": rec.learn_more_links,
+                                "criticality_weight": criticality_weights.get(rid, 1.0),
+                                "status": "pending",
+                                "validation_source": "PendingReview"
+                            })
+                        elif strategy and strategy.confidence >= 0.5:
+                            # Strategy has sufficient confidence - add as heuristic/LLM result
+                            if is_failing:
+                                failing_ids.add(rid)
                             if strategy:
                                 detail_entry["heuristic_strategy"] = {
                                     "type": strategy.strategy_type,
@@ -724,15 +760,38 @@ class APRLEvaluator:
                     detail_entry["status"] = "success_heuristic"
                     detail_entry["rows"] = [{"id": fid} for fid in failing_ids]
                 else:
-                    detail_entry["heuristic_analysis"] = "No applicable heuristics"
+                    detail_entry["heuristic_analysis"] = "No applicable heuristics or pending review"
 
             # Consider presence in result set as a failing finding
             failing_ids_lower = {fid.lower() for fid in failing_ids if fid}
 
             # Add check result for ALL resources (both pass and fail)
+            # Determine validation_source based on whether KQL was available or strategy used
+            validation_source = "APRL" if kql_query else "Heuristic"
+            
             for rid in resource_ids:
                 if rid:
+                    # Skip if this check was marked as pending (already added)
+                    if (rid, rec.guid) in pending_map:
+                        continue
+                    
                     is_failed = rid.lower() in failing_ids_lower
+                    # For non-KQL checks, retrieve the strategy to see if LLM escalation was used
+                    source = validation_source
+                    # Get original learn_more (APRL has 0 or 1 item, stored as list)
+                    learn_more = rec.learn_more_links[0] if rec.learn_more_links else {}
+                    
+                    if not kql_query and is_failed:
+                        # Check if LLM escalation was used by looking at stored strategy
+                        _, strategy = strategy_map.get((rid, rec.guid), (False, None))
+                        if strategy and hasattr(strategy, 'llm_analysis_used') and strategy.llm_analysis_used:
+                            source = "LLM"
+                            # Add LLM reasoning to the learn_more object if available
+                            if hasattr(strategy, 'llm_reasoning') and strategy.llm_reasoning:
+                                # Add llm_reasoning field to existing object
+                                learn_more = dict(learn_more) if learn_more else {}
+                                learn_more["llm_reasoning"] = strategy.llm_reasoning
+                    
                     checks_map[rid].append({
                         "recommendation_id": rec.guid,
                         "description": rec.description,
@@ -740,9 +799,10 @@ class APRLEvaluator:
                         "impact": rec.impact,
                         "long_description": rec.long_description,
                         "potential_benefits": rec.potential_benefits,
-                        "learn_more": rec.learn_more_links,
+                        "learn_more": learn_more,
                         "criticality_weight": criticality_weights.get(rid, 1.0),
                         "status": "fail" if is_failed else "pass",
+                        "validation_source": source
                     })
                     if is_failed:
                         cat_norm = self._normalize_category(rec.category)
@@ -750,6 +810,22 @@ class APRLEvaluator:
 
             if detail_log is not None:
                 detail_log.append(detail_entry)
+
+        # Batch call to generate guidance for all pending items
+        if pending_items:
+            validator = HeuristicValidator(aoai_client=self.aoai_client)
+            guidance_map = validator.generate_batch_user_guidance(pending_items)
+            # Apply guidance to checks
+            for item in pending_items:
+                rec_id = item["id"]
+                rid, guid = rec_id.split(":", 1)
+                idx = pending_map.get((rid, guid))
+                if idx is not None:
+                    guide = guidance_map.get(rec_id, {})
+                    checks_map[rid][idx]["learn_more"] = [
+                        {"header": guide.get("quick_header", "Manual review required"),
+                         "guide": guide.get("practical_guide", "Consult Azure documentation.")}
+                    ]
 
         # Build per-resource results
         for res in resources:

@@ -50,20 +50,37 @@ async def get_all_recommendations(
         }
     """
     try:
-        # Load WARA-compatible recommendations
+        # Load resilience evaluations
         data_path = get_subscription_dir(subscription_id)
-        rec_file = data_path / "aprl_recommendations.json"
+        eval_file = data_path / "resilience_evaluations.json"
         
-        if not rec_file.exists():
+        if not eval_file.exists():
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}. Run the resilience evaluation first."
             )
         
-        with open(rec_file) as f:
+        with open(eval_file) as f:
             data = json.load(f)
         
-        recommendations = data.get('recommendations', [])
+        # Extract recommendations from evaluations (only failed checks)
+        recommendations = []
+        for resource_id, evaluation in data.get('evaluations', {}).items():
+            for check in evaluation.get('checks', []):
+                if check.get('status') == 'fail':
+                    recommendations.append({
+                        "recommendationId": check.get('recommendation_id', ''),
+                        "description": check.get('description', ''),
+                        "category": check.get('category', ''),
+                        "impact": check.get('impact', ''),
+                        "type": evaluation.get('resource_type', ''),
+                        "id": resource_id,
+                        "name": evaluation.get('resource_name', ''),
+                        "resourceGroup": resource_id.split('/resourceGroups/')[1].split('/')[0] if '/resourceGroups/' in resource_id else '',
+                        "potentialBenefits": check.get('potential_benefits', ''),
+                        "longDescription": check.get('long_description', ''),
+                        "learnMoreLink": [check.get('learn_more', {})] if check.get('learn_more') else []
+                    })
         
         # Filter by category if provided
         if category:
@@ -133,25 +150,41 @@ async def get_resource_recommendations(
         }
     """
     try:
-        # Load recommendations
+        # Load resilience evaluations
         data_path = get_subscription_dir(subscription_id)
-        rec_file = data_path / "aprl_recommendations.json"
+        eval_file = data_path / "resilience_evaluations.json"
         
-        if not rec_file.exists():
+        if not eval_file.exists():
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(rec_file) as f:
+        with open(eval_file) as f:
             data = json.load(f)
         
         # Filter by resource ID (case-insensitive comparison)
         resource_id_lower = resource_id.lower()
-        matching = [
-            r for r in data.get('recommendations', [])
-            if r.get('id', '').lower() == resource_id_lower
-        ]
+        matching = []
+        
+        for res_id, evaluation in data.get('evaluations', {}).items():
+            if res_id.lower() == resource_id_lower:
+                for check in evaluation.get('checks', []):
+                    if check.get('status') == 'fail':
+                        matching.append({
+                            "recommendationId": check.get('recommendation_id', ''),
+                            "description": check.get('description', ''),
+                            "category": check.get('category', ''),
+                            "impact": check.get('impact', ''),
+                            "type": evaluation.get('resource_type', ''),
+                            "id": res_id,
+                            "name": evaluation.get('resource_name', ''),
+                            "resourceGroup": res_id.split('/resourceGroups/')[1].split('/')[0] if '/resourceGroups/' in res_id else '',
+                            "potentialBenefits": check.get('potential_benefits', ''),
+                            "longDescription": check.get('long_description', ''),
+                            "learnMoreLink": [check.get('learn_more', {})] if check.get('learn_more') else []
+                        })
+                break
         
         return {
             "resourceId": resource_id,
@@ -191,24 +224,37 @@ async def get_recommendations_by_category(
         }
     """
     try:
-        # Load recommendations
+        # Load resilience evaluations
         data_path = get_subscription_dir(subscription_id)
-        rec_file = data_path / "aprl_recommendations.json"
+        eval_file = data_path / "resilience_evaluations.json"
         
-        if not rec_file.exists():
+        if not eval_file.exists():
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(rec_file) as f:
+        with open(eval_file) as f:
             data = json.load(f)
         
         # Filter by category (case-insensitive)
-        matching = [
-            r for r in data.get('recommendations', [])
-            if r.get('category', '').lower() == category.lower()
-        ]
+        matching = []
+        for resource_id, evaluation in data.get('evaluations', {}).items():
+            for check in evaluation.get('checks', []):
+                if check.get('status') == 'fail' and check.get('category', '').lower() == category.lower():
+                    matching.append({
+                        "recommendationId": check.get('recommendation_id', ''),
+                        "description": check.get('description', ''),
+                        "category": check.get('category', ''),
+                        "impact": check.get('impact', ''),
+                        "type": evaluation.get('resource_type', ''),
+                        "id": resource_id,
+                        "name": evaluation.get('resource_name', ''),
+                        "resourceGroup": resource_id.split('/resourceGroups/')[1].split('/')[0] if '/resourceGroups/' in resource_id else '',
+                        "potentialBenefits": check.get('potential_benefits', ''),
+                        "longDescription": check.get('long_description', ''),
+                        "learnMoreLink": [check.get('learn_more', {})] if check.get('learn_more') else []
+                    })
         
         return {
             "category": category,
@@ -252,20 +298,25 @@ async def get_recommendations_summary(
         }
     """
     try:
-        # Load recommendations
+        # Load resilience evaluations
         data_path = get_subscription_dir(subscription_id)
-        rec_file = data_path / "aprl_recommendations.json"
+        eval_file = data_path / "resilience_evaluations.json"
         
-        if not rec_file.exists():
+        if not eval_file.exists():
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(rec_file) as f:
+        with open(eval_file) as f:
             data = json.load(f)
         
-        recommendations = data.get('recommendations', [])
+        # Extract failed checks as recommendations
+        recommendations = []
+        for resource_id, evaluation in data.get('evaluations', {}).items():
+            for check in evaluation.get('checks', []):
+                if check.get('status') == 'fail':
+                    recommendations.append(check)
         
         # Build summary
         by_impact = {"High": 0, "Medium": 0, "Low": 0}

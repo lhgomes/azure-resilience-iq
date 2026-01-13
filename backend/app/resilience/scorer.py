@@ -1,12 +1,31 @@
 """
-Resilience scoring engine - calculates resilience scores based on evaluation results.
+Hierarchical Impact-Based Resilience Scoring Engine.
 
-This module computes:
-1. Component-level scores: (passed_checks / total_checks) weighted by category
-2. Workload-level score: weighted sum of component scores
-3. Category breakdown scores
+SCORING MODEL - Tree Structure with Impact Weights:
 
-The scoring uses category weights to emphasize certain resilience areas.
+1. CHECK LEVEL (Leaf):
+   impact_weight = High(0.5) | Medium(0.3) | Low(0.1)
+   contribution = impact_weight if status="pass" else 0
+   
+2. CATEGORY LEVEL:
+   category_score = Σ(weight of passed checks) / Σ(weight of all checks)
+   range: 0.0-1.0
+   
+3. RESOURCE LEVEL (component_score):
+   component_score = Σ(category_weight × category_score)
+   range: 0.0-1.0 (normalized if category_weights sum to 1.0)
+   
+4. WORKLOAD LEVEL:
+   workload_score = Σ(component_weight × component_score) / Σ(component_weights)
+   range: 0.0-1.0 (normalized if component_weights sum to 1.0)
+
+ALL SCALES: 0.0-1.0 internally, display as 0-100%
+ALL WEIGHTS: Sum must not exceed 1.0
+
+UI Impact Clarity:
+- User sees: "Fixing this High impact check will increase category score by X%"
+- Each resource shows which categories need work
+- Workload score shows which resources have highest impact on total score
 """
 
 from typing import Dict, Any, List
@@ -17,216 +36,355 @@ from datetime import datetime, timezone
 
 class ResilienceScorer:
     """
-    Calculates resilience scores from evaluation results.
+    Hierarchical Impact-Based Resilience Scoring Engine.
     
-    Attributes:
-        category_weights: Dictionary mapping category names to weights (should sum to 1.0)
-        component_weights: Optional dictionary mapping component IDs to weights
+    Uses weighted checks at category level and hierarchical aggregation
+    to produce 0.0-1.0 scores at resource and workload levels.
     """
     
-    def __init__(
-        self,
-        category_weights: Dict[str, float],
-        component_weights: Dict[str, float] = None,
-    ):
-        """
-        Initialize the scorer.
-        
-        Args:
-            category_weights: Weights for each resilience category.
-                            E.g., {"Availability": 0.4, "Recovery": 0.3, "Monitoring": 0.3}
-            component_weights: Optional weights for individual components.
-                             If provided, used for workload-level aggregation.
-        """
-        # Normalize weights to ensure they sum to 1.0
-        total_weight = sum(category_weights.values())
-        if total_weight == 0:
-            raise ValueError("Category weights must sum to non-zero value")
-        
-        self.category_weights = {
-            k: v / total_weight for k, v in category_weights.items()
-        }
-        
-        self.component_weights = component_weights or {}
+    # Impact weights - assigned to each check based on severity
+    IMPACT_WEIGHTS = {
+        "High": 0.5,
+        "Medium": 0.3,
+        "Low": 0.1
+    }
     
-    def score_workload(
-        self,
-        evaluation_results: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def __init__(self, category_weights: Dict[str, float] = None):
         """
-        Calculate resilience scores for the entire workload.
+        Initialize scorer with weights.
         
         Args:
-            evaluation_results: Output from ResilienceEvaluator.evaluate_workload()
-                              Contains components with pass/fail checks by category
-            
-        Returns:
-            Dictionary with workload scores, component scores, and breakdown
+            category_weights: Map of category name to weight (0.0-1.0)
+                If sum > 1.0, will be normalized
         """
-        components = evaluation_results.get("components", [])
-        workload_name = evaluation_results.get("workload_name", "unknown")
-        
-        # Score each component
-        component_scores = []
-        
-        for comp in components:
-            comp_score = self._score_component(comp)
-            component_scores.append(comp_score)
-        
-        # Aggregate component scores to workload level
-        workload_score = self._aggregate_component_scores(component_scores)
-        
-        # Calculate category breakdown (average across components)
-        category_breakdown = self._calculate_category_breakdown(components)
-        
-        # Build output
-        output = {
-            "workload_name": workload_name,
-            "evaluation_timestamp": evaluation_results.get("evaluation_timestamp"),
-            "scoring_timestamp": datetime.now(timezone.utc).isoformat(),
-            "workload_score": workload_score,
-            "category_scores": category_breakdown,
-            "component_scores": component_scores,
-            "summary": {
-                "total_components": len(components),
-                "components_evaluated": len([cs for cs in component_scores if cs.get("total_checks", 0) > 0]),
-                "average_score": workload_score,  # For now, same as workload score
-            }
-        }
-        
-        return output
+        self.category_weights = category_weights or self._load_category_weights()
+        self._normalize_weights(self.category_weights, "category")
     
-    def _score_component(self, component: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _load_category_weights() -> Dict[str, float]:
+        """Load category weights from config file."""
+        try:
+            config_path = os.path.join(
+                os.path.dirname(__file__), '..', '..', 'config', 'app_config.yaml'
+            )
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            return config.get('category_weights', {})
+        except Exception as e:
+            print(f"Warning: Could not load config file: {e}")
+            return {}
+    
+    @staticmethod
+    def _normalize_weights(weights: Dict[str, float], weight_type: str) -> None:
         """
-        Calculate resilience score for a single component.
-        
-        Score = sum(category_weight * category_score) for each category
-        where category_score = passed_checks / total_checks
+        Normalize weights to sum to 1.0 if they exceed it.
         
         Args:
-            component: Component evaluation result with categories
-            
-        Returns:
-            Component score with detailed breakdown
+            weights: Weight dictionary to normalize
+            weight_type: Name of weight type (for logging)
         """
-        component_id = component.get("id")
-        categories = component.get("categories", {})
+        total = sum(weights.values())
+        if total > 1.0:
+            factor = 1.0 / total
+            for key in weights:
+                weights[key] *= factor
+            print(f"Normalized {weight_type} weights to sum to 1.0")
+    
+    def score_workload(self, evaluation_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Score a workload based on evaluation results.
         
-        component_score = 0.0
-        total_checks = 0
-        total_passed = 0
-        category_details = {}
+        Uses hierarchical impact-based scoring:
+        1. Check level: Individual check results with impact weights
+        2. Category level: Weighted aggregation of checks
+        3. Resource level (component_score): Aggregation of categories
+        4. Workload level: Aggregation of resources
         
-        # Score each category
-        for category_name, category_data in categories.items():
-            passed = len(category_data.get("passed", []))
-            failed = len(category_data.get("failed", []))
-            total = passed + failed
+        Args:
+            evaluation_results: Dict with 'resources' key containing list of resources
+        
+        Returns:
+            Dict with scoring results including:
+            - workload_score: Overall workload score (0.0-1.0)
+            - resources: Scored resources with component_score, categories, and enriched checks
+            - category_breakdown: Average scores for each category across resources
+            - timestamp: ISO format timestamp
             
-            total_checks += total
-            total_passed += passed
-            
-            if total == 0:
-                raw_score = 0.0
-            else:
-                raw_score = passed / total
-            
-            # Apply category weight
-            category_weight = self.category_weights.get(category_name, 0)
-            component_score += raw_score * category_weight
-            
-            category_details[category_name] = {
-                "score": raw_score,
-                "passed": passed,
-                "failed": failed,
-                "total": total,
-                "weight": category_weight,
+        Note: Checks are enriched with impact_weight, contribution_percent, is_critical
+        (no separate checks_detail field - all data merged into checks)
+        """
+        resources = evaluation_results.get('resources', [])
+        
+        if not resources:
+            return {
+                'workload_score': 0.0,
+                'resources': [],
+                'category_breakdown': {},
+                'timestamp': datetime.now(timezone.utc).isoformat()
             }
+        
+        # Score each resource with impact-weighted checks
+        scored_resources = []
+        for resource in resources:
+            scored_resource = self._score_resource(resource)
+            scored_resources.append(scored_resource)
+        
+        # Calculate workload score as normalized weighted average
+        workload_score = self._calculate_workload_score(scored_resources)
+        
+        # Calculate category breakdown across all resources
+        category_breakdown = self._calculate_category_breakdown(scored_resources)
         
         return {
-            "id": component_id,
-            "name": component.get("name"),
-            "type": component.get("type"),
-            "score": component_score,
-            "total_checks": total_checks,
-            "total_passed": total_passed,
-            "pass_rate": total_passed / total_checks if total_checks > 0 else 0.0,
-            "categories": category_details,
-            "weight": self.component_weights.get(component_id, 0),
+            'workload_score': workload_score,
+            'resources': scored_resources,
+            'category_breakdown': category_breakdown,
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
     
-    def _aggregate_component_scores(self, component_scores: List[Dict[str, Any]]) -> float:
+    def _score_resource(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Aggregate component scores to workload level.
+        Score a single resource with hierarchical impact-weighted model.
         
-        If component weights are defined, uses weighted average.
-        Otherwise, uses simple average.
+        Process:
+        1. Group checks by category
+        2. For each category, calculate score as: 
+           (sum of passed check weights) / (sum of all check weights)
+        3. Combine category scores into component_score using category weights
         
         Args:
-            component_scores: List of component score results
-            
+            resource: Resource dict with checks and optional component_weight
+        
         Returns:
-            Workload-level resilience score (0.0 to 1.0)
+            Resource dict with added scoring info:
+            - component_score: 0.0-1.0 score for this resource
+            - component_weight: Importance of this resource (normalized ≤1.0)
+            - categories: List of scored categories with impact details
+            - checks: Enriched with impact_weight, contribution_percent, is_critical
         """
-        if not component_scores:
+        resource = dict(resource)  # Avoid mutating input
+        
+        # Initialize component_weight if not present
+        if 'component_weight' not in resource:
+            resource['component_weight'] = 1.0
+        
+        checks = resource.get('checks', [])
+        if not checks:
+            resource['component_score'] = 0.0
+            resource['categories'] = []
+            resource['checks'] = []
+            return resource
+        
+        # Group checks by category and calculate impact-weighted scores
+        categories_data = self._calculate_category_scores(checks)
+        
+        # Calculate component_score as weighted average of category scores
+        component_score = self._calculate_component_score(categories_data)
+        
+        # Enrich checks with scoring information (merge with original data)
+        enriched_checks = self._enrich_checks_with_scoring(checks, categories_data)
+        
+        resource['component_score'] = component_score
+        resource['categories'] = categories_data
+        resource['checks'] = enriched_checks
+        
+        return resource
+    
+    def _calculate_category_scores(
+        self, checks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Calculate impact-weighted scores for each category.
+        
+        For each category:
+        - Only count "pass" and "fail" checks (exclude "pending" checks)
+        - Sum the impact weights of all scorable checks
+        - Sum the impact weights of passed checks
+        - Category score = passed_weight_sum / total_weight_sum
+        
+        Args:
+            checks: List of check dicts with 'category', 'status' ('pass', 'fail', 'pending'), 'impact'
+        
+        Returns:
+            List of category dicts with scores and impact details
+        """
+        # Group checks by category, excluding pending checks from scoring
+        categories_map = {}
+        for check in checks:
+            # Skip pending checks - they don't count toward score
+            if check.get('status') == 'pending':
+                continue
+            
+            category = check.get('category', 'Uncategorized')
+            if category not in categories_map:
+                categories_map[category] = []
+            categories_map[category].append(check)
+        
+        # Calculate scores for each category
+        categories_data = []
+        
+        for category_name in sorted(categories_map.keys()):
+            category_checks = categories_map[category_name]
+            
+            # Calculate impact-weighted score for this category
+            total_weight = 0.0
+            passed_weight = 0.0
+            
+            for check in category_checks:
+                impact = check.get('impact', 'Medium')
+                impact_weight = self.IMPACT_WEIGHTS.get(impact, 0.3)
+                total_weight += impact_weight
+                
+                if check.get('status') == 'pass':
+                    passed_weight += impact_weight
+            
+            # Category score: weighted pass rate
+            category_score = (passed_weight / total_weight) if total_weight > 0 else 0.0
+            category_weight = self.category_weights.get(category_name, 0.0)
+            
+            categories_data.append({
+                'name': category_name,
+                'score': category_score,  # 0.0-1.0
+                'weight': category_weight,  # importance of category
+                'passed_weight': passed_weight,  # sum of weights for passed checks
+                'total_weight': total_weight,  # sum of all check weights
+                'checks_count': len(category_checks),
+                'passed_count': sum(1 for c in category_checks if c.get('status') == 'pass')
+            })
+        
+        return categories_data
+    
+    def _calculate_component_score(self, categories_data: List[Dict[str, Any]]) -> float:
+        """
+        Calculate resource/component score from category scores.
+        
+        Formula: component_score = Σ(category_weight × category_score) / Σ(category_weights)
+        Normalizes by sum of weights to ensure 0.0-1.0 range.
+        
+        Args:
+            categories_data: List of scored category dicts
+        
+        Returns:
+            Component score (0.0-1.0)
+        """
+        weighted_sum = 0.0
+        weight_sum = 0.0
+        
+        for category in categories_data:
+            category_score = category['score']
+            category_weight = category['weight']
+            weighted_sum += category_weight * category_score
+            weight_sum += category_weight
+        
+        if weight_sum > 0:
+            return weighted_sum / weight_sum
+        
+        return 0.0
+    
+    def _enrich_checks_with_scoring(
+        self, 
+        checks: List[Dict[str, Any]],
+        categories_data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Enrich original checks with scoring information.
+        
+        Merges APRL check data with scoring metrics:
+        - Impact weight (High/Medium/Low)
+        - Whether it's a high-impact blocking check
+        
+        Note: contribution_percent is calculated dynamically in the frontend
+        based on the filtered view, not pre-calculated here.
+        
+        Args:
+            checks: Original check list from APRL evaluation
+            categories_data: Scored categories with weight info
+        
+        Returns:
+            Enriched check list with all original data plus scoring fields
+        """
+        enriched_checks = []
+        for check in checks:
+            # Start with all original check data
+            enriched = dict(check)
+            
+            impact = check.get('impact', 'Medium')
+            impact_weight = self.IMPACT_WEIGHTS.get(impact, 0.3)
+            
+            # Add scoring fields to enriched check
+            enriched['impact_weight'] = impact_weight
+            enriched['is_critical'] = impact == 'High'  # Flag high-impact checks
+            
+            enriched_checks.append(enriched)
+        
+        return enriched_checks
+    
+    def _calculate_workload_score(self, resources: List[Dict[str, Any]]) -> float:
+        """
+        Calculate workload score from resource component scores.
+        
+        Formula: workload_score = Σ(component_weight × component_score) / Σ(component_weights)
+        Normalizes by sum of weights to ensure 0.0-1.0 range.
+        
+        Args:
+            resources: List of scored resource dicts
+        
+        Returns:
+            Workload score (0.0-1.0)
+        """
+        if not resources:
             return 0.0
         
-        # Check if weights are available
-        has_weights = any(cs.get("weight", 0) > 0 for cs in component_scores)
+        weighted_sum = 0.0
+        weight_sum = 0.0
         
-        if has_weights:
-            # Weighted average
-            total_weight = sum(cs.get("weight", 0) for cs in component_scores)
-            if total_weight == 0:
-                # Fallback to simple average if all weights are 0
-                return sum(cs.get("score", 0) for cs in component_scores) / len(component_scores)
+        for resource in resources:
+            component_score = resource.get('component_score', 0.0)
+            component_weight = resource.get('component_weight', 1.0)
             
-            weighted_sum = sum(
-                cs.get("score", 0) * cs.get("weight", 0)
-                for cs in component_scores
-            )
-            return weighted_sum / total_weight
-        else:
-            # Simple average
-            return sum(cs.get("score", 0) for cs in component_scores) / len(component_scores)
+            weighted_sum += component_weight * component_score
+            weight_sum += component_weight
+        
+        if weight_sum > 0:
+            return weighted_sum / weight_sum
+        
+        return 0.0
     
-    def _calculate_category_breakdown(self, components: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    def _calculate_category_breakdown(self, resources: List[Dict[str, Any]]) -> Dict[str, float]:
         """
-        Calculate average score for each resilience category across all components.
+        Calculate average category scores across all resources.
+        
+        Provides workload-level view of which categories need work.
         
         Args:
-            components: Component evaluation results
-            
+            resources: List of scored resource dicts
+        
         Returns:
-            Dictionary with category-level aggregate scores
+            Dict mapping category name to average score (0.0-1.0)
         """
-        category_totals: Dict[str, Dict[str, int]] = {}
+        if not resources:
+            return {}
         
-        # Aggregate across all components
-        for comp in components:
-            categories = comp.get("categories", {})
-            
-            for cat_name, cat_data in categories.items():
-                if cat_name not in category_totals:
-                    category_totals[cat_name] = {
-                        "passed": 0,
-                        "failed": 0,
-                    }
+        category_scores = {}
+        category_counts = {}
+        
+        for resource in resources:
+            categories = resource.get('categories', [])
+            for category in categories:
+                name = category['name']
+                score = category['score']
                 
-                category_totals[cat_name]["passed"] += len(cat_data.get("passed", []))
-                category_totals[cat_name]["failed"] += len(cat_data.get("failed", []))
+                if name not in category_scores:
+                    category_scores[name] = 0.0
+                    category_counts[name] = 0
+                
+                category_scores[name] += score
+                category_counts[name] += 1
         
-        # Calculate scores
-        breakdown = {}
-        for cat_name, totals in category_totals.items():
-            total = totals["passed"] + totals["failed"]
-            
-            breakdown[cat_name] = {
-                "score": totals["passed"] / total if total > 0 else 0.0,
-                "passed": totals["passed"],
-                "failed": totals["failed"],
-                "total": total,
-                "weight": self.category_weights.get(cat_name, 0),
-            }
+        # Calculate averages
+        result = {}
+        for name, total_score in category_scores.items():
+            count = category_counts.get(name, 1)
+            result[name] = total_score / count
         
-        return breakdown
+        return result

@@ -20,10 +20,19 @@ resilience:
   # Category weights for resilience scoring
   # Must sum to 1.0 (normalized automatically if not)
   category_weights:
-    "High Availability": 0.40
-    "Disaster Recovery": 0.30
-    "Monitoring and Alerting": 0.20
+    "HighAvailability": 0.30
+    "DisasterRecovery": 0.20
+    "Scalability": 0.20
+    "MonitoringAndAlerting": 0.15
     "Security": 0.10
+    "OtherBestPractices": 0.05
+
+  # Impact-to-weight mapping for individual checks
+  # Higher impact checks count more toward category score
+  impact_weights:
+    "High": 0.6
+    "Medium": 0.3
+    "Low": 0.1
   
   # APRL v2 directory (relative to backend directory, or absolute path)
   aprl_root: "aprl"

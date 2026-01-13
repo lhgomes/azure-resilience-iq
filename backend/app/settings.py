@@ -98,6 +98,11 @@ class AppSettings:
                     "Monitoring and Alerting": 0.20,
                     "Security": 0.10,
                 },
+                "impact_weights": {
+                    "High": 0.5,
+                    "Medium": 0.3,
+                    "Low": 0.2,
+                },
                 "aprl_root": "./backend/aprl",
                 "rules_dir": "./config/resiliency_rules",
             },
@@ -117,6 +122,11 @@ class AppSettings:
         """Get resilience category weights."""
         resilience_config = self.get_resilience_config()
         return resilience_config.get("category_weights", {})
+    
+    def get_impact_weights(self) -> Dict[str, float]:
+        """Get impact-to-weight mapping for individual checks."""
+        resilience_config = self.get_resilience_config()
+        return resilience_config.get("impact_weights", {})
     
     def use_real_llm(self) -> bool:
         """Check if real LLM should be used."""

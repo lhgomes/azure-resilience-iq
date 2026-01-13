@@ -23,7 +23,7 @@ import json
 import argparse
 import os
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,6 +32,7 @@ from app.config import get_resources_path
 from app.settings import get_settings, load_settings
 from app.logger import setup_logging, get_logger
 from app.resilience.aprl_integration import load_aprl_catalog, APRLEvaluator
+from app.resilience.scorer import ResilienceScorer
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
 from app.storage.llm_annotations_store import load_llm_annotations
 
@@ -184,6 +185,7 @@ def main():
 
         # Load criticality weights from LLM annotations
         LOGGER.debug("Loading LLM annotations for criticality weights...")
+        annotations = load_llm_annotations(args.subscription_id)
         criticality_weights = get_criticality_weights(args.subscription_id)
         LOGGER.debug("Loaded criticality weights for %d resources", len(criticality_weights))
 
@@ -215,15 +217,16 @@ def main():
 
             for resource_id, result in batch_results.items():
                 failed_checks = [f for f in result.checks if f.get("status") == "fail"]
+                passed_checks = [f for f in result.checks if f.get("status") == "pass"]
+                pending_checks = [f for f in result.checks if f.get("status") == "pending"]
                 evaluations[resource_id] = {
                     "resource_id": result.resource_id,
                     "resource_type": result.resource_type,
                     "resource_name": result.resource_name,
                     "total_checks": len(result.checks),
                     "failed_checks": len(failed_checks),
-                    "passed_checks": len(result.checks) - len(failed_checks),
-                    "scores": result.scores,
-                    "overall_score": result.overall_score,
+                    "passed_checks": len(passed_checks),
+                    "pending_checks": len(pending_checks),
                     "checks": result.checks,
                 }
 
@@ -250,15 +253,16 @@ def main():
             
             for resource_id, result in sub_results.items():
                 failed_checks = [f for f in result.checks if f.get("status") == "fail"]
+                passed_checks = [f for f in result.checks if f.get("status") == "pass"]
+                pending_checks = [f for f in result.checks if f.get("status") == "pending"]
                 evaluations[resource_id] = {
                     "resource_id": result.resource_id,
                     "resource_type": result.resource_type,
                     "resource_name": result.resource_name,
                     "total_checks": len(result.checks),
                     "failed_checks": len(failed_checks),
-                    "passed_checks": len(result.checks) - len(failed_checks),
-                    "scores": result.scores,
-                    "overall_score": result.overall_score,
+                    "passed_checks": len(passed_checks),
+                    "pending_checks": len(pending_checks),
                     "checks": result.checks,
                 }
             
@@ -270,42 +274,10 @@ def main():
         LOGGER.debug("Saving evaluation results...")
         save_resilience_evaluations(args.subscription_id, evaluations)
 
-        # Also save in WARA-compatible format for API compatibility
+        # Save detailed evaluation log with executed queries and responses
         from datetime import datetime
         from app.config import get_subscription_dir
         
-        wara_format = {
-            "version": "1.0",
-            "generated": datetime.now().isoformat() + "Z",
-            "subscriptionId": args.subscription_id,
-            "recommendations": []  # WARA CLI uses "recommendations" array
-        }
-        
-        # Convert findings to WARA advisory format (only failed checks for WARA compatibility)
-        for resource_id, evaluation in evaluations.items():
-            for check in evaluation.get('checks', []):
-                # Only include failed checks in WARA format
-                if check.get('status') == 'fail':
-                    wara_format['recommendations'].append({
-                        "recommendationId": check.get('recommendation_id', ''),
-                        "description": check.get('description', ''),
-                        "category": check.get('category', ''),
-                        "impact": check.get('impact', ''),
-                        "type": evaluation.get('resource_type', ''),
-                        "id": resource_id,
-                        "name": evaluation.get('resource_name', ''),
-                        "resourceGroup": resource_id.split('/resourceGroups/')[1].split('/')[0] if '/resourceGroups/' in resource_id else '',
-                        "potentialBenefits": check.get('potential_benefits', ''),
-                        "longDescription": check.get('long_description', ''),
-                        "learnMoreLink": check.get('learn_more_links', [])
-                    })
-        
-        # Save WARA-compatible format
-        wara_path = get_subscription_dir(args.subscription_id) / "aprl_recommendations.json"
-        with open(wara_path, 'w') as f:
-            json.dump(wara_format, f, indent=2)
-
-        # Save detailed evaluation log with executed queries and responses
         detailed_path = get_subscription_dir(args.subscription_id) / "resilience_evaluations_detailed.json"
         detailed_payload = {
             "subscription_id": args.subscription_id,
@@ -313,16 +285,104 @@ def main():
         }
         with open(detailed_path, "w") as f:
             json.dump(detailed_payload, f, indent=2)
+
+        # ========================================
+        # SCORING: Calculate resilience scores
+        # ========================================
+        LOGGER.info("Calculating resilience scores...")
         
-        LOGGER.info(f"✓ WARA-compatible format saved: {wara_path}")
+        # Get category weights from settings
+        category_weights = settings.get_category_weights()
+        
+        # Get component weights from LLM annotations (criticality_weight)
+        component_weights = {}
+        if annotations and hasattr(annotations, 'nodes'):
+            for node in annotations.nodes:
+                if node.annotations.criticality_weight:
+                    component_weights[node.node_id] = node.annotations.criticality_weight
+        
+        # Initialize scorer with new hierarchical model
+        # Note: component_weights are now per-resource in data format
+        scorer = ResilienceScorer(category_weights=category_weights)
+        
+        # Convert evaluations to new scorer format
+        # New format uses: check → category → resource → workload hierarchy
+        scorer_input = {
+            "resources": []
+        }
+        
+        for resource_id, evaluation in evaluations.items():
+            # Pass complete original checks to scorer for enrichment
+            # Scorer will preserve all APRL data and add scoring fields
+            checks = evaluation.get('checks', [])
+            
+            # Get component_weight from LLM annotations (criticality_weight)
+            component_weight = component_weights.get(resource_id, 1.0)
+            
+            scorer_input['resources'].append({
+                'id': resource_id,
+                'name': evaluation.get('resource_name'),
+                'type': evaluation.get('resource_type'),
+                'component_weight': component_weight,
+                'checks': checks
+            })
+        
+        # Calculate scores using new hierarchical model
+        scoring_results = scorer.score_workload(scorer_input)
+        
+        # Save scoring results - Update resilience_evaluations.json
+        LOGGER.info("Adding scores to resilience evaluations...")
+        
+        # Read the current evaluation file
+        from app.config import get_subscription_dir
+        evaluations_path = get_subscription_dir(args.subscription_id) / "resilience_evaluations.json"
+        
+        with open(evaluations_path, 'r') as f:
+            eval_data = json.load(f)
+        
+        # Add new scoring results to the data structure
+        eval_data['workload_score'] = scoring_results.get('workload_score')
+        eval_data['category_breakdown'] = scoring_results.get('category_breakdown')
+        eval_data['scoring_timestamp'] = scoring_results.get('timestamp')
+        
+        # Update each resource evaluation with its new scoring details
+        resources_score_map = {
+            rs['id']: rs for rs in scoring_results.get('resources', [])
+        }
+        
+        for resource_id in eval_data['evaluations'].keys():
+            if resource_id in resources_score_map:
+                res_score = resources_score_map[resource_id]
+                # Update with new format: component_score (0-1.0) + details
+                eval_data['evaluations'][resource_id]['component_score'] = res_score.get('component_score')
+                eval_data['evaluations'][resource_id]['component_weight'] = res_score.get('component_weight')
+                eval_data['evaluations'][resource_id]['categories'] = res_score.get('categories', [])
+                # Use merged checks field (enriched with scoring data) - no separate checks_detail
+                eval_data['evaluations'][resource_id]['checks'] = res_score.get('checks', [])
+                
+                # Remove old fields if present
+                if 'overall_score' in eval_data['evaluations'][resource_id]:
+                    del eval_data['evaluations'][resource_id]['overall_score']
+                if 'checks_detail' in eval_data['evaluations'][resource_id]:
+                    del eval_data['evaluations'][resource_id]['checks_detail']
+                if 'scores' in eval_data['evaluations'][resource_id]:
+                    del eval_data['evaluations'][resource_id]['scores']
+        
+        # Save updated data back
+        with open(evaluations_path, 'w') as f:
+            json.dump(eval_data, f, indent=2)
+        
+        LOGGER.info(f"✓ Resilience scores added to: {evaluations_path}")
+        LOGGER.info(f"  Workload score: {scoring_results.get('workload_score', 0):.2%}")
 
         # Print summary
         total_checks = sum(e.get("total_checks", 0) for e in evaluations.values())
         total_failed = sum(e.get("failed_checks", 0) for e in evaluations.values())
         total_passed = sum(e.get("passed_checks", 0) for e in evaluations.values())
+        total_pending = sum(e.get("pending_checks", 0) for e in evaluations.values())
         LOGGER.info(
-            "✓ Resilience evaluation complete: %d resources, %d total checks (%d passed, %d failed)",
-            len(evaluations), total_checks, total_passed, total_failed
+            "✓ Resilience evaluation complete: %d resources, %d total checks (%d passed, %d failed, %d pending review)",
+            len(evaluations), total_checks, total_passed, total_failed, total_pending
         )
         return 0
 
