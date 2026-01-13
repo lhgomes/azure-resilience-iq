@@ -5,6 +5,8 @@ import GraphCanvas, {
   GraphEdge,
   GraphCanvasHandle
 } from "../components/GraphCanvasReactflow";
+import ResilienceSummary from "../components/ResilienceSummary";
+import TabbedView from "../components/TabbedView";
 import EdgeDrawer, {
   EdgeData
 } from "../components/EdgeDrawer";
@@ -38,6 +40,7 @@ import {
   type GraphSnapshot,
   type ViewLevel,
 } from "../domain/graphView";
+import { calculateResilienceScore, getElementWeight, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
 
 // Subscription-aware view: user selects a subscriptionId
 
@@ -47,6 +50,9 @@ const WorkloadView: React.FC = () => {
   const [showSubscriptionPicker, setShowSubscriptionPicker] = useState<boolean>(true);
   const storageKey = useMemo(() => `workload_graph_${subscriptionId}`, [subscriptionId]);
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
+  const [resilience_evaluations, setResilienceEvaluations] = useState<Record<string, any> | null>(null);
+  const [resilience_overrides, setResilienceOverrides] = useState<Record<string, any>>({});
+  const [resilience_data, setResilienceData] = useState<any | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,6 +78,13 @@ const WorkloadView: React.FC = () => {
   }>({ selectedNodeIds: [], selectedGroupId: null });
   const [groupToolbarName, setGroupToolbarName] = useState<string>("");
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ nonce: number; label: string } | null>(null);
+
+  // Track if user has made changes requiring refresh
+  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Weights for resilience score calculation
+  const [resilienceWeights, setResilienceWeights] = useState<ResilienceWeights>(DEFAULT_WEIGHTS);
 
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
@@ -110,6 +123,61 @@ const WorkloadView: React.FC = () => {
     });
   };
 
+  const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
+    const overrideLookup = new Map<string, { status: "pass" | "fail"; validation_source?: string; check_uuid?: string }>();
+
+    Object.entries(overrides || {}).forEach(([checkUuid, override]) => {
+      const resourceId = String((override as any)?.resource_id || "").toLowerCase();
+      const recommendationId = String((override as any)?.recommendation_id || "").toLowerCase();
+      if (!resourceId || !recommendationId) return;
+
+      const validationSource = ((override as any)?.overridden_by || "").toLowerCase() === "user"
+        ? "User"
+        : (override as any)?.overridden_by;
+
+      overrideLookup.set(`${resourceId}_${recommendationId}`, {
+        status: (override as any)?.status,
+        validation_source: validationSource,
+        check_uuid: checkUuid,
+      });
+    });
+
+    return Object.fromEntries(
+      Object.entries(evaluations || {}).map(([resourceId, evaluation]) => {
+        const resourceKey = resourceId.toLowerCase();
+        const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+
+        const mergedChecks = checksOrFindings.map((check: any) => {
+          const recommendationId = String(check?.recommendation_id || "").toLowerCase();
+          const override = overrideLookup.get(`${resourceKey}_${recommendationId}`);
+          if (!override) return check;
+
+          return {
+            ...check,
+            status: override.status,
+            validation_source: override.validation_source || check.validation_source,
+            check_uuid: override.check_uuid,
+          };
+        });
+
+        const passed = mergedChecks.filter((c: any) => c.status === "pass").length;
+        const failed = mergedChecks.filter((c: any) => c.status === "fail").length;
+
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: (evaluation as any).findings ? mergedChecks : undefined,
+            checks: (evaluation as any).checks ? mergedChecks : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: mergedChecks.length,
+          },
+        ];
+      })
+    );
+  }, []);
+
   const fetchGraph = useCallback(async () => {
     if (!subscriptionId) return;
     try {
@@ -120,6 +188,17 @@ const WorkloadView: React.FC = () => {
       const normalized = normalizeGraph(raw);
       persistGraph(normalized);
       setGraph(normalized);
+      
+      // Store resilience evaluations and overrides if available
+      if (raw.resilience_evaluations) {
+        setResilienceOverrides(raw.resilience_overrides || {});
+        setResilienceData(raw.resilience_evaluations);
+        setResilienceEvaluations(raw.resilience_evaluations.evaluations || {});
+      } else {
+        setResilienceOverrides(raw.resilience_overrides || {});
+        setResilienceData(null);
+        setResilienceEvaluations(null);
+      }
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
@@ -138,15 +217,36 @@ const WorkloadView: React.FC = () => {
         if (stored && subs.some(s => s.id === stored)) {
           setSubscriptionId(stored);
           setShowSubscriptionPicker(false);
-        } else {
-          // Invalid/missing stored subscription - clear it and show picker
-          localStorage.removeItem("awg_subscription_id");
-          setShowSubscriptionPicker(true);
+          return;
         }
+
+        // No stored/valid subscription: keep picker open and clear stale value
+        localStorage.removeItem("awg_subscription_id");
+        setShowSubscriptionPicker(true);
       })
       .catch(err => {
         console.error("Failed to fetch subscriptions:", err);
+        setShowSubscriptionPicker(true);
       });
+  }, []);
+
+  // Fetch weights from backend
+  useEffect(() => {
+    const loadWeights = async () => {
+      try {
+        const response = await fetch('/api/resilience/weights');
+        if (response.ok) {
+          const data = await response.json();
+          setResilienceWeights({
+            categoryWeights: data.category_weights || DEFAULT_WEIGHTS.categoryWeights,
+            impactWeights: data.impact_weights || DEFAULT_WEIGHTS.impactWeights,
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load weights from backend, using defaults:', error);
+      }
+    };
+    loadWeights();
   }, []);
 
   // Fit view when filters change
@@ -197,16 +297,82 @@ const WorkloadView: React.FC = () => {
     });
   }, [resourceGroupOptions, resourceGroupFilter.size]);
 
+  // Build annotation map for element weight lookup
+  const annotationMap = useMemo(() => {
+    if (!graph?.llm_annotations?.nodes) return new Map();
+    const map = new Map<string, any>();
+    for (const node of graph.llm_annotations.nodes) {
+      map.set(node.node_id.toLowerCase(), node.annotations);
+    }
+    return map;
+  }, [graph]);
+
+  // Merge overrides into evaluations for scoring without mutating cached graph
+  const mergedEvaluations = useMemo(() => {
+    if (!resilience_evaluations) return null;
+    return applyResilienceOverrides(resilience_evaluations, resilience_overrides);
+  }, [resilience_evaluations, resilience_overrides, applyResilienceOverrides]);
+
+  // Enrich graph with calculated resilience scores (SINGLE CALCULATION POINT)
+  const graphWithScores = useMemo(() => {
+    if (!graph || !mergedEvaluations) return graph;
+
+    // Create a case-insensitive lookup map
+    const evalLookup = new Map<string, any>();
+    Object.entries(mergedEvaluations).forEach(([key, value]) => {
+      evalLookup.set(key.toLowerCase(), value);
+    });
+
+    const updatedNodes = graph.nodes.map(node => {
+      const nodeId = node.id.toLowerCase();
+      const evaluation = evalLookup.get(nodeId);
+      
+      if (!evaluation) {
+        // No evaluation available - don't add resilience data
+        return node;
+      }
+
+      const metadata = (node.metadata as any) || {};
+      const resilience = metadata.resilience || {};
+
+      const checks = evaluation.checks || evaluation.findings || [];
+      if (checks.length === 0) {
+        // No checks - don't add resilience data
+        return node;
+      }
+
+      const elementWeight = getElementWeight(nodeId, annotationMap);
+      const score = calculateResilienceScore(checks, elementWeight, resilienceWeights);
+
+      return {
+        ...node,
+        element_weight: elementWeight,
+        metadata: {
+          ...metadata,
+          resilience: {
+            ...resilience,
+            resilience_score: score,
+          },
+        },
+      };
+    });
+
+    return {
+      ...graph,
+      nodes: updatedNodes,
+    };
+  }, [graph, mergedEvaluations, annotationMap, resilienceWeights]);
+
   const viewGraph = useMemo(() => {
-    if (!graph) return null;
+    if (!graphWithScores) return null;
     return buildViewGraph({
-      snapshot: graph,
+      snapshot: graphWithScores,
       aiLayerEnabled,
       userLayerEnabled,
       serviceFilter,
       resourceGroupFilter,
     });
-  }, [graph, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
+  }, [graphWithScores, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
 
   // Persist subscription selection
   useEffect(() => {
@@ -228,6 +394,9 @@ const WorkloadView: React.FC = () => {
   const handleAcceptEdge = async (edgeId: string) => {
     try {
       await acceptEdge(subscriptionId, edgeId);
+
+      // Mark as needing refresh
+      setNeedsRefresh(true);
 
       // Optimistic UI update
       updateGraph(prev =>
@@ -383,6 +552,9 @@ const WorkloadView: React.FC = () => {
       const created = body.edge;
 
       if (created) {
+        // Mark as needing refresh
+        setNeedsRefresh(true);
+
         const newEdge: GraphEdge = {
           id: created.id,
            source: created.source,
@@ -430,6 +602,9 @@ const WorkloadView: React.FC = () => {
       };
 
       await patchNode(subscriptionId, nodeId, nodePatch);
+
+      // Mark as needing refresh
+      setNeedsRefresh(true);
 
       updateGraph(prev => {
         if (!prev) return prev;
@@ -692,6 +867,39 @@ const WorkloadView: React.FC = () => {
       setSelectedNode(null);
     } catch (err) {
       console.error("Failed to reset node", err);
+    }
+  };
+
+  const handleRefreshAnnotationsAndScores = async () => {
+    if (!subscriptionId) return;
+    
+    try {
+      setIsRefreshing(true);
+      setError(null);
+
+      const response = await fetch(
+        `/api/subscriptions/${subscriptionId}/refresh`,
+        { method: "POST" }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Refresh failed");
+      }
+
+      const result = await response.json();
+      console.info("Refresh completed", result);
+
+      // Refresh the graph from server
+      await fetchGraph();
+
+      // Clear the dirty flag
+      setNeedsRefresh(false);
+    } catch (err: any) {
+      console.error("Failed to refresh annotations and scores:", err.message);
+      setError(err.message);
+    } finally {
+      setIsRefreshing(false);
     }
   };
 
@@ -1124,80 +1332,159 @@ const WorkloadView: React.FC = () => {
                 cursor: subscriptionId ? "pointer" : "not-allowed",
                 fontSize: 12
               }}
-              title="Reload graph"
+              title="Reload graph from server"
             >
               Reload
             </button>
+            
+            {/* Refresh annotations and scores button with badge */}
+            {needsRefresh && (
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => handleRefreshAnnotationsAndScores()}
+                  disabled={isRefreshing}
+                  style={{
+                    padding: "6px 12px",
+                    background: isRefreshing ? "#444" : "#2ea043",
+                    color: "#fff",
+                    border: "1px solid #4a7c4e",
+                    borderRadius: 4,
+                    cursor: isRefreshing ? "wait" : "pointer",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                  title="Re-run LLM annotations and resilience scoring based on your changes"
+                >
+                  {isRefreshing ? "Refreshing..." : "✓ Refresh Annotations & Scores"}
+                </button>
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "-8px",
+                    right: "-8px",
+                    background: "#ff6b6b",
+                    color: "#fff",
+                    borderRadius: "50%",
+                    width: 16,
+                    height: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 10,
+                    fontWeight: 700,
+                  }}
+                  title="Updates pending"
+                >
+                  !
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Graph canvas */}
-        <div style={{ flex: 1, height: "100%" }}>
-          <ReactFlowProvider>
-            <GraphCanvas
-              ref={graphCanvasRef}
-              nodes={nodesForView}
-              edges={edgesForView}
-                selectedEdgeId={selectedEdge?.id ?? null}
-              userLayerEnabled={userLayerEnabled}
-              maxImportance={maxImportance}
-              onNodeSelected={handleNodeSelected}
-              onEdgeCreate={handleCreateManualLink}
-              onNodeRename={handleRenameNode}
-              onGroupCreate={applyGroupToNodes}
-              groupCreateRequest={groupCreateRequest}
-              onSelectionStateChange={state => {
-                const prevSelection = lastGroupToolbarSelectionRef.current;
-                lastGroupToolbarSelectionRef.current = state;
-                setGroupToolbarSelection(state);
+        {/* Tabbed View: Graph and Resilience */}
+        <div style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column" }}>
+          <TabbedView
+            tabs={[
+              {
+                label: "Graph",
+                icon: "📊",
+                content: (
+                  <div style={{ width: "100%", height: "100%" }}>
+                    <ReactFlowProvider>
+                      <GraphCanvas
+                        ref={graphCanvasRef}
+                        nodes={nodesForView}
+                        edges={edgesForView}
+                        selectedEdgeId={selectedEdge?.id ?? null}
+                        userLayerEnabled={userLayerEnabled}
+                        maxImportance={maxImportance}
+                        onNodeSelected={handleNodeSelected}
+                        onEdgeCreate={handleCreateManualLink}
+                        onNodeRename={handleRenameNode}
+                        onGroupCreate={applyGroupToNodes}
+                        groupCreateRequest={groupCreateRequest}
+                        onSelectionStateChange={state => {
+                          const prevSelection = lastGroupToolbarSelectionRef.current;
+                          lastGroupToolbarSelectionRef.current = state;
+                          setGroupToolbarSelection(state);
 
-                // Initialize toolbar name when mode changes or selecting a different group.
-                if (state.selectedGroupId) {
-                  lastSuggestedGroupNameRef.current = "";
-                  setGroupToolbarName(prev => {
-                    if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
-                      return state.selectedGroupLabel ?? "";
-                    }
-                    return prev;
-                  });
-                } else if (state.selectedNodeIds.length > 1) {
-                  const suggested = suggestGroupName(state.selectedNodeIds);
-                  setGroupToolbarName(prev => {
-                    const shouldReplace =
-                      prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
-                    if (!shouldReplace) return prev;
+                          // Initialize toolbar name when mode changes or selecting a different group.
+                          if (state.selectedGroupId) {
+                            lastSuggestedGroupNameRef.current = "";
+                            setGroupToolbarName(prev => {
+                              if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
+                                return state.selectedGroupLabel ?? "";
+                              }
+                              return prev;
+                            });
+                          } else if (state.selectedNodeIds.length > 1) {
+                            const suggested = suggestGroupName(state.selectedNodeIds);
+                            setGroupToolbarName(prev => {
+                              const shouldReplace =
+                                prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
+                              if (!shouldReplace) return prev;
 
-                    lastSuggestedGroupNameRef.current = suggested;
-                    return suggested;
-                  });
-                } else {
-                  lastSuggestedGroupNameRef.current = "";
-                  setGroupToolbarName("");
-                }
-              }}
-              onMoveNodeToGroup={moveNodeToGroup}
-              onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
-              onEdgeSelected={(e) => {
-                if (!e) {
-                  setSelectedEdge(null);
-                  return;
-                }
+                              lastSuggestedGroupNameRef.current = suggested;
+                              return suggested;
+                            });
+                          } else {
+                            lastSuggestedGroupNameRef.current = "";
+                            setGroupToolbarName("");
+                          }
+                        }}
+                        onMoveNodeToGroup={moveNodeToGroup}
+                        onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
+                        onEdgeSelected={(e) => {
+                          if (!e) {
+                            setSelectedEdge(null);
+                            return;
+                          }
 
-                setSelectedNode(null);
-                setSelectedEdge({
-                  id: e.id,
-                  source: e.source,
-                  target: e.target,
-                  relationship: e.relationship,
-                  confidence: e.confidence,
-                  status: e.status as any,
-                  evidence: e.evidence,
-                  origin: e.origin,
-                  raw: e,
-                });
-              }}
-            />
-          </ReactFlowProvider>
+                          setSelectedNode(null);
+                          setSelectedEdge({
+                            id: e.id,
+                            source: e.source,
+                            target: e.target,
+                            relationship: e.relationship,
+                            confidence: e.confidence,
+                            status: e.status as any,
+                            evidence: e.evidence,
+                            origin: e.origin,
+                            raw: e,
+                          });
+                        }}
+                      />
+                    </ReactFlowProvider>
+                  </div>
+                ),
+              },
+              {
+                label: "Overview",
+                icon: "🛡️",
+                content: resilience_evaluations ? (
+                  <ResilienceSummary
+                    evaluations={resilience_evaluations}
+                    workloadScore={resilience_data?.workload_score}
+                    subscriptionId={subscriptionId}
+                    graphData={graph}
+                    overrides={resilience_overrides}
+                    viewLevel={viewLevel}
+                    resourceGroupFilter={resourceGroupFilter}
+                    serviceFilter={serviceFilter}
+                  />
+                ) : (
+                  <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
+                    No resilience data available
+                  </div>
+                ),
+              },
+            ]}
+            defaultTab={0}
+          />
         </div>
       </div>
 

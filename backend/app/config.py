@@ -49,6 +49,11 @@ def get_manual_edges_path(subscription_id: str) -> Path:
     return get_subscription_dir(subscription_id) / "manual_edges.json"
 
 
+def get_resilience_evaluations_path(subscription_id: str) -> Path:
+    """Get the resilience_evaluations.json path for a subscription."""
+    return get_subscription_dir(subscription_id) / "resilience_evaluations.json"
+
+
 # Legacy: for backward compatibility during migration
 COLLECTOR_DIR = DATA_DIR / "collector"
 COLLECTOR_RESOURCES_PATH = COLLECTOR_DIR / "resources.json"

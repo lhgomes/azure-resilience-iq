@@ -4,6 +4,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.settings import load_settings
+from app.routes.resilience import router as resilience_router
+from app.routes.unified_recommendations import router as unified_recommendations_router
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
@@ -34,7 +37,10 @@ from app.relationships.utils import norm_id
 # without passing them on the command line every time.
 load_dotenv()
 
+# Load application configuration from app_config.yaml
+app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
+LOGGER.info("Application settings loaded successfully")
 
 app = FastAPI(title="Azure Workload Graph")
 app.add_middleware(
@@ -44,6 +50,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register API routes
+app.include_router(resilience_router)
+app.include_router(unified_recommendations_router)
 
 
 class CreateEdgeRequest(BaseModel):
@@ -416,8 +426,8 @@ def remove_node_endpoint(subscription_id: str, group_id: str, node_id: str):
 
 
 @app.get("/api/subscriptions/{subscription_id}/graph")
-def get_graph(subscription_id: str, include_llm: bool = False):
-    return get_workload_graph(subscription_id, include_llm=include_llm)
+def get_graph(subscription_id: str):
+    return get_workload_graph(subscription_id)
 
 @app.get("/api/subscriptions/{subscription_id}/reviews")
 def review_inbox(subscription_id: str):

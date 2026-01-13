@@ -21,7 +21,6 @@ Paths:
 """
 
 import json
-import logging
 import argparse
 
 from dotenv import load_dotenv
@@ -30,12 +29,10 @@ from app.graph.from_azure import build_graph_from_resources
 from app.config import get_resources_path
 from app.llm.annotator import annotate_graph
 from app.storage.llm_annotations_store import save_llm_annotations
+from app.settings import load_settings, get_settings
+from app.logger import setup_logging, get_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -50,7 +47,18 @@ def main():
         required=True,
         help="Subscription ID (UUID format)"
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override log level (default: from config or INFO)",
+    )
     args = parser.parse_args()
+    
+    # Load settings and configure logging with optional CLI override
+    load_settings()
+    settings = get_settings()
+    setup_logging(args.log_level)
 
     LOGGER.info("Starting LLM annotator for subscription: %s", args.subscription_id)
 

@@ -9,6 +9,7 @@ dependencies = [
   "pydantic",
   "python-dotenv",
   "httpx",
+  "pyyaml",
 
   "azure-identity",
   "azure-mgmt-resourcegraph",
