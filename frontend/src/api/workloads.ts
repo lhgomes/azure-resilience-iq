@@ -75,6 +75,7 @@ export interface RawGraphSnapshot {
   resilience_evaluations?: {
     evaluations: Record<string, any>;
   };
+  resilience_overrides?: Record<string, any>;
 }
 
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {

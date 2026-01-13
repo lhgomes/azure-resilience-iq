@@ -138,7 +138,7 @@ def get_subscription_evaluation(subscription_id: str):
         results = load_resilience_evaluations(subscription_id)
         evaluations = results.get("evaluations", {})
         
-        # Calculate aggregated stats using checks
+        # Calculate aggregated stats from checks
         total_resources = len(evaluations)
         total_checks = 0
         total_failed_checks = 0
@@ -146,36 +146,9 @@ def get_subscription_evaluation(subscription_id: str):
 
         for resource_eval in evaluations.values():
             checks = resource_eval.get("checks") or []
-            resource_total = resource_eval.get("total_checks", len(checks))
-            resource_failed = resource_eval.get("failed_checks")
-            if resource_failed is None:
-                resource_failed = sum(1 for c in checks if c.get("status") == "fail")
-            resource_passed = resource_eval.get("passed_checks")
-            if resource_passed is None:
-                resource_passed = resource_total - resource_failed
-
-            total_checks += resource_total
-            total_failed_checks += resource_failed
-            total_passed_checks += resource_passed
-        
-        # Aggregate category scores
-        category_scores = {}
-        resource_count = 0
-        
-        for resource_eval in evaluations.values():
-            scores = resource_eval.get("scores", {})
-            for category, score in scores.items():
-                if category not in category_scores:
-                    category_scores[category] = 0
-                category_scores[category] += score
-            resource_count += 1
-        
-        # Average the scores
-        if resource_count > 0:
-            category_scores = {
-                cat: round(score / resource_count, 1)
-                for cat, score in category_scores.items()
-            }
+            total_checks += len(checks)
+            total_failed_checks += sum(1 for c in checks if c.get("status") == "fail")
+            total_passed_checks += sum(1 for c in checks if c.get("status") == "pass")
         
         return {
             "subscription_id": subscription_id,
@@ -184,7 +157,6 @@ def get_subscription_evaluation(subscription_id: str):
                 "total_checks": total_checks,
                 "total_failed_checks": total_failed_checks,
                 "total_passed_checks": total_passed_checks,
-                "average_category_scores": category_scores,
             },
             "evaluations": evaluations,
         }
@@ -251,9 +223,25 @@ def refresh_subscription_evaluation(subscription_id: str):
 
 
 
+@router.get("/weights")
+def get_weights():
+    """Get resilience category and impact weights for scoring calculations."""
+    try:
+        settings = get_settings()
+        category_weights = settings.get_category_weights()
+        impact_weights = settings.get_impact_weights()
+        return {
+            "category_weights": category_weights,
+            "impact_weights": impact_weights,
+        }
+    except Exception as e:
+        LOGGER.error(f"Failed to get weights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/categories")
 def get_categories():
-    """Get resilience categories and their weights."""
+    """Get resilience categories and their weights (deprecated - use /weights instead)."""
     try:
         settings = get_settings()
         weights = settings.get_category_weights()

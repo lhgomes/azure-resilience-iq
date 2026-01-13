@@ -9,6 +9,7 @@ from app.graph.from_azure import build_graph_from_resources
 from app.config import get_resources_path
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.edge_overrides_store import load_overrides
+from app.storage.override_store import load_overrides as load_resilience_overrides
 from app.storage.node_overrides_store import load_node_overrides
 from app.storage.resilience_evaluations_store import load_resilience_evaluations
 
@@ -75,19 +76,20 @@ def get_workload_graph(subscription_id: str) -> dict:
     annotations = load_llm_annotations(subscription_id)
     node_overrides = load_node_overrides(subscription_id)
     edge_overrides = load_overrides(subscription_id)
+    resilience_overrides = load_resilience_overrides(subscription_id)
     groups = load_groups(subscription_id)
     
     # Load resilience evaluations if available
     resilience_data = {}
+    resilience_results = None
     try:
         resilience_results = load_resilience_evaluations(subscription_id)
         resilience_evals = resilience_results.get("evaluations", {})
+        
+        # Only pass raw checks data - frontend calculates scores
         resilience_data = {
             resource_id: {
-                "total_checks": eval_data.get("total_checks", 0),
-                "passed_checks": eval_data.get("passed_checks", 0),
-                "failed_checks": eval_data.get("failed_checks", 0),
-                "pass_percentage": round((eval_data.get("passed_checks", 0) / eval_data.get("total_checks", 1) * 100), 1) if eval_data.get("total_checks", 0) > 0 else 0
+                "checks": eval_data.get("checks", []),
             }
             for resource_id, eval_data in resilience_evals.items()
         }
@@ -156,13 +158,6 @@ def get_workload_graph(subscription_id: str) -> dict:
         if node_ann.reason:
             node["metadata"]["llm_reason"] = node_ann.reason
 
-    # Attach resilience data to each node
-    for node_id, node in nodes_by_id.items():
-        if node_id in resilience_data:
-            if "metadata" not in node:
-                node["metadata"] = {}
-            node["metadata"]["resilience"] = resilience_data[node_id]
-
     return {
         **snapshot,
         "nodes": list(nodes_by_id.values()),
@@ -174,6 +169,7 @@ def get_workload_graph(subscription_id: str) -> dict:
         "edge_overrides": edge_overrides,
         "groups": [g.model_dump() for g in groups],
         "resilience_evaluations": resilience_results if resilience_results else {"evaluations": {}},
+        "resilience_overrides": resilience_overrides,
     }
 
 def get_review_inbox(workload_id: str) -> dict:

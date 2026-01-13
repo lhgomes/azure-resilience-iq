@@ -1,7 +1,8 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { canonicalTypeForNode, normalizeTypeString } from "../domain/graphView";
 import { saveOverride, getOverrides, deleteOverride, getCheckOverride } from "../api/resilience";
+import { calculateResilienceScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
 interface ResilienceCheck {
   status: "pass" | "fail";
   description: string;
@@ -22,19 +23,27 @@ interface ResilienceEvaluation {
   resource_id: string;
   resource_type: string;
   resource_name: string;
-  total_checks: number;
-  passed_checks: number;
-  failed_checks: number;
-  overall_score: number;
   checks: ResilienceCheck[];
   findings: ResilienceCheck[];
-  scores: Record<string, number>;
+}
+
+interface ResilienceOverride {
+  resource_id: string;
+  recommendation_id: string;
+  status: "pass" | "fail";
+  overridden_at?: string;
+  overridden_by?: string;
+  check_uuid?: string;
 }
 
 interface LLMAnnotation {
   display_name?: string;
   azure_service_category?: string;
   azure_service_name?: string;
+  criticality_weight?: number;
+  criticality_score?: number;
+  confidence?: number;
+  hide_by_default?: boolean;
 }
 
 interface ResilienceSummaryProps {
@@ -50,12 +59,33 @@ interface ResilienceSummaryProps {
       }>;
     };
   };
+  overrides?: Record<string, ResilienceOverride>;
   viewLevel?: ViewLevel;
   resourceGroupFilter?: Set<string>;
   serviceFilter?: Set<string>;
 }
 
 type ViewLevel = "overview" | "network" | "full";
+
+const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
+  const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};
+  if (!overrides) return overrideMap;
+
+  Object.entries(overrides).forEach(([checkUuid, override]) => {
+    const key = `${override.resource_id}_${override.recommendation_id}`;
+    const validationSource = (override.overridden_by || "").toLowerCase() === "user"
+      ? "User"
+      : override.overridden_by || "";
+
+    overrideMap[key] = {
+      status: override.status,
+      validation_source: validationSource,
+      check_uuid: checkUuid,
+    };
+  });
+
+  return overrideMap;
+};
 
 // Resilience score donut (0-100% gradient)
 const ScoreDonut: React.FC<{
@@ -202,6 +232,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   workloadScore,
   subscriptionId,
   graphData,
+  overrides,
   viewLevel,
   resourceGroupFilter,
   serviceFilter,
@@ -215,29 +246,47 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const [filterImpact, setFilterImpact] = useState<string | null>(null);
   const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
   const [resourceFilter, setResourceFilter] = useState("");
-  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string; original_status?: "pass" | "fail" }>>({});
+  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>>({});
 
-  // Load overrides on component mount
+  // Fetch weights from backend once and reuse across all calculations
+  const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
+  const [impactWeights, setImpactWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.impactWeights);
+
+  // Load weights from backend
   useEffect(() => {
-    if (!subscriptionId) return;
+    const loadWeights = async () => {
+      try {
+        const response = await fetch('/api/resilience/weights');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.category_weights) {
+            setCategoryWeights(data.category_weights);
+          }
+          if (data.impact_weights) {
+            setImpactWeights(data.impact_weights);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load weights from backend, using defaults:', error);
+      }
+    };
+    loadWeights();
+  }, []);
+
+  // Apply overrides provided by parent (preferred path) or fetch when not provided
+  useEffect(() => {
+    if (overrides) {
+      setUserOverrides(buildOverrideMap(overrides));
+    }
+  }, [overrides]);
+
+  useEffect(() => {
+    if (!subscriptionId || overrides) return;
 
     const loadOverrides = async () => {
       try {
         const response = await getOverrides(subscriptionId);
-        
-        // Convert overrides record to key-value map
-        const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};
-        Object.entries(response.overrides).forEach(([_uuid, override]) => {
-          const key = `${override.resource_id}_${override.recommendation_id}`;
-          const valSource = (override.overridden_by || "").toLowerCase() === "user" ? "User" : override.overridden_by || "";
-          overrideMap[key] = {
-            status: override.status as "pass" | "fail",
-            validation_source: valSource,
-            check_uuid: override.check_uuid || (_uuid as string),
-          };
-        });
-        
-        setUserOverrides(overrideMap);
+        setUserOverrides(buildOverrideMap(response.overrides));
       } catch (error) {
         console.error("Failed to load overrides:", error);
         // Continue without overrides
@@ -245,7 +294,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     };
 
     loadOverrides();
-  }, [subscriptionId]);
+  }, [subscriptionId, overrides]);
 
   // Create annotation lookup
   const annotationMap = useMemo(() => {
@@ -257,6 +306,31 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     }
     return map;
   }, [graphData]);
+
+  // Helper function to get element weight from graph annotations
+  const getElementWeight = useCallback((resourceId: string): number => {
+    const annotation = annotationMap.get(resourceId);
+    return annotation?.criticality_weight ?? 1.0;
+  }, [annotationMap]);
+
+  // Helper function to calculate resilience score for a single resource
+  // Uses shared utility - SINGLE SOURCE OF TRUTH
+  const calculateResourceScore = useCallback((resourceId: string, checks: any[]): number => {
+    const elementWeight = getElementWeight(resourceId);
+    const weights: ResilienceWeights = { categoryWeights, impactWeights };
+    return calculateResilienceScore(checks, elementWeight, weights);
+  }, [getElementWeight, categoryWeights, impactWeights]);
+
+  // Map resourceId -> resilience score for use by graph nodes
+  const resourceScores = useMemo(() => {
+    const scores = new Map<string, number>();
+    Object.entries(evaluations).forEach(([resourceId, evaluation]: [string, any]) => {
+      const checks = evaluation.checks || evaluation.findings || [];
+      const score = calculateResourceScore(resourceId, checks);
+      scores.set(resourceId, score);
+    });
+    return scores;
+  }, [evaluations, calculateResourceScore]);
 
   // Map resourceId -> canonical type key (must match WorkloadSidebar service filter semantics)
   const resourceIdToServiceKey = useMemo(() => {
@@ -456,10 +530,11 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     const resourceList: Array<ResilienceEvaluation & { resourceId: string }> = [];
 
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
-      // Ensure we're working with integers (counts, not percentages)
-      const evalTotal = Math.round(evaluation.total_checks || 0);
-      const evalPassed = Math.round(evaluation.passed_checks || 0);
-      const evalFailed = Math.round(evaluation.failed_checks || 0);
+      // Calculate counts from checks array
+      const checks = evaluation.checks || [];
+      const evalTotal = checks.length;
+      const evalPassed = checks.filter((c: any) => c.status === 'pass').length;
+      const evalFailed = checks.filter((c: any) => c.status === 'fail').length;
       
       totalChecks += evalTotal;
       passedChecks += evalPassed;
@@ -477,25 +552,16 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   // Normalized Weight = Check Weight / Sum of all Check Weights
   // Score = Sum of normalized weights for passed checks
   const adjustedWorkloadScore = useMemo(() => {
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
     
     // First pass: calculate total weight for normalization
     let totalWeight = 0;
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = evaluation.findings || evaluation.checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const checkWeight = elementWeight * categoryWeight * impactWeight;
         totalWeight += checkWeight;
       });
@@ -503,13 +569,13 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
 
     // Second pass: calculate score with normalized weights
     let passedWeight = 0;
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = evaluation.findings || evaluation.checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const rawWeight = elementWeight * categoryWeight * impactWeight;
         const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
         if (finding.status === "pass") {
@@ -519,7 +585,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return passedWeight;
-  }, [evaluationsWithOverrides]);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
   const resourceFilterOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -530,31 +596,23 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
     return Array.from(seen).sort((a, b) => a.localeCompare(b));
   }, [stats.resourceList, annotationMap]);
+
   // Breakdown by resilience category - uses contribution % for consistency
   // Formula: Category Score = Sum(passed contribution %) / Sum(all contribution %)
   const categoryBreakdown = useMemo(() => {
     // Re-calculate contribution % here to avoid circular dependency
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
     
     // First, calculate total weight for all checks (same as totalWeightForDrawerFilters)
     let totalWeight = 0;
     const allChecks: any[] = [];
     
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = evaluation.findings || evaluation.checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const checkWeight = elementWeight * categoryWeight * impactWeight;
         totalWeight += checkWeight;
         allChecks.push({
@@ -613,45 +671,35 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         resilienceScore: stats.totalContribution > 0 ? stats.passedContribution / stats.totalContribution : 0,
       }))
       .sort((a, b) => b.totalContribution - a.totalContribution);
-  }, [evaluationsWithOverrides]);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
   // Breakdown by impact level
   const impactBreakdown = useMemo(() => {
     const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
     
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
-    
     // First pass: calculate total weight
     let totalWeight = 0;
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const checkWeight = elementWeight * categoryWeight * impactWeight;
         totalWeight += checkWeight;
       });
     });
     
     // Second pass: build breakdown with normalized weights
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const impact = finding.impact || "Unknown";
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const rawWeight = elementWeight * categoryWeight * impactWeight;
         const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
         const existing = breakdown.get(impact) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
@@ -675,7 +723,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
       }))
       .sort((a, b) => b.totalWeight - a.totalWeight);
-  }, [evaluationsWithOverrides]);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
   // Failed counts for impact levels (High/Medium/Low) for tooltip and donut
   const failedImpactCounts = useMemo(() => {
@@ -691,25 +739,15 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const serviceBreakdown = useMemo(() => {
     const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
     
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
-    
     // First pass: calculate total weight
     let totalWeight = 0;
-    Object.entries(evaluationsWithOverrides).forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const checkWeight = elementWeight * categoryWeight * impactWeight;
         totalWeight += checkWeight;
       });
@@ -717,15 +755,15 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     
     // Second pass: build breakdown with normalized weights
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+      const elementWeight = getElementWeight(resourceId);
       const annotation = annotationMap.get(resourceId);
       const serviceCategory = annotation?.azure_service_category || "Other";
       
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         const rawWeight = elementWeight * categoryWeight * impactWeight;
         const normalizedWeight = totalWeight > 0 ? rawWeight / totalWeight : 0;
         const existing = breakdown.get(serviceCategory) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
@@ -749,7 +787,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
       }))
       .sort((a, b) => b.totalWeight - a.totalWeight);
-  }, [evaluationsWithOverrides, annotationMap]);
+  }, [evaluationsWithOverrides, annotationMap, impactWeights, categoryWeights, getElementWeight]);
 
   // Get unique validation sources from data
   const validationSources = useMemo(() => {
@@ -827,25 +865,16 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           break;
         case "weight":
           // Calculate weight on the fly: element_weight × category_weight × impact_weight
-          const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-          const categoryWeightMap: Record<string, number> = {
-            HighAvailability: 0.30,
-            DisasterRecovery: 0.20,
-            Scalability: 0.20,
-            MonitoringAndAlerting: 0.15,
-            Security: 0.10,
-            OtherBestPractices: 0.05,
-          };
           const getResourceWeight = (finding: any) => {
             const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
               const evaluation = evaluationsWithOverrides[key];
               const checks = (evaluation as any).findings || (evaluation as any).checks || [];
               return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
             });
-            const elementWeight = resourceId ? (evaluationsWithOverrides[resourceId] as any).component_weight || 1.0 : 1.0;
+            const elementWeight = resourceId ? getElementWeight(resourceId) : 1.0;
             const category = finding.category || "Other";
-            const impactWeight = impactWeightMap[finding.impact] || 0.1;
-            const categoryWeight = categoryWeightMap[category] || 0.05;
+            const impactWeight = impactWeights[finding.impact] || 0.1;
+            const categoryWeight = categoryWeights[category] || 0.05;
             return elementWeight * categoryWeight * impactWeight;
           };
           aVal = getResourceWeight(a);
@@ -879,30 +908,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
   // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
   const totalWeightForDrawerFilters = useMemo(() => {
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
     let total = 0;
 
-    filteredEvaluationEntries.forEach(([, evaluation]: [string, any]) => {
-      const elementWeight = evaluation.component_weight || 1.0;
+    filteredEvaluationEntries.forEach(([resourceId, evaluation]: [string, any]) => {
+      const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
-        const impactWeight = impactWeightMap[finding.impact] || 0.1;
-        const categoryWeight = categoryWeightMap[category] || 0.05;
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
         total += elementWeight * categoryWeight * impactWeight;
       });
     });
 
     return total;
-  }, [filteredEvaluationEntries]);
+  }, [filteredEvaluationEntries, impactWeights, categoryWeights, getElementWeight]);
 
   // Calculate contribution_percent dynamically based on visible filtered checks
   const findingsWithContribution = useMemo(() => {
@@ -910,15 +930,6 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     // This way, the weight doesn't change when using right-side "Findings Details" filters
 
     // Add dynamic contribution_percent to each finding and apply user overrides
-    const impactWeightMap: Record<string, number> = { High: 0.6, Medium: 0.3, Low: 0.1 };
-    const categoryWeightMap: Record<string, number> = {
-      HighAvailability: 0.30,
-      DisasterRecovery: 0.20,
-      Scalability: 0.20,
-      MonitoringAndAlerting: 0.15,
-      Security: 0.10,
-      OtherBestPractices: 0.05,
-    };
     
     return filteredFindings.map(finding => {
       const resourceId = Object.keys(evaluationsWithOverrides).find(key => {
@@ -926,10 +937,10 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         const checks = (evaluation as any).findings || (evaluation as any).checks || [];
         return checks.some((c: any) => c.recommendation_id === finding.recommendation_id);
       });
-      const elementWeight = resourceId ? (evaluationsWithOverrides[resourceId] as any).component_weight || 1.0 : 1.0;
+      const elementWeight = resourceId ? getElementWeight(resourceId) : 1.0;
       const category = finding.category || "Other";
-      const impactWeight = impactWeightMap[finding.impact] || 0.1;
-      const categoryWeight = categoryWeightMap[category] || 0.05;
+      const impactWeight = impactWeights[finding.impact] || 0.1;
+      const categoryWeight = categoryWeights[category] || 0.05;
       const rawWeight = elementWeight * categoryWeight * impactWeight;
       const checkWeight = totalWeightForDrawerFilters > 0 ? rawWeight / totalWeightForDrawerFilters : 0;
       
@@ -938,7 +949,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         contribution_percent: checkWeight * 100  // Already normalized, just convert to percentage
       };
     });
-  }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides]);
+  }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
   const handleStatusOverride = async (resourceId: string, recommendationId: string, currentStatus: string) => {
     if (!subscriptionId) {
@@ -1969,15 +1980,23 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     {finding.validation_source === "LLM" && (finding.learn_more as any)?.llm_reasoning && (
                       <span
                         style={{
-                          marginLeft: "6px",
-                          color: "#f59e0b",
+                          marginLeft: "8px",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: "18px",
+                          height: "18px",
+                          borderRadius: "999px",
+                          background: "#e0f2fe",
+                          color: "#1d4ed8",
                           cursor: "help",
-                          fontSize: "14px",
-                          fontWeight: 700,
+                          fontSize: "12px",
+                          fontWeight: 800,
+                          border: "1px solid #bfdbfe",
                         }}
                         title={(finding.learn_more as any)?.llm_reasoning}
                       >
-                        ?
+                        i
                       </span>
                     )}
                   </td>

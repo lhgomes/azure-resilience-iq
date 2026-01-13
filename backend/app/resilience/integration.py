@@ -2,7 +2,7 @@
 Example integration of resilience analysis into the workload graph pipeline.
 
 This demonstrates how to integrate the evaluation and scoring steps
-into your existing Collect -> LLM -> Evaluate -> Score flow.
+into your existing Collect -> LLM -> Evaluate flow.
 """
 
 from typing import List, Dict, Any
@@ -24,7 +24,6 @@ async def analyze_workload_resilience(
     1. Collect resources (done by graph builder)
     2. LLM annotations (done by annotator)
     3. Evaluate against APRL (this function)
-    4. Score resilience (this function)
     
     Args:
         workload_graph: The built workload graph with components
@@ -45,8 +44,6 @@ async def analyze_workload_resilience(
         )
         
         # Access results:
-        workload_score = resilience_results["scoring"]["workload_score"]
-        category_breakdown = resilience_results["scoring"]["category_scores"]
         recommendations = resilience_results["recommendations"]
     """
     
@@ -115,8 +112,7 @@ async def main_pipeline_example():
     
     New flow addition:
     3. Evaluate against APRL - NEW
-    4. Score resilience - NEW
-    5. Return to frontend - NEW
+    4. Return to frontend - NEW
     """
     
     from app.graph.builder import WorkloadGraphBuilder

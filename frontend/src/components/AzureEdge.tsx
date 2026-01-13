@@ -21,20 +21,7 @@ const AzureEdge: React.FC<EdgeProps> = ({
   });
 
   const edgeData = data as any || {};
-  
-  // Debug logging
-  if (edgeData.origin === "manual") {
-    console.log("Rendering manual edge:", {
-      id,
-      sourceX,
-      sourceY,
-      targetX,
-      targetY,
-      edgePath,
-      data: edgeData
-    });
-  }
-  
+
   const getEdgeColor = (): string => {
     if (edgeData.origin === "manual") return "#22c55e";
     if (edgeData.origin === "llm") return "#f59e0b";

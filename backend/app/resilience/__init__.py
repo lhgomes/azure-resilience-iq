@@ -1,1 +1,1 @@
-# Resilience evaluation and scoring modules
+# Resilience evaluation modules (frontend handles scoring)
