@@ -137,14 +137,6 @@ export async function getResilienceSummary(
 }
 
 /**
- * Get category weights configuration
- */
-export async function getCategoryWeights(): Promise<Record<string, number>> {
-  const response = await apiJson<{ categories: Record<string, number> }>('/api/resilience/categories');
-  return response.categories;
-}
-
-/**
  * Format score as percentage string
  */
 export function formatScore(score: number): string {
