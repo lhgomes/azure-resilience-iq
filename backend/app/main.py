@@ -42,7 +42,7 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
-app = FastAPI(title="Azure Workload Graph")
+app = FastAPI(title="Azure Workload Insights")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
