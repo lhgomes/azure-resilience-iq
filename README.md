@@ -1,4 +1,4 @@
-# Azure Workload Graph
+# Azure Workload Insights
 
 A full-stack application for visualizing and analyzing Azure workloads using Azure Resource Graph and LLM-powered annotations.
 

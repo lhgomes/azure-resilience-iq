@@ -1,5 +1,5 @@
 """
-Centralized logging configuration for Azure Workload Graph backend.
+Centralized logging configuration for Azure Workload Insights backend.
 
 This module provides a unified logging setup that:
 - Loads log level from config file (app_config.yaml)
