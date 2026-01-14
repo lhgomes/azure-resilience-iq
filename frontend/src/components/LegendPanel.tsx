@@ -47,26 +47,30 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
 
       <div style={{ fontSize: 12, lineHeight: 1.6 }}>
         <div style={{ marginBottom: 12 }}>
-          <strong>Node Header Colors (Criticality):</strong>
+          <strong>Resilience Score Colors:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#b7b8baff" }}>⬤ Gray: Azure-managed (no APRL)</span>
+              <span style={{ color: "#22c55e" }}>⬤ Green: 0.90-1.00 (Excellent)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#22c55e" }}>⬤ Green: Low (1-2/10)</span>
+              <span style={{ color: "#eab308" }}>⬤ Yellow: 0.75-0.89 (Good)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#84cc16" }}>⬤ Lime: Low-Med (3-4/10)</span>
+              <span style={{ color: "#f97316" }}>⬤ Orange: 0.50-0.74 (Fair)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#eab308" }}>⬤ Yellow: Medium (5-6/10)</span>
+              <span style={{ color: "#ef4444" }}>⬤ Red: &lt;0.50 (Poor)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#f97316" }}>⬤ Orange: High (7-8/10)</span>
+              <span style={{ color: "#b7b8baff" }}>⬤ Gray: No APRL coverage</span>
             </div>
-            <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#ef4444" }}>⬤ Red: Critical (9-10/10)</span>
-            </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <strong>Node Criticality (LLM-assigned):</strong>
+          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
+            Resources are scored 1-10 by LLM analysis. Higher criticality increases weight in resilience calculations.
           </div>
         </div>
 
@@ -91,8 +95,8 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         <div style={{ marginBottom: 12 }}>
           <strong>Node Metrics:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
-            <div style={{ marginBottom: 3 }}>◎ Confidence (AI analysis)</div>
-            <div style={{ marginBottom: 3 }}>⚡ Criticality score (x/10)</div>
+            <div style={{ marginBottom: 3 }}>◎ Confidence (AI analysis quality)</div>
+            <div style={{ marginBottom: 3 }}>⚡ Criticality score (1-10)</div>
           </div>
         </div>
 
@@ -122,10 +126,25 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
           </div>
         </div>
 
+        <div style={{ marginBottom: 12 }}>
+          <strong>Resilience Scoring:</strong>
+          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
+            <div style={{ marginBottom: 4 }}>
+              Score = Passed Checks Weight / Total Checks Weight
+            </div>
+            <div style={{ marginBottom: 4 }}>
+              Weight = Element Weight × Category Weight × Impact Weight
+            </div>
+            <div>
+              Configured in app_config.yaml. See README for details.
+            </div>
+          </div>
+        </div>
+
         <div style={{ marginBottom: 0 }}>
           <strong>APRL Coverage:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
-            Services covered by Azure Proactive Resiliency Library show criticality colors. Non-covered services (Azure-managed) show gray.
+            Services covered by Azure Proactive Resiliency Library show resilience score colors. Non-covered services (Azure-managed) show gray.
           </div>
         </div>
       </div>
