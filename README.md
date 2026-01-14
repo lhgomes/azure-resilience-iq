@@ -110,7 +110,23 @@ This creates:
 
 Data is organized by subscription ID. To use a different base directory, set `AZURE_WORKLOAD_GRAPH_DATA_DIR`.
 
-### Step 2: Run LLM Annotations (Optional)
+### Step 2: Run Resilience Evaluations
+
+Evaluate resources against Azure Proactive Resiliency Library (APRL) recommendations:
+
+```bash
+python -m app.resilience.run --subscription-id <your-subscription-id>
+```
+
+This analyzes resources and generates:
+- Resilience recommendations per resource
+- Category-based evaluations (Availability, Data, Disaster Recovery, etc.)
+- Pass/fail status for each recommendation
+- Resilience scores and weighted metrics
+
+Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
+
+### Step 3: Run LLM Annotations (Optional)
 
 If you configured Azure OpenAI and set `USE_REAL_LLM=true`, run the LLM annotator:
 
@@ -126,7 +142,7 @@ This analyzes the collected resources and generates:
 
 Results are saved to `data/{subscription-id}/llm_annotations.json`.
 
-### Step 3: Start the Backend Server
+### Step 4: Start the Backend Server
 
 Run the FastAPI backend:
 
@@ -141,7 +157,7 @@ The backend API will be available at `http://localhost:8000`.
 curl http://localhost:8000/health
 ```
 
-### Step 4: Start the Frontend
+### Step 5: Start the Frontend
 
 In a new terminal:
 
@@ -163,20 +179,26 @@ azure-workload-graph/
 │   │   ├── collector/        # Azure Resource Graph collector
 │   │   ├── graph/            # Graph building and modeling
 │   │   ├── llm/              # LLM annotation engine
+│   │   ├── resilience/       # Resilience evaluation and APRL integration
 │   │   ├── relationships/    # Resource relationship extraction
-│   │   ├── services/         # Business logic (workloads, subscriptions)
+│   │   ├── routes/           # API route handlers (resilience, recommendations)
+│   │   ├── services/         # Business logic (workloads, subscriptions, recommendations)
 │   │   ├── storage/          # Data persistence layer
 │   │   ├── intent/           # User overrides and manual edges
+│   │   ├── config.py         # Configuration utilities
+│   │   ├── settings.py       # Settings and environment configuration
 │   │   └── main.py           # FastAPI application
 │   ├── data/
 │   │   └── {subscription-id}/
-│   │       ├── resources.json        # Collected Azure resources
-│   │       ├── edges.json            # Multi-source dependency edges
-│   │       ├── llm_annotations.json  # LLM-generated annotations
-│   │       ├── node_overrides.json   # User node customizations
-│   │       ├── edge_overrides.json   # Edge accept/reject decisions
-│   │       ├── manual_edges.json     # User-created edges
-│   │       └── groups.json           # Node groupings
+│   │       ├── resources.json               # Collected Azure resources
+│   │       ├── edges.json                  # Multi-source dependency edges
+│   │       ├── llm_annotations.json        # LLM-generated annotations
+│   │       ├── resilience_evaluations.json # Resilience scores and recommendations
+│   │       ├── node_overrides.json         # User node customizations
+│   │       ├── edge_overrides.json         # Edge accept/reject decisions
+│   │       ├── manual_edges.json           # User-created edges
+│   │       ├── resilience_overrides.json   # Resilience evaluation overrides
+│   │       └── groups.json                 # Node groupings
 │   ├── pyproject.toml        # Python dependencies
 │   └── .env                  # Environment configuration
 ├── frontend/
@@ -237,6 +259,124 @@ The LLM annotator uses signal confidence to:
 - Apply caution for lower-confidence edges (<0.7)
 - Justify dependency assessments based on signal evidence
 
+## Scoring & Resilience Calculation
+
+The application uses a **hierarchical, weighted scoring model** to evaluate workload resilience against Azure best practices:
+
+### Resilience Score Overview
+
+The resilience score represents the overall health of a workload on a scale of **0.0 to 1.0** (0-100%), calculated by aggregating evaluation results from the Azure Proactive Resiliency Library (APRL) against each resource.
+
+### Three-Factor Scoring Formula
+
+Each individual recommendation check is weighted by three independent factors:
+
+$$\text{Check Weight} = \text{Element Weight} \times \text{Category Weight} \times \text{Impact Weight}$$
+
+**Score** is calculated as the ratio of weighted passed checks to total weighted checks:
+
+$$\text{Resilience Score} = \frac{\sum_{\text{passed}} \text{Check Weight}}{\sum_{\text{all}} \text{Check Weight}}$$
+
+### Scoring Factors
+
+#### 1. Element Weight (Criticality)
+- **Range**: 0.0 to 1.0+ (derived from LLM criticality scoring)
+- **Purpose**: Emphasizes recommendations for critical resources
+- **Default**: 1.0 for all resources
+- **Customization**: Set via LLM annotations or manual node overrides
+
+#### 2. Category Weight
+Weight distribution across 6 resilience dimensions (configured in `app_config.yaml`):
+
+| Category | Default Weight | Purpose |
+|---|---|---|
+| High Availability | 0.30 | Redundancy, failover, and uptime |
+| Disaster Recovery | 0.20 | Backup and recovery procedures |
+| Scalability | 0.20 | Auto-scaling and capacity planning |
+| Monitoring & Alerting | 0.15 | Observability and incident response |
+| Security | 0.10 | Access control and encryption |
+| Other Best Practices | 0.05 | General recommendations |
+
+**Note**: Weights sum to 1.0 and are auto-normalized if configured otherwise.
+
+#### 3. Impact Weight
+Severity level of each individual recommendation (configured in `app_config.yaml`):
+
+| Impact | Default Weight | Meaning |
+|---|---|---|
+| High | 0.6 | Critical for production readiness |
+| Medium | 0.3 | Important for operational stability |
+| Low | 0.1 | Minor improvements and optimization |
+
+### Workload-Level Score
+
+The overall resilience score aggregates resource-level scores using element weights:
+
+$$\text{Workload Score} = \frac{\sum_{\text{passed}} \text{Check Weight}}{\sum_{\text{all}} \text{Check Weight}}$$
+
+Where each check weight incorporates its resource's criticality (element weight).
+
+### Category Breakdown
+
+The score is also decomposed by resilience category for targeted improvement:
+
+$$\text{Category Score} = \frac{\sum_{\text{passed, category}} \text{Weighted Checks}}{\sum_{\text{all, category}} \text{Weighted Checks}}$$
+
+### Example Calculation
+
+Consider a workload with 2 resources:
+
+**Resource 1** (Virtual Machine - Criticality: 0.8):
+- 1 High-Impact HighAvailability check: PASS
+  - Weight: 0.8 × 0.30 × 0.6 = 0.144 ✓ (passed)
+- 1 Medium-Impact Security check: FAIL
+  - Weight: 0.8 × 0.10 × 0.3 = 0.024 ✗ (failed)
+
+**Resource 2** (Database - Criticality: 1.0):
+- 1 High-Impact DisasterRecovery check: PASS
+  - Weight: 1.0 × 0.20 × 0.6 = 0.120 ✓ (passed)
+- 1 Low-Impact Monitoring check: PASS
+  - Weight: 1.0 × 0.15 × 0.1 = 0.015 ✓ (passed)
+
+**Workload Score Calculation**:
+- Total Passed Weight: 0.144 + 0.120 + 0.015 = 0.279
+- Total Weight: 0.144 + 0.024 + 0.120 + 0.015 = 0.303
+- **Workload Score**: 0.279 / 0.303 = **0.92 (92%)**
+
+### Score Interpretation
+
+| Score Range | Status | Interpretation |
+|---|---|---|
+| 0.90 - 1.00 | 🟢 Excellent | Strong resilience posture |
+| 0.75 - 0.89 | 🟡 Good | Generally healthy, address medium/high items |
+| 0.50 - 0.74 | 🟠 Fair | Needs attention, prioritize high-impact items |
+| < 0.50 | 🔴 Poor | Significant resilience gaps |
+
+### Customizing Scoring Weights
+
+Weights are configurable in `backend/config/app_config.yaml`:
+
+```yaml
+resilience:
+  category_weights:
+    "HighAvailability": 0.30
+    "DisasterRecovery": 0.20
+    "Scalability": 0.20
+    "MonitoringAndAlerting": 0.15
+    "Security": 0.10
+    "OtherBestPractices": 0.05
+
+  impact_weights:
+    "High": 0.6
+    "Medium": 0.3
+    "Low": 0.1
+```
+
+After modifying:
+1. Restart the API server: `uvicorn app.main:app --reload`
+2. Re-run resilience evaluations: `python -m app.resilience.run --subscription-id <id>`
+3. Scores will recalculate automatically in the frontend
+
 ## API Endpoints
 
 The backend provides the following main endpoints:
@@ -245,10 +385,13 @@ The backend provides the following main endpoints:
 - `GET /health` - Health check
 - `GET /api/subscriptions` - List available subscriptions
 - `GET /api/subscriptions/{subscription_id}/graph` - Get workload graph
+- `GET /api/subscriptions/{subscription_id}/reviews` - Get review inbox
 
 ### Node Management
 - `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer, criticality_score)
+- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Update node criticality score
 - `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}` - Remove node override
+- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Delete criticality override
 
 ### Edge Management
 - `POST /api/subscriptions/{subscription_id}/edges` - Create manual edge
@@ -258,11 +401,30 @@ The backend provides the following main endpoints:
 - `DELETE /api/subscriptions/{subscription_id}/edges/{edge_id}` - Delete edge
 
 ### Group Management
+- `GET /api/subscriptions/{subscription_id}/groups` - List groups
 - `POST /api/subscriptions/{subscription_id}/groups` - Create a new group
 - `PATCH /api/subscriptions/{subscription_id}/groups/{group_id}` - Update group name
 - `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}` - Delete a group
 - `POST /api/subscriptions/{subscription_id}/groups/{group_id}/nodes` - Add node to group
 - `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
+
+### Resilience & Recommendations Endpoints
+- `GET /api/resilience/health` - Resilience module health check
+- `GET /api/resilience/rules` - Get all resilience rules (with optional filtering by resource_type and category)
+- `GET /api/resilience/evaluate/{subscription_id}` - Get resilience evaluations for subscription
+- `GET /api/resilience/evaluate/{subscription_id}/resource/{resource_id}` - Get resilience evaluation for specific resource
+- `POST /api/resilience/evaluate/{subscription_id}/refresh` - Refresh resilience evaluations
+- `GET /api/resilience/weights` - Get resilience category weights
+- `GET /api/resilience/categories` - Get available resilience categories
+- `GET /api/resilience/evaluate/{subscription_id}/summary` - Get resilience summary
+- `GET /api/resilience/{subscription_id}/overrides` - List resilience evaluation overrides
+- `POST /api/resilience/{subscription_id}/overrides` - Create resilience override
+- `DELETE /api/resilience/{subscription_id}/overrides` - Delete resilience override
+- `GET /api/resilience/{subscription_id}/overrides/check` - Check if resource has overrides
+- `GET /api/{subscription_id}/recommendations` - Get unified recommendations (WARA + resilience)
+- `GET /api/{subscription_id}/resources/{resource_id}/recommendations` - Get recommendations for specific resource
+- `GET /api/{subscription_id}/recommendations/by-category/{category}` - Get recommendations by category
+- `GET /api/{subscription_id}/recommendations/summary` - Get recommendations summary
 
 ## Development Workflow
 
@@ -281,13 +443,15 @@ The backend provides the following main endpoints:
    npm run dev
    ```
 
-3. **Terminal 3 - Data Collection/LLM** (as needed):
+3. **Terminal 3 - Data Collection/Analysis** (as needed):
    ```bash
    cd backend
    source .venv/bin/activate
    # Collect resources
    python -m app.collector.run --subscription-id <your-subscription-id>
-   # Run LLM annotations
+   # Run resilience evaluations
+   python -m app.resilience.run --subscription-id <your-subscription-id>
+   # Run LLM annotations (optional)
    python -m app.llm.run --subscription-id <your-subscription-id>
    ```
 

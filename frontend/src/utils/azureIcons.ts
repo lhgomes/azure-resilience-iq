@@ -59,25 +59,3 @@ export const getAzureIconSemantic = (
 ): string => {
   return resolveAzureIcon(category, serviceName, resourceType);
 };
-
-export const getAzureIconColor = (resourceType: string): string => {
-  // Return suggested icon color for each resource type
-  const colorMap: Record<string, string> = {
-    vm: "#0078d4",
-    aks: "#0078d4",
-    vnet: "#50e6ff",
-    subnet: "#b3e0ff",
-    nsg: "#5EA0EF",
-    pip: "#5EA0EF",
-    nic: "#5EA0EF",
-    network: "#5EA0EF",
-    private_endpoint: "#7c7c7c",
-    storage: "#00bcf2",
-    disk: "#00bcf2",
-    sql: "#00bcf2",
-    keyvault: "#00bcf2",
-    resource: "#ffffff",
-  };
-
-  return colorMap[resourceType.toLowerCase()] || "#ffffff";
-};

@@ -1,23 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from "react";
 import * as XLSX from "xlsx";
-import { canonicalTypeForNode, normalizeTypeString } from "../domain/graphView";
-import { saveOverride, getOverrides, deleteOverride, getCheckOverride } from "../api/resilience";
+import { canonicalTypeForNode, normalizeTypeString, type ViewLevel } from "../domain/graphView";
+import { saveOverride, getOverrides, deleteOverride, getCheckOverride, type ResilienceCheck } from "../api/resilience";
 import { calculateResilienceScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
-interface ResilienceCheck {
-  status: "pass" | "fail";
-  description: string;
-  category: string;
-  impact: "High" | "Medium" | "Low";
-  criticality_weight: number;
-  recommendation_id: string;
-  long_description?: string;
-  potential_benefits?: string;
-  learn_more?: Array<{ name: string; url: string }>;
-  validation_source?: string;
-  contribution_percent?: number;  // Dynamically calculated % contribution to filtered view
-  impact_weight?: number;  // Impact weight (0.1, 0.3, 0.5)
-  is_critical?: boolean;  // True if High impact
-}
 
 interface ResilienceEvaluation {
   resource_id: string;
@@ -61,11 +46,7 @@ interface ResilienceSummaryProps {
   };
   overrides?: Record<string, ResilienceOverride>;
   viewLevel?: ViewLevel;
-  resourceGroupFilter?: Set<string>;
-  serviceFilter?: Set<string>;
 }
-
-type ViewLevel = "overview" | "network" | "full";
 
 const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
   const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};

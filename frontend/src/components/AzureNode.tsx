@@ -6,7 +6,7 @@ import type { AiTooltip } from "../domain/graphView";
 import ResilienceCircle from "./ResilienceCircle";
 
 // Weight icon component - uses Power icon to represent element importance
-const WeightIcon: React.FC<{ size?: number; color?: string }> = ({ size = 14 }) => (
+const WeightIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
   <img 
     src="/Icons/general/10824-icon-service-Power.svg" 
     alt="weight" 
@@ -15,10 +15,10 @@ const WeightIcon: React.FC<{ size?: number; color?: string }> = ({ size = 14 }) 
 );
 
 // Confidence icon component
-const ConfidenceIcon: React.FC<{ size?: number; color?: string }> = ({ size = 14, color = "#6b7280" }) => (
+const ConfidenceIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="12" cy="12" r="10" stroke={color} strokeWidth="1.5" />
-    <circle cx="12" cy="12" r="3" fill={color} />
+    <circle cx="12" cy="12" r="10" stroke="#6b7280" strokeWidth="1.5" />
+    <circle cx="12" cy="12" r="3" fill="#6b7280" />
   </svg>
 );
 
