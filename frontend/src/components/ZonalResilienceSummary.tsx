@@ -35,6 +35,7 @@ interface ResilienceEvaluations {
 interface ZonalResilienceSummaryProps {
   data: ZonalResilienceResponse;
   graphData?: {
+    nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
     llm_annotations?: {
       nodes?: Array<{
         node_id: string;
@@ -42,6 +43,8 @@ interface ZonalResilienceSummaryProps {
       }>;
     };
   };
+  resourceGroupFilter?: Set<string>;
+  serviceFilter?: Set<string>;
 }
 
 // Score donut visualization - matches ResilienceSummary style
@@ -272,7 +275,7 @@ const ResourceRow: React.FC<{
 };
 
 // Main Component
-const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, graphData }) => {
+const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter }) => {
   const [sortBy, setSortBy] = useState<"name" | "pattern" | "compliance">("name");
   const [filterPattern, setFilterPattern] = useState<DeploymentPattern | "all">("all");
   const [evaluations, setEvaluations] = useState<ResilienceEvaluations>({});
@@ -384,9 +387,54 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
     };
   };
 
+  // Helper to get resource group from resource ID
+  const getResourceGroup = (resourceId: string): string => {
+    const parts = resourceId.split("/").filter(p => p);
+    const partsLower = parts.map(p => p.toLowerCase());
+    const rgIndex = partsLower.indexOf("resourcegroups");
+    if (rgIndex !== -1 && rgIndex + 1 < parts.length) {
+      return String(parts[rgIndex + 1]).toLowerCase();
+    }
+    return "";
+  };
+
+  // Helper to get service type from resource
+  const getServiceType = (resourceId: string, resourceType: string): string => {
+    // Try to get from graph nodes first
+    const node = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === resourceId.toLowerCase());
+    if (node?.type) {
+      return String(node.type).toLowerCase();
+    }
+    // Fallback to resource type normalization
+    return String(resourceType).split("/").pop()?.toLowerCase() || "";
+  };
+
+  // Apply filters from sidebar (resource groups and services)
+  const sidebarFiltered = useMemo(() => {
+    return data.resources.filter((resource) => {
+      // Resource group filter
+      if (resourceGroupFilter && resourceGroupFilter.size > 0) {
+        const rg = getResourceGroup(resource.resource_id);
+        if (rg && !resourceGroupFilter.has(rg)) {
+          return false;
+        }
+      }
+
+      // Service filter
+      if (serviceFilter && serviceFilter.size > 0) {
+        const serviceType = getServiceType(resource.resource_id, resource.resource_type);
+        if (serviceType && !serviceFilter.has(serviceType)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [data.resources, resourceGroupFilter, serviceFilter, graphData?.nodes]);
+
   // Filter and sort resources
   const filteredAndSorted = useMemo(() => {
-    let filtered = data.resources;
+    let filtered = sidebarFiltered;
 
     // Apply pattern filter
     if (filterPattern !== "all") {
@@ -410,10 +458,10 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
           return 0;
       }
     });
-  }, [data.resources, sortBy, filterPattern]);
+  }, [sidebarFiltered, sortBy, filterPattern]);
 
-  // Use provided summary or calculate from resources with weighted scoring
-  const summary = data.summary || calculateSummary(data.resources, annotationMap);
+  // Use provided summary or calculate from filtered resources with weighted scoring
+  const summary = data.summary || calculateSummary(sidebarFiltered, annotationMap);
 
   return (
     <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
