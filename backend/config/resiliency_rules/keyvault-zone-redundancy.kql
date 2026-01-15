@@ -1,0 +1,12 @@
+// Azure Resource Graph Query
+// Find Key Vaults in zone-enabled regions without proper zone redundancy configuration
+// Note: Key Vault Premium SKU automatically enables zone redundancy in supported regions,
+// but we check that vaults are deployed in zone-capable regions and have Premium SKU for ZRS benefits
+Resources
+| where type =~ 'Microsoft.KeyVault/vaults'
+| where location in~ ("australiaeast", "brazilsouth", "canadacentral", "centralindia", "centralus", "eastasia", "eastus", "eastus2", "francecentral", "germanywestcentral", "israelcentral", "italynorth", "japaneast", "japanwest", "koreacentral", "mexicocentral", "newzealandnorth", "northeurope", "norwayeast", "polandcentral", "qatarcentral", "southafricanorth", "southcentralus", "southeastasia", "spaincentral", "swedencentral", "switzerlandnorth", "uaenorth", "uksouth", "westeurope", "westus2", "westus3", "usgovvirginia", "chinanorth3")
+| where properties.sku.name !~ "Premium"
+| project recommendationId="keyvault-zone-redundancy-001", name, id, tags,
+    param1 = strcat("Current SKU: ", properties.sku.name),
+    param2 = "Recommended: Upgrade to Premium SKU for zone redundancy and HSM-backed keys",
+    param3 = strcat("Location: ", location)

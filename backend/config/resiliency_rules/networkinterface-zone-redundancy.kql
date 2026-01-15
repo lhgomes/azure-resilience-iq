@@ -1,0 +1,10 @@
+// Check network interfaces for zone configuration
+// NICs should be zone-pinned to same zone as VM
+Resources
+| where type =~ 'microsoft.network/networkinterfaces'
+| extend
+    isZonePinned = isnotnull(properties.zones) and array_length(properties.zones) > 0
+| project recommendationId="networkinterface-zone-redundancy-001", name, id, tags,
+    param1 = iff(isZonePinned, "Zone-pinned", "Not zone-pinned"),
+    param2 = iff(isZonePinned, "Current: NIC is zone-pinned", "Recommended: Pin NIC to zone"),
+    param3 = strcat("Location: ", location)
