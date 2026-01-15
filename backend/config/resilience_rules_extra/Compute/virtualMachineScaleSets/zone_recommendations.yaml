@@ -1,0 +1,52 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Compute/virtualMachineScaleSets
+# Category: HighAvailability
+# Description: Recommendations for Azure Virtual Machine Scale Sets zone deployment
+
+patterns:
+  single_zone:
+    description: "Configure VMSS for zone-spanning deployment"
+    recommendationControl: HighAvailability
+    recommendationImpact: High
+    longDescription: |
+      VMSS is currently deployed in a single zone. Enable zone spanning to distribute instances
+      across multiple availability zones for improved fault tolerance.
+    potentialBenefits: "99.99% SLA, automatic failover, zone fault tolerance"
+    learnMoreLink:
+      - name: "VMSS across availability zones"
+        url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-use-availability-zones"
+  
+  multi_zone_2:
+    description: "Add third availability zone to VMSS"
+    recommendationControl: HighAvailability
+    recommendationImpact: Medium
+    longDescription: |
+      VMSS spans 2 zones. Configure distribution across all 3 zones for maximum resilience
+      against complete zone failure.
+    potentialBenefits: "Full zone redundancy, better failure tolerance"
+    learnMoreLink:
+      - name: "VMSS zones configuration"
+        url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-use-availability-zones"
+  
+  multi_zone_3plus:
+    description: "VMSS configured for multi-zone resilience"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      VMSS is properly configured to span availability zones, providing automatic distribution
+      and fault tolerance across zones.
+    potentialBenefits: "Maximum availability for scale set workloads"
+    learnMoreLink:
+      - name: "VMSS orchestration modes"
+        url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes"
+  
+  zone_redundant:
+    description: "VMSS has zone redundancy enabled"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Scale set uses zone-redundant configuration for automatic cross-zone distribution.
+    potentialBenefits: "Automatic zone distribution"
+    learnMoreLink:
+      - name: "VMSS reliability"
+        url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machine-scale-sets"

@@ -1,0 +1,28 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.DocumentDB/databaseAccounts
+# Category: HighAvailability
+# Description: Recommendations for Azure Cosmos DB zone deployment
+
+patterns:
+  single_zone:
+    description: "Enable multi-region writes with availability zones"
+    recommendationControl: HighAvailability
+    recommendationImpact: High
+    longDescription: |
+      Cosmos DB should be configured with multiple regions and availability zones enabled
+      for maximum resilience and global distribution.
+    potentialBenefits: "99.999% availability, automatic failover"
+    learnMoreLink:
+      - name: "Cosmos DB high availability"
+        url: "https://learn.microsoft.com/azure/cosmos-db/high-availability"
+  
+  zone_redundant:
+    description: "Cosmos DB has availability zones enabled"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Cosmos DB is configured with availability zones for zone-level resilience.
+    potentialBenefits: "Zone fault tolerance in all regions"
+    learnMoreLink:
+      - name: "Cosmos DB availability zones"
+        url: "https://learn.microsoft.com/azure/cosmos-db/high-availability#availability-zone-support"

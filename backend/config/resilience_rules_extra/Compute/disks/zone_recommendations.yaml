@@ -1,0 +1,53 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Compute/disks
+# Category: HighAvailability
+# Description: Recommendations for Azure Managed Disks zone deployment
+
+- description: Use Azure Disks with Zone Redundant Storage for higher resiliency and availability
+  aprlGuid: fa0cf4f5-0b21-47b7-89a9-ee936f193ce1
+  recommendationTypeId: d4102c0f-ebe3-4b22-8fe0-e488866a87af
+  recommendationControl: HighAvailability
+  recommendationImpact: Medium
+  recommendationResourceType: Microsoft.Compute/disks
+  recommendationMetadataState: Active
+  longDescription: |
+    Azure disks offers a zone-redundant storage (ZRS) option for workloads that need to be resilient to an entire 
+    zone being down. Due to the cross-zone data replication, ZRS disks have higher write latency when compared to 
+    the locally-redundant option (LRS), so make sure to benchmark your disks.
+  potentialBenefits: Enhanced Disk resilience to failures
+  pgVerified: true
+  automationAvailable: true
+  tags: []
+  learnMoreLink:
+    - name: Redundancy options for managed disks
+      url: "https://aka.ms/zrsdisksdoc"
+
+---
+# Zone Pattern Mappings
+
+patterns:
+  single_zone:
+    description: "Use Zone-Redundant Storage (ZRS) for managed disks"
+    aprlGuid: "fa0cf4f5-0b21-47b7-89a9-ee936f193ce1"
+    recommendationControl: HighAvailability
+    recommendationImpact: Medium
+    longDescription: |
+      Managed disk is zone-pinned (LRS). For critical workloads, use ZRS disks which replicate
+      data synchronously across 3 availability zones. Note: ZRS has slightly higher write latency.
+    potentialBenefits: "Protection against zone failures, 99.9999999999% durability"
+    learnMoreLink:
+      - name: "Redundancy options for managed disks"
+        url: "https://learn.microsoft.com/azure/virtual-machines/disks-redundancy"
+      - name: "Zone-redundant storage for managed disks"
+        url: "https://aka.ms/zrsdisksdoc"
+  
+  zone_redundant:
+    description: "Disk uses zone-redundant storage"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Disk is configured with ZRS, providing automatic replication across availability zones.
+    potentialBenefits: "Automatic zone-level fault tolerance"
+    learnMoreLink:
+      - name: "ZRS managed disks"
+        url: "https://learn.microsoft.com/azure/virtual-machines/disks-redundancy#zone-redundant-storage-for-managed-disks"

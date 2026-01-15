@@ -1,0 +1,233 @@
+# Azure Availability Zone Support Configuration
+#
+# This file defines which Azure resource types support availability zones
+# and which Azure regions provide availability zone infrastructure.
+# 
+# Sources:
+# - https://learn.microsoft.com/azure/reliability/availability-zones-service-support
+# - https://learn.microsoft.com/azure/reliability/regions-list
+# - https://azure.microsoft.com/explore/global-infrastructure/availability-zones/
+#
+# Last Updated: 2026-01-15
+# Update Frequency: Review quarterly or when deploying new Azure services
+#
+# Categories:
+# - zone_enabled_regions: Azure regions that support availability zones
+# - zone_redundant_by_default: Services that are automatically zone-redundant
+# - zone_support_available: Services that can be configured for zone deployment
+# - no_zone_support: Services that do not support availability zones (N/A)
+
+# Azure regions that support availability zones (as of January 2026)
+# Reference: https://learn.microsoft.com/azure/reliability/regions-list
+# Note: This list is updated as Microsoft enables zones in new regions
+zone_enabled_regions:
+  # Americas
+  - brazilsouth
+  - canadacentral
+  - centralus
+  - chilecentral
+  - eastus
+  - eastus2
+  - mexicocentral
+  - southcentralus
+  - westus2
+  - westus3
+  
+  # Europe
+  - austriaeast
+  - belgiumcentral
+  - francecentral
+  - germanynorth
+  - germanywestcentral
+  - italynorth
+  - northeurope
+  - norwayeast
+  - polandcentral
+  - spaincentral
+  - swedencentral
+  - switzerlandnorth
+  - uksouth
+  - westeurope
+  
+  # Asia Pacific
+  - australiaeast
+  - centralindia
+  - eastasia
+  - indonesiacentral
+  - japaneast
+  - japanwest
+  - koreacentral
+  - malaysiawest
+  - newzealandnorth
+  - southeastasia
+  
+  # Middle East & Africa
+  - israelcentral
+  - qatarcentral
+  - southafricanorth
+  - uaenorth
+
+# Resource types that do NOT support availability zones
+# These are typically management plane resources, metadata, or global services
+no_zone_support:
+  
+  # Compute - Management & Metadata
+  - microsoft.compute/sshpublickeys
+  - microsoft.compute/images
+  - microsoft.compute/galleries
+  - microsoft.compute/galleries/images
+  - microsoft.compute/galleries/images/versions
+  - microsoft.compute/disksnapshots
+  - microsoft.compute/restorepointcollections
+  
+  # DevTest Labs - All resources are non-zonal
+  - microsoft.devtestlab/schedules
+  - microsoft.devtestlab/labs
+  - microsoft.devtestlab/labs/virtualmachines
+  - microsoft.devtestlab/labs/servicerunners
+  
+  # Network - Management, DNS, and Global Services
+  - microsoft.network/networkwatchers
+  - microsoft.network/networkwatchers/flowlogs
+  - microsoft.network/networkwatchers/connectionmonitors
+  - microsoft.network/dnszones
+  - microsoft.network/privatednszones
+  - microsoft.network/trafficmanagerprofiles
+  - microsoft.network/frontdoors
+  - microsoft.network/frontdoorwebapplicationfirewallpolicies
+  - microsoft.network/networksecuritygroups  # NSGs are regional, not zonal
+  - microsoft.network/routetables
+  - microsoft.network/ddosprotectionplans
+  
+  # Monitoring & Insights
+  - microsoft.insights/actiongroups
+  - microsoft.insights/activitylogalerts
+  - microsoft.insights/metricalerts
+  - microsoft.insights/scheduledqueryrules
+  - microsoft.insights/components
+  - microsoft.insights/workbooks
+  - microsoft.insights/webtests
+  - microsoft.insights/datacollectionrules
+  
+  # Operations Management
+  - microsoft.operationalinsights/workspaces
+  - microsoft.operationalinsights/querypacks
+  - microsoft.operationsmanagement/solutions
+  
+  # Security & Compliance
+  - microsoft.security/assessments
+  - microsoft.security/pricings
+  - microsoft.security/automations
+  - microsoft.securityinsights/alertrules
+  - microsoft.securityinsights/workspaces
+  
+  # Policy, Governance & Management
+  - microsoft.authorization/policyassignments
+  - microsoft.authorization/policydefinitions
+  - microsoft.authorization/policysetdefinitions
+  - microsoft.authorization/roleassignments
+  - microsoft.authorization/roledefinitions
+  - microsoft.management/managementgroups
+  - microsoft.resources/deployments
+  - microsoft.resources/tags
+  - microsoft.resources/resourcegroups
+  - microsoft.blueprints/blueprints
+  - microsoft.blueprints/blueprintassignments
+  
+  # Identity & Access
+  - microsoft.aad/domainservices
+  - microsoft.managedidentity/userassignedidentities
+  - microsoft.managedidentity/identities
+  
+  # Subscription-level
+  - microsoft.subscription/subscriptions
+  
+  # Cost Management
+  - microsoft.costmanagement/budgets
+  - microsoft.costmanagement/exports
+  - microsoft.consumption/budgets
+  
+  # Automation - Child resources
+  - microsoft.automation/automationaccounts/runbooks
+  - microsoft.automation/automationaccounts/webhooks
+  - microsoft.automation/automationaccounts/configurations
+  
+  # Key Vault - Child resources (vault itself supports zones)
+  - microsoft.keyvault/vaults/secrets
+  - microsoft.keyvault/vaults/keys
+  - microsoft.keyvault/vaults/certificates
+  - microsoft.keyvault/managedhsms/keys
+  
+  # API Management - Child resources
+  - microsoft.apimanagement/service/apis
+  - microsoft.apimanagement/service/products
+  - microsoft.apimanagement/service/backends
+  
+  # Logic Apps - Integration Account resources
+  - microsoft.logic/integrationaccounts/assemblies
+  - microsoft.logic/integrationaccounts/maps
+  - microsoft.logic/integrationaccounts/schemas
+  - microsoft.logic/integrationaccounts/partners
+  - microsoft.logic/integrationaccounts/agreements
+  
+  # Web - App Service Plans (individual apps don't have zone config)
+  - microsoft.web/sites/slots
+  - microsoft.web/sites/config
+  
+  # Backup & Recovery
+  - microsoft.recoveryservices/vaults/backuppolicies
+  - microsoft.recoveryservices/vaults/backupjobs
+  
+  # Event Grid - System Topics
+  - microsoft.eventgrid/systemtopics
+  - microsoft.eventgrid/domains/topics
+  
+  # Service Bus - Child resources
+  - microsoft.servicebus/namespaces/queues
+  - microsoft.servicebus/namespaces/topics
+  
+  # Container Registry - Replications (parent registry supports zones)
+  - microsoft.containerregistry/registries/replications
+  - microsoft.containerregistry/registries/webhooks
+
+# Resource types that are zone-redundant by default (when in zone-enabled regions)
+# These don't need explicit zone configuration
+zone_redundant_by_default:
+  - microsoft.sql/servers  # Azure SQL logical server
+  - microsoft.cdn/profiles
+  - microsoft.cdn/profiles/endpoints
+
+# Known zone-supporting resource types (partial list for reference)
+# These can be configured with zones and should be checked
+zone_support_available:
+  - microsoft.compute/virtualmachines
+  - microsoft.compute/virtualmachinescalesets
+  - microsoft.compute/disks
+  - microsoft.network/publicipaddresses
+  - microsoft.network/loadbalancers
+  - microsoft.network/applicationgateways
+  - microsoft.network/virtualnetworkgateways
+  - microsoft.network/virtualnetworks
+  - microsoft.network/networkinterfaces
+  - microsoft.storage/storageaccounts
+  - microsoft.sql/managedinstances
+  - microsoft.dbforpostgresql/flexibleservers
+  - microsoft.dbformysql/flexibleservers
+  - microsoft.containerservice/managedclusters
+  - microsoft.servicebus/namespaces
+  - microsoft.eventhub/namespaces
+  - microsoft.keyvault/vaults
+  - microsoft.cognitiveservices/accounts
+
+# SKU patterns that indicate zone redundancy
+zone_redundant_sku_patterns:
+  - ".*ZRS$"        # Zone-Redundant Storage
+  - ".*GZRS$"       # Geo-Zone-Redundant Storage
+  - ".*_ZoneRedundant$"
+  - "Premium_ZRS$"
+  - "Standard_ZRS$"
+
+# Property patterns that indicate zone redundancy
+zone_redundant_properties:
+  - "zoneRedundant"
+  - "availabilityZones"

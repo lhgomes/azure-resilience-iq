@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import { canonicalTypeForNode, normalizeTypeString, type ViewLevel } from "../domain/graphView";
-import { saveOverride, getOverrides, deleteOverride, getCheckOverride, type ResilienceCheck } from "../api/resilience";
+import { saveOverride, getOverrides, deleteOverride, type ResilienceCheck } from "../api/resilience";
 import { calculateResilienceScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
 
 interface ResilienceEvaluation {
@@ -18,7 +18,7 @@ interface ResilienceOverride {
   status: "pass" | "fail";
   overridden_at?: string;
   overridden_by?: string;
-  check_uuid?: string;
+  resilience_check_id?: string;
 }
 
 interface LLMAnnotation {
@@ -46,22 +46,26 @@ interface ResilienceSummaryProps {
   };
   overrides?: Record<string, ResilienceOverride>;
   viewLevel?: ViewLevel;
+  resourceGroupFilter?: Set<string>;
+  serviceFilter?: Set<string>;
+  onOverrideSaved?: (override: ResilienceOverride) => void;
+  onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
 }
 
 const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
-  const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }> = {};
+  const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; resilience_check_id?: string }> = {};
   if (!overrides) return overrideMap;
 
-  Object.entries(overrides).forEach(([checkUuid, override]) => {
-    const key = `${override.resource_id}_${override.recommendation_id}`;
+  Object.entries(overrides).forEach(([resilience_check_id, override]) => {
     const validationSource = (override.overridden_by || "").toLowerCase() === "user"
       ? "User"
       : override.overridden_by || "";
 
-    overrideMap[key] = {
+    // Use resilience_check_id as the key instead of resource_id_recommendation_id
+    overrideMap[resilience_check_id] = {
       status: override.status,
       validation_source: validationSource,
-      check_uuid: checkUuid,
+      resilience_check_id: resilience_check_id,
     };
   });
 
@@ -217,6 +221,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   viewLevel,
   resourceGroupFilter,
   serviceFilter,
+  onOverrideSaved,
+  onOverrideDeleted,
 }) => {
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail">("fail");
@@ -227,7 +233,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const [filterImpact, setFilterImpact] = useState<string | null>(null);
   const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
   const [resourceFilter, setResourceFilter] = useState("");
-  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>>({});
+  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; resilience_check_id?: string }>>({});
 
   // Fetch weights from backend once and reuse across all calculations
   const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
@@ -254,28 +260,52 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     loadWeights();
   }, []);
 
-  // Apply overrides provided by parent (preferred path) or fetch when not provided
+  // Use ref to track initialization
+  const initializeRef = useRef(false);
+
+  // Keep local overrides in sync with parent-provided overrides
   useEffect(() => {
     if (overrides) {
       setUserOverrides(buildOverrideMap(overrides));
     }
   }, [overrides]);
 
+  // Load evaluations and overrides from localStorage on mount - single source of truth
   useEffect(() => {
-    if (!subscriptionId || overrides) return;
+    if (initializeRef.current) return;
+    initializeRef.current = true;
 
-    const loadOverrides = async () => {
+    if (!subscriptionId) return;
+
+    const loadFromStorage = async () => {
       try {
+        const storageKey = `resilience_${subscriptionId}`;
+        const stored = localStorage.getItem(storageKey);
+        
+        if (stored) {
+          const data = JSON.parse(stored);
+          if (data.overrides) {
+            setUserOverrides(buildOverrideMap(data.overrides));
+          }
+          return;
+        }
+
+        // No localStorage, fetch fresh from API
         const response = await getOverrides(subscriptionId);
         setUserOverrides(buildOverrideMap(response.overrides));
+        
+        // Save to localStorage
+        localStorage.setItem(storageKey, JSON.stringify({
+          overrides: response.overrides,
+          timestamp: new Date().toISOString(),
+        }));
       } catch (error) {
         console.error("Failed to load overrides:", error);
-        // Continue without overrides
       }
     };
 
-    loadOverrides();
-  }, [subscriptionId, overrides]);
+    loadFromStorage();
+  }, [subscriptionId]);
 
   // Create annotation lookup
   const annotationMap = useMemo(() => {
@@ -429,50 +459,13 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     }
   };
 
-  // Apply user overrides to ALL evaluations (not filtered by left-side drawer)
-  // Used for breakdown calculations (category, impact, service)
-  const allEvaluationsWithOverrides = useMemo(() => {
-    return Object.fromEntries(
-      Object.entries(evaluations).map(([resourceId, evaluation]: [string, any]) => {
-        const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
-          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
-          const override = userOverrides[overrideKey];
-          
-          if (override) {
-            return {
-              ...finding,
-              status: override.status,
-              validation_source: override.validation_source,
-            };
-          }
-          return finding;
-        });
-        
-        // Recalculate passed/failed counts
-        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
-        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
-        
-        return [
-          resourceId,
-          {
-            ...evaluation,
-            findings: evaluation.findings ? checksOrFindings : undefined,
-            checks: evaluation.checks ? checksOrFindings : undefined,
-            passed_checks: passed,
-            failed_checks: failed,
-            total_checks: checksOrFindings.length,
-          }
-        ];
-      })
-    );
-  }, [evaluations, userOverrides]);
-
-  // Apply user overrides to filtered evaluations (used for table display)
+  // Apply user overrides to filtered evaluations (used for all display)
   const evaluationsWithOverrides = useMemo(() => {
     return Object.fromEntries(
       filteredEvaluationEntries.map(([resourceId, evaluation]) => {
         const checksOrFindings = (evaluation.findings || evaluation.checks || []).map((finding: any) => {
-          const overrideKey = `${resourceId}_${finding.recommendation_id}`;
+          // Use resilience_check_id directly from the check object
+          const overrideKey = finding.resilience_check_id;
           const override = userOverrides[overrideKey];
           
           if (override) {
@@ -777,8 +770,14 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       checksOrFindings.forEach((finding: any) => {
         if (finding.validation_source) {
-          const val = (finding.validation_source || "").toLowerCase() === "user" ? "User" : finding.validation_source;
-          sources.add(val);
+          // Handle both string (legacy) and array (new format)
+          const sourceList = Array.isArray(finding.validation_source) 
+            ? finding.validation_source 
+            : [finding.validation_source];
+          sourceList.forEach((src: string) => {
+            const val = (src || "").toLowerCase() === "user" ? "User" : src;
+            sources.add(val);
+          });
         }
       });
     });
@@ -787,21 +786,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
 
   const filteredFindings = useMemo(() => {
     const normalizedResourceFilter = resourceFilter.trim().toLowerCase();
-    let findings = filteredEvaluationEntries.flatMap(([resourceId, evaluation]) => {
-      // Use findings if available, otherwise fall back to checks
+    // evaluationsWithOverrides already has overrides applied - no need to apply again
+    let findings = Object.entries(evaluationsWithOverrides).flatMap(([resourceId, evaluation]) => {
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       return checksOrFindings
         .map((f: any) => {
-          // Apply override status if exists
-          const overrideKey = `${resourceId}_${f.recommendation_id}`;
-          const override = userOverrides[overrideKey];
-          const currentStatus = override?.status || f.status;
-          const currentValidationSource = override?.validation_source || f.validation_source;
+          // Handle validation_source as either string (legacy) or array (new)
+          let valSource: string;
+          if (Array.isArray(f.validation_source)) {
+            valSource = f.validation_source.join(", ");
+          } else {
+            valSource = (f.validation_source || "").toLowerCase() === "user" ? "User" : f.validation_source || "";
+          }
           
-          const valSource = (currentValidationSource || "").toLowerCase() === "user" ? "User" : currentValidationSource;
           return {
             ...f,
-            status: currentStatus,
             validation_source: valSource,
             resourceId,
             resourceName: evaluation.resource_name,
@@ -810,7 +809,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         .filter((f: any) => filterStatus === "all" || f.status === filterStatus)
         .filter((f: any) => !filterCategory || f.category === filterCategory)
         .filter((f: any) => !filterImpact || f.impact === filterImpact)
-        .filter((f: any) => !filterValidationSource || f.validation_source === filterValidationSource);
+        .filter((f: any) => !filterValidationSource || f.validation_source.includes(filterValidationSource));
     });
 
     if (normalizedResourceFilter) {
@@ -884,7 +883,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return findings;
-  }, [filteredEvaluationEntries, filterStatus, filterCategory, filterImpact, filterValidationSource, resourceFilter, sortColumn, sortDirection, annotationMap, userOverrides]);
+  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights]);
 
   // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
   // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
@@ -932,23 +931,31 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
   }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
-  const handleStatusOverride = async (resourceId: string, recommendationId: string, currentStatus: string) => {
+  const handleStatusOverride = async (
+    resourceId: string,
+    recommendationId: string,
+    resilienceCheckId: string,
+    currentStatus: string
+  ) => {
     if (!subscriptionId) {
       console.error("Cannot save override: subscription ID not provided");
       return;
     }
 
-    const overrideKey = `${resourceId}_${recommendationId}`;
-    const newStatus = currentStatus === "fail" ? "pass" : "fail";
+    const newStatus: "pass" | "fail" = currentStatus === "fail" ? "pass" : "fail";
     
-    // Optimistically update UI
-    setUserOverrides(prev => ({
-      ...prev,
-      [overrideKey]: {
-        status: newStatus,
-        validation_source: "User"
-      }
-    }));
+    // Optimistically update UI using resilience_check_id as key
+    setUserOverrides(prev => {
+      const updated = {
+        ...prev,
+        [resilienceCheckId]: {
+          status: newStatus,
+          validation_source: "User",
+          resilience_check_id: resilienceCheckId,
+        },
+      };
+      return updated;
+    });
 
     // Save to backend
     try {
@@ -959,57 +966,86 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         newStatus,
         "user"
       );
-      // Persist the returned check_uuid into our local map
-      const overrideKeySaved = `${resourceId}_${recommendationId}`;
-      setUserOverrides(prev => ({
-        ...prev,
-        [overrideKeySaved]: {
-          status: newStatus as "pass" | "fail",
-          validation_source: "User",
-          check_uuid: saved?.check_uuid,
-        },
-      }));
-      console.log(`Override saved for ${resourceId} / ${recommendationId}: ${newStatus}`);
+      // Update local state with backend confirmation
+      setUserOverrides(prev => {
+        const updated = {
+          ...prev,
+          [resilienceCheckId]: {
+            status: newStatus as "pass" | "fail",
+            validation_source: "User",
+            resilience_check_id: resilienceCheckId,
+          },
+        };
+        
+        // Save to localStorage
+        if (subscriptionId) {
+          const storageKey = `resilience_${subscriptionId}`;
+          const stored = localStorage.getItem(storageKey) || '{}';
+          const data = JSON.parse(stored);
+          data.overrides = data.overrides || {};
+          data.overrides[resilienceCheckId] = {
+            resource_id: resourceId,
+            recommendation_id: recommendationId,
+            status: newStatus,
+            overridden_by: "user",
+            resilience_check_id: resilienceCheckId,
+          };
+          data.timestamp = new Date().toISOString();
+          localStorage.setItem(storageKey, JSON.stringify(data));
+        }
+        
+        return updated;
+      });
+      
+      onOverrideSaved?.({
+        resource_id: resourceId,
+        recommendation_id: recommendationId,
+        status: newStatus,
+        overridden_by: "user",
+        resilience_check_id: resilienceCheckId,
+      });
     } catch (error) {
       console.error("Failed to save override:", error);
       // Revert optimistic update on error
       setUserOverrides(prev => {
         const updated = { ...prev };
-        delete updated[overrideKey];
+        delete updated[resilienceCheckId];
         return updated;
       });
       alert("Failed to save override. Please try again.");
     }
   };
 
-  const handleDeleteOverride = async (resourceId: string, recommendationId: string) => {
+  const handleDeleteOverride = async (
+    resourceId: string,
+    recommendationId: string,
+    resilienceCheckId: string
+  ) => {
     if (!subscriptionId) return;
-    const overrideKey = `${resourceId}_${recommendationId}`;
-
-    // Determine the backend override id (check_uuid)
-    let checkUuid = userOverrides[overrideKey]?.check_uuid;
-    if (!checkUuid) {
-      try {
-        const found = await getCheckOverride(subscriptionId, resourceId, recommendationId);
-        checkUuid = found?.check_uuid;
-      } catch (e) {
-        console.warn("getCheckOverride failed", e);
-      }
-    }
-
-    if (!checkUuid) {
-      console.error("No check_uuid found for override deletion", { resourceId, recommendationId });
-      return;
-    }
-
+    
     try {
-      await deleteOverride(subscriptionId, checkUuid);
-      // Remove from local state
+      await deleteOverride(subscriptionId, resilienceCheckId);
+      
+      // Update local state immediately by removing the override
       setUserOverrides(prev => {
-        const updated = { ...prev } as Record<string, { status: "pass" | "fail"; validation_source: string; check_uuid?: string }>;
-        delete updated[overrideKey];
+        const updated = { ...prev };
+        delete updated[resilienceCheckId];
         return updated;
       });
+      
+      // Update localStorage after state update
+      if (subscriptionId) {
+        const storageKey = `resilience_${subscriptionId}`;
+        const stored = localStorage.getItem(storageKey) || '{}';
+        const data = JSON.parse(stored);
+        if (data.overrides) {
+          delete data.overrides[resilienceCheckId];
+        }
+        data.timestamp = new Date().toISOString();
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+
+      onOverrideDeleted?.(resilienceCheckId, resourceId);
     } catch (e) {
       console.error("deleteOverride failed", e);
       alert("Failed to delete override. Please try again.");
@@ -1091,7 +1127,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   };
 
   return (
-    <div style={{ padding: "24px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
+    <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
       {/* Header Section - Overview Card */}
       <div
         style={{
@@ -1958,7 +1994,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
                     <span>{finding.description}</span>
-                    {finding.validation_source === "LLM" && (finding.learn_more as any)?.llm_reasoning && (
+                    {finding.validation_source.includes("LLM") && (finding.learn_more as any)?.llm_reasoning && (
                       <span
                         style={{
                           marginLeft: "8px",
@@ -2049,7 +2085,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                         {finding.status === "fail" && (
                           <button
                             type="button"
-                            onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.status)}
+                            onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.resilience_check_id, finding.status)}
                             style={{
                               position: "absolute",
                               top: "-10px",
@@ -2076,7 +2112,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                         {finding.status === "pass" && (finding.validation_source?.toLowerCase() === "user") && (
                           <button
                             type="button"
-                            onClick={() => handleDeleteOverride(finding.resourceId, finding.recommendation_id)}
+                            onClick={() => handleDeleteOverride(finding.resourceId, finding.recommendation_id, finding.resilience_check_id)}
                             style={{
                               position: "absolute",
                               top: "-10px",

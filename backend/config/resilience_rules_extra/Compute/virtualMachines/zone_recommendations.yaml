@@ -1,0 +1,124 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Compute/virtualMachines
+# Category: HighAvailability
+# Description: Recommendations for Azure Virtual Machines zone deployment
+
+- description: Run production workloads on two or more VMs using VMSS Flex
+  aprlGuid: 273f6b30-68e0-4241-85ea-acf15ffb60bf
+  recommendationControl: HighAvailability
+  recommendationImpact: High
+  longDescription: |
+    Production VM workloads should be deployed on multiple VMs and grouped in a VMSS Flex instance 
+    to intelligently distribute across the platform, minimizing the impact of platform faults and updates.
+  potentialBenefits: Enhanced fault/update resilience, 99.99% SLA
+  pgVerified: true
+  automationAvailable: true
+  tags: []
+  learnMoreLink:
+    - name: What has changed with Flexible orchestration mode
+      url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes#what-has-changed-with-flexible-orchestration-mode"
+
+- description: Deploy VMs across Availability Zones
+  aprlGuid: 2bd0be95-a825-6f47-a8c6-3db1fb5eb387
+  recommendationControl: HighAvailability
+  recommendationImpact: High
+  recommendationResourceType: Microsoft.Compute/virtualMachines
+  recommendationMetadataState: Active
+  longDescription: |
+    Azure Availability Zones, within each Azure region, are tolerant to local failures, protecting applications 
+    and data against unlikely Datacenter failures by being physically separate.
+  potentialBenefits: Enhanced VM resilience to failures
+  pgVerified: true
+  automationAvailable: true
+  tags: []
+  learnMoreLink:
+    - name: Create virtual machines in an availability zone using the Azure portal
+      url: "https://learn.microsoft.com/azure/virtual-machines/create-portal-availability-zone?tabs=standard"
+
+- description: Migrate VMs using availability sets to VMSS Flex
+  aprlGuid: a8d25876-7951-b646-b4e8-880c9031596b
+  recommendationControl: HighAvailability
+  recommendationImpact: High
+  recommendationResourceType: Microsoft.Compute/virtualMachines
+  recommendationMetadataState: Active
+  longDescription: |
+    While availability sets are not scheduled for immediate deprecation, they are planned to be deprecated in 
+    the future. Migrate workloads from VMs to VMSS Flex for deployment across zones or within the same zone 
+    across different fault domains (FDs) for better reliability.
+  potentialBenefits: Enhances reliability and future-proofs VMs
+  pgVerified: true
+  automationAvailable: true
+  tags: []
+  learnMoreLink:
+    - name: Migrate deployments and resources to Virtual Machine Scale Sets in Flexible orchestration
+      url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/flexible-virtual-machine-scale-sets-migration-resources"
+
+- description: Use zone-pinning for VMs in specific availability zones
+  recommendationControl: HighAvailability
+  recommendationImpact: Medium
+  longDescription: |
+    For VMs that need to be in specific zones for compliance or data residency, use zone-pinning 
+    to ensure they stay in the designated zone and cannot drift.
+  potentialBenefits: Ensures zone affinity, supports compliance requirements
+  pgVerified: false
+  automationAvailable: false
+  tags: []
+  learnMoreLink:
+    - name: Reliability in Virtual Machines
+      url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machines#production-deployment-recommendations"
+
+---
+# Zone Pattern Mappings
+# These map deployment patterns to recommendations above
+
+patterns:
+  single_zone:
+    description: "Deploy VMs using Virtual Machine Scale Set (VMSS) Flex across availability zones"
+    aprlGuid: "2bd0be95-a825-6f47-a8c6-3db1fb5eb387"
+    recommendationControl: HighAvailability
+    recommendationImpact: High
+    longDescription: |
+      Production VM workloads should be deployed across multiple availability zones using VMSS Flex 
+      to protect against datacenter failures. Single-zone VMs are vulnerable to zone-level outages.
+      Deploy 2+ VM instances in VMSS Flex with zone spanning for automatic distribution.
+    potentialBenefits: "Enhanced fault resilience, 99.99% SLA, automatic zone distribution"
+    learnMoreLink:
+      - name: "Reliability in Virtual Machines"
+        url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machines#production-deployment-recommendations"
+      - name: "VMSS Flex orchestration mode"
+        url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes#what-has-changed-with-flexible-orchestration-mode"
+  
+  multi_zone_2:
+    description: "Deploy third availability zone for full 3-AZ resilience"
+    recommendationControl: HighAvailability
+    recommendationImpact: Medium
+    longDescription: |
+      Current deployment spans 2 availability zones. For maximum resilience, distribute across
+      all 3 availability zones to tolerate a full zone failure while maintaining capacity.
+    potentialBenefits: "Full zone redundancy, higher availability SLA"
+    learnMoreLink:
+      - name: "Availability zone service support"
+        url: "https://learn.microsoft.com/azure/reliability/availability-zones-service-support"
+  
+  multi_zone_3plus:
+    description: "VM deployment meets 3-AZ requirement"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Deployment successfully spans 3 availability zones, meeting best practice for production workloads.
+      Continue to monitor zone distribution as you scale.
+    potentialBenefits: "Maximum availability and fault tolerance"
+    learnMoreLink:
+      - name: "Reliability in Virtual Machines"
+        url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machines"
+  
+  zone_redundant:
+    description: "Zone-redundant configuration active"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Resource is configured for automatic zone redundancy. Azure handles zone distribution transparently.
+    potentialBenefits: "Automatic cross-zone resilience"
+    learnMoreLink:
+      - name: "Availability zones"
+        url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"
