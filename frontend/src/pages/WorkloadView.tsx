@@ -1597,7 +1597,12 @@ const WorkloadView: React.FC = () => {
                     <strong>Error:</strong> {zonal_resilience_error}
                   </div>
                 ) : zonal_resilience_data ? (
-                  <ZonalResilienceSummary data={zonal_resilience_data} graphData={graph} />
+                  <ZonalResilienceSummary 
+                    data={zonal_resilience_data} 
+                    graphData={graph}
+                    resourceGroupFilter={resourceGroupFilter}
+                    serviceFilter={serviceFilter}
+                  />
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
                     No zonal resilience data available
