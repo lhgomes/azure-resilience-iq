@@ -1,4 +1,4 @@
-# Azure Workload Insights
+# Azure Resilience IQ
 
 A full-stack application for visualizing and analyzing Azure workloads using Azure Resource Graph and LLM-powered annotations.
 
@@ -22,7 +22,7 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 
 ```bash
 git clone <repository-url>
-cd azure-workload-insights
+cd azure-resilience-iq
 ```
 
 ### 2. Backend Setup
@@ -108,7 +108,7 @@ This creates:
 - `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
 - `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
 
-Data is organized by subscription ID. To use a different base directory, set `AZURE_WORKLOAD_GRAPH_DATA_DIR`.
+Data is organized by subscription ID. To use a different base directory, set `AZURE__GRAPH_DATA_DIR`.
 
 ### Step 2: Run Resilience Evaluations
 
@@ -136,7 +136,7 @@ python -m app.llm.run --subscription-id <your-subscription-id>
 
 This analyzes the collected resources and generates:
 - Display name suggestions
-- Layer classifications (L1: core workload, L2: network/platform, L3: implementation details)
+- Layer classifications (L1: core , L2: network/platform, L3: implementation details)
 - Criticality scores (1-10) and criticality weights (% distribution)
 - Architecture improvement suggestions
 
@@ -173,7 +173,7 @@ The frontend will be available at `http://localhost:5173`.
 ## Project Structure
 
 ```
-azure-workload-insights/
+azure-resilience-iq/
 ├── backend/
 │   ├── app/
 │   │   ├── collector/        # Azure Resource Graph collector
