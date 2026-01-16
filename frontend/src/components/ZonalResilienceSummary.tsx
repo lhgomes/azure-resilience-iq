@@ -145,7 +145,7 @@ const MetricCard: React.FC<{
         backgroundColor: color + "10",
         borderLeft: `4px solid ${color}`,
         flex: 1,
-        minWidth: "200px",
+        minWidth: "150px",
       }}
     >
       <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "8px" }}>
@@ -499,7 +499,7 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
                 <ScoreDonut score={summary.zonal_resilience_score} size={120} label="Zonal Score" />
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "12px", marginTop: "12px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "10px", marginTop: "12px" }}>
                 <MetricCard
                     title="Zone Redundant"
                     value={summary.zone_redundant_resources}
