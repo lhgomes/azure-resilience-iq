@@ -22,17 +22,19 @@ import json
 import argparse
 import os
 from collections import defaultdict
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app.config import get_resources_path
+from app.config import get_resources_path, get_subscription_dir
 from app.settings import get_settings, load_settings
 from app.logger import setup_logging, get_logger
-from app.resilience.aprl_integration import load_aprl_catalog, APRLEvaluator
+from app.resilience.aprl_integration import load_aprl_catalog, APRLEvaluator, generate_resilience_check_id
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
 from app.storage.llm_annotations_store import load_llm_annotations
+from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResilienceSummary, ZonalData, DeploymentPattern
+from app.resilience.resilience_correlator import ResourceCorrelator, ResilienceGroupType
 
 # Load environment variables from .env file
 # Look for .env in the backend directory (parent of app/)
@@ -106,6 +108,351 @@ def get_aoai_client(use_real_llm: bool) -> Optional[object]:
         return None
 
 
+def _build_zone_findings_map(
+    resilience_evaluations: Dict[str, Any],
+    zone_findings_map: Dict[str, ZonalData]
+) -> None:
+    """
+    Build a map of resource IDs to ZonalData from APRL/custom KQL zone findings.
+    
+    This function extracts zone-related recommendations from resilience evaluations
+    and converts them into ZonalData objects for resources that would otherwise
+    be marked as "UNKNOWN".
+    
+    Supported zone-related rule IDs:
+    - storage-zone-redundancy-001: Storage Accounts (param1=current SKU, param2=recommended)
+    - keyvault-zone-redundancy-001: Key Vaults (param1=current SKU, param2=recommended)
+    - synapse-zone-redundancy-001: Synapse workspaces
+    - datafactory-zone-redundancy-001: Data Factories
+    - containerinstance-zone-redundancy-001: Container Instances
+    - Any APRL zone-related recommendations
+    """
+    zone_rule_keywords = [
+        'zone-redundancy',
+        'zone-resilience',
+        'availability-zone',
+        'cross-zone',
+        'redundancy',
+    ]
+    
+    recommendation_runs = resilience_evaluations.get("recommendation_runs", [])
+    
+    # Track how many zone findings we build
+    findings_count = 0
+    
+    for run in recommendation_runs:
+        # The structure doesn't directly have resource_id, we need to extract it from resource properties
+        # For now, collect by resource_type and build mappings from rows
+        
+        rec_id = run.get("recommendation_id", "").lower()
+        
+        # Check if this is a zone-related recommendation
+        is_zone_related = any(keyword in rec_id for keyword in zone_rule_keywords)
+        
+        if not is_zone_related:
+            continue
+        
+        # Extract data from KQL result
+        rows = run.get("rows", [])
+        status = run.get("status", "")
+        
+        if status == "success" and rows:
+            # Found actual zone configuration data
+            for row in rows:
+                # The row contains the actual resource data
+                # For storage: param1 = current SKU, param2 = recommended
+                param1 = str(row.get("param1", "")).lower() if row.get("param1") else ""
+                param2 = str(row.get("param2", "")).lower() if row.get("param2") else ""
+                resource_id = row.get("id", "")  # The resource ID from KQL result
+                
+                if not resource_id:
+                    continue
+                
+                # Normalize resource ID to lowercase for matching (Azure is case-insensitive)
+                normalized_id = resource_id.lower()
+                
+                # Determine if currently zone-redundant
+                is_zone_redundant = (
+                    "zrs" in param1 or 
+                    "zone" in param1 or 
+                    "redundant" in param1 or
+                    "ra-grs" in param1
+                )
+                
+                # Build ZonalData from KQL findings
+                zone_data = ZonalData(
+                    zones_used=[],  # KQL doesn't provide zone array directly
+                    is_zone_redundant=is_zone_redundant,
+                    zone_count=3 if is_zone_redundant else 1,
+                    meets_3az_requirement=is_zone_redundant,
+                    deployment_pattern=(
+                        DeploymentPattern.ZONE_REDUNDANT if is_zone_redundant
+                        else DeploymentPattern.SINGLE_ZONE
+                    ),
+                    recommendation=f"Current: {param1}. Recommended: {param2}" if param2 else f"Current: {param1}",
+                )
+                
+                zone_findings_map[normalized_id] = zone_data
+                findings_count += 1
+                LOGGER.debug(f"Built zone data for {resource_id} from {rec_id}: {param1}")
+    
+    LOGGER.info(f"Built {findings_count} zone findings from KQL queries")
+
+
+def _generate_zone_recommendation_checks(
+    zonal_data_list: List[Dict[str, Any]]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Generate APRL-formatted zone recommendation checks from zonal_data.
+    
+    Creates checks in APRL format (like resilience_evaluations.json) with:
+    - category: "HighAvailability"
+    - validation_source: "ZoneRecommendation"
+    - Same structure as APRL checks (impact, long_description, potential_benefits, learn_more)
+    
+    Args:
+        zonal_data_list: List of resources with zonal_data from analyze_and_save_zonal_resilience
+        
+    Returns:
+        Dictionary mapping resource_id -> list of zone recommendation checks
+    """
+    from app.resilience.zone_recommendation_engine import ZoneRecommendationEngine
+    
+    # Load zone-irrelevant types from config (control plane, regional networking, global services)
+    settings = get_settings()
+    zone_irrelevant_types = settings.get_zone_irrelevant_types()
+    
+    engine = ZoneRecommendationEngine()
+    recommendations_by_resource = {}
+    
+    for resource_item in zonal_data_list:
+        resource_id = resource_item.get("resource_id")
+        resource_type = resource_item.get("resource_type")
+        zonal_data = resource_item.get("zonal_data", {})
+        
+        if not resource_id or not resource_type:
+            continue
+            
+        # Skip resource types that don't meaningfully support zones (from config)
+        if resource_type.lower() in zone_irrelevant_types:
+            LOGGER.debug(f"Skipping zone recommendation for {resource_type} - not zone-relevant")
+            continue
+            
+        # Get deployment pattern
+        deployment_pattern_str = zonal_data.get("deployment_pattern", "unknown")
+        pattern_map = {
+            "single_zone": DeploymentPattern.SINGLE_ZONE,
+            "multi_zone_2": DeploymentPattern.MULTI_ZONE,
+            "multi_zone_3plus": DeploymentPattern.MULTI_ZONE,
+            "zone_redundant": DeploymentPattern.ZONE_REDUNDANT,
+            "not_applicable": DeploymentPattern.NOT_APPLICABLE,
+            "unknown": DeploymentPattern.UNKNOWN,
+        }
+        deployment_pattern = pattern_map.get(deployment_pattern_str, DeploymentPattern.UNKNOWN)
+        
+        # Get recommendation from engine
+        try:
+            zone_rec = engine.get_recommendation(
+                resource_type=resource_type,
+                deployment_pattern=deployment_pattern,
+                zone_count=zonal_data.get("zone_count", 0),
+                zones_used=zonal_data.get("zones_used", [])
+            )
+            
+            # Determine status: fail if deployment_pattern suggests improvement needed
+            status = "pass"
+            if deployment_pattern in [DeploymentPattern.SINGLE_ZONE, DeploymentPattern.UNKNOWN]:
+                # Single zone or unknown patterns usually need improvement
+                status = "fail"
+            elif deployment_pattern == DeploymentPattern.NOT_APPLICABLE:
+                # Resource type doesn't support zones
+                status = "pass"
+            
+            # Create APRL-formatted check
+            check = {
+                "recommendation_id": zone_rec.aprl_guid or f"zone-{resource_type.replace('/', '-')}-{deployment_pattern_str}",
+                "description": zone_rec.description,
+                "category": "HighAvailability",
+                "impact": zone_rec.recommendation_impact,
+                "long_description": zone_rec.long_description,
+                "potential_benefits": zone_rec.potential_benefits,
+                "learn_more": {
+                    "name": "Learn More",
+                    "links": zone_rec.learn_more_links
+                } if zone_rec.learn_more_links else {},
+                "status": status,
+                "validation_source": ["ZoneRecommendation"],
+                "deployment_pattern": deployment_pattern_str,
+                "resilience_check_id": generate_resilience_check_id(resource_id, zone_rec.aprl_guid or f"zone-{resource_type.replace('/', '-')}-{deployment_pattern_str}"),
+            }
+            
+            if resource_id not in recommendations_by_resource:
+                recommendations_by_resource[resource_id] = []
+            recommendations_by_resource[resource_id].append(check)
+            
+        except Exception as e:
+            LOGGER.debug(f"Failed to generate zone recommendation for {resource_id}: {e}")
+            continue
+    
+    return recommendations_by_resource
+
+
+def analyze_and_save_zonal_resilience(
+    subscription_id: str,
+    resources: List[Dict[str, Any]],
+    data_dir: Path,
+    resilience_evaluations: Optional[Dict[str, Any]] = None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Analyze zone configuration with resilience group correlation and save to zonal_resilience.json.
+    
+    This runs as part of the resilience evaluation process and generates
+    zone configuration analysis for all resources, with context from resilience groups
+    (Availability Sets, VMSS, Load Balancers, etc.).
+    
+    Returns zone recommendation checks to be injected into resilience_evaluations.json.
+    
+    Args:
+        subscription_id: Azure subscription ID
+        resources: List of Azure resources from collector
+        data_dir: Directory to save output file
+        resilience_evaluations: Optional detailed resilience evaluations with zone findings
+        
+    Returns:
+        Dictionary mapping resource_id to list of zone recommendation checks (APRL format)
+    """
+    from datetime import datetime, timezone
+    from app.storage.groups_store import NodeGroup, save_group, load_groups
+    
+    LOGGER.info(f"Analyzing zone configuration for {len(resources)} resources...")
+    
+    # Step 1: Identify resilience groups
+    correlator = ResourceCorrelator(resources)
+    resilience_groups = correlator.identify_groups()
+    LOGGER.info(f"Identified {len(resilience_groups)} resilience groups")
+    
+    # Step 2: Save resilience groups to graph (as NodeGroup objects)
+    for resilience_group in resilience_groups:
+        node_group = NodeGroup(
+            id=resilience_group.id,
+            name=resilience_group.name,
+            nodes=resilience_group.member_ids
+        )
+        try:
+            save_group(subscription_id, node_group)
+            LOGGER.debug(f"Created graph group: {resilience_group.name}")
+        except Exception as e:
+            LOGGER.warning(f"Failed to save group {resilience_group.id}: {e}")
+    
+    # Build a map of zone-related findings from resilience evaluations
+    zone_findings_map = {}
+    if resilience_evaluations:
+        _build_zone_findings_map(resilience_evaluations, zone_findings_map)
+    
+    zonal_data_list = []
+    
+    for resource in resources:
+        try:
+            resource_id = resource.get("id")
+            
+            # Analyze with resilience group context
+            zonal_data = ZonalAnalyzer.analyze_with_correlation(
+                resource,
+                correlator,
+                resources
+            )
+            
+            # If pattern is UNKNOWN, try to use APRL/custom KQL findings
+            # Normalize ID for case-insensitive matching (Azure uses different cases)
+            normalized_id = resource_id.lower() if resource_id else None
+            if (zonal_data.deployment_pattern == DeploymentPattern.UNKNOWN and 
+                normalized_id and normalized_id in zone_findings_map):
+                zonal_data = zone_findings_map[normalized_id]
+                LOGGER.debug(f"Enhanced zone data for {resource_id} using zone findings")
+            
+            # Get group membership info
+            group = correlator.get_group_for_resource(resource_id)
+            group_info = None
+            if group:
+                group_info = {
+                    "group_id": group.id,
+                    "group_type": group.type.value,
+                    "group_name": group.name,
+                    "member_count": len(group.member_ids)
+                }
+            
+            zonal_data_list.append({
+                "resource_id": resource.get("id"),
+                "resource_name": resource.get("name"),
+                "resource_type": resource.get("type"),
+                "location": resource.get("location"),
+                "resilience_group": group_info,
+                "zonal_data": {
+                    "zones_used": zonal_data.zones_used,
+                    "is_zone_redundant": zonal_data.is_zone_redundant,
+                    "zone_count": zonal_data.zone_count,
+                    "meets_3az_requirement": zonal_data.meets_3az_requirement,
+                    "deployment_pattern": zonal_data.deployment_pattern.value,
+                }
+            })
+        except Exception as e:
+            LOGGER.warning(f"Failed to analyze zones for {resource.get('id')}: {e}")
+    
+    # Calculate summary from all zonal data (pass resources for region analysis)
+    # Extract the zonal_data objects that were already analyzed
+    all_zonal = []
+    for item in zonal_data_list:
+        # Reconstruct ZonalData object from the dict representation
+        zonal_dict = item["zonal_data"]
+        zonal_data = ZonalData(
+            zones_used=zonal_dict["zones_used"],
+            is_zone_redundant=zonal_dict["is_zone_redundant"],
+            zone_count=zonal_dict["zone_count"],
+            meets_3az_requirement=zonal_dict["meets_3az_requirement"],
+            deployment_pattern=DeploymentPattern(zonal_dict["deployment_pattern"]),
+            recommendation=""  # Not needed for summary
+        )
+        all_zonal.append(zonal_data)
+    
+    results = {
+        "subscription_id": subscription_id,
+        "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+        "resilience_groups": {
+            "count": len(resilience_groups),
+            "by_type": {gt.value: len(correlator.get_groups_by_type(gt)) for gt in ResilienceGroupType}
+        },
+        "resources": zonal_data_list,
+    }
+    
+    # Save to file
+    output_file = data_dir / "zonal_resilience.json"
+    with open(output_file, 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    # Generate zone recommendation checks for resilience_evaluations.json
+    zone_recommendations_by_resource = {}
+    try:
+        zone_recommendations_by_resource = _generate_zone_recommendation_checks(zonal_data_list)
+    except Exception as e:
+        LOGGER.warning(f"Failed to generate zone recommendation checks: {e}")
+    
+    LOGGER.info(f"✓ Zonal analysis complete: {output_file}")
+    LOGGER.info(f"  • Resilience groups: {len(resilience_groups)}")
+    for gt in ResilienceGroupType:
+        count = len(correlator.get_groups_by_type(gt))
+        if count > 0:
+            LOGGER.info(f"    - {gt.value}: {count}")
+    # Log zone statistics from resources
+    zone_redundant = sum(1 for z in all_zonal if z.deployment_pattern == DeploymentPattern.ZONE_REDUNDANT)
+    multi_zone = sum(1 for z in all_zonal if z.deployment_pattern == DeploymentPattern.MULTI_ZONE)
+    single_zone = sum(1 for z in all_zonal if z.deployment_pattern == DeploymentPattern.SINGLE_ZONE)
+    compliant_3az = sum(1 for z in all_zonal if z.meets_3az_requirement)
+    LOGGER.info(f"  • Zone-redundant: {zone_redundant}")
+    LOGGER.info(f"  • Multi-zone: {multi_zone}")
+    LOGGER.info(f"  • Single-zone: {single_zone}")
+    LOGGER.info(f"  • 3-AZ compliant: {compliant_3az}/{len(all_zonal)}")
+    
+    return zone_recommendations_by_resource
 
 
 def main():
@@ -234,10 +581,6 @@ def main():
 
         LOGGER.debug("Evaluation complete: %d resources evaluated", len(evaluations))
 
-        # Save evaluations (internal format)
-        LOGGER.debug("Saving evaluation results...")
-        save_resilience_evaluations(args.subscription_id, evaluations)
-
         # Save detailed evaluation log with executed queries and responses
         from datetime import datetime
         from app.config import get_subscription_dir
@@ -255,6 +598,114 @@ def main():
         # ========================================
         # No scoring needed - frontend handles all calculations
         LOGGER.info("✓ Resilience evaluation complete - all calculations done client-side")
+
+        # Run zonal resilience analysis with zone findings from evaluations
+        try:
+            subscription_dir = get_subscription_dir(args.subscription_id)
+            # Load detailed evaluations to extract zone findings
+            zone_findings = None
+            if detailed_path.exists():
+                try:
+                    zone_findings = json.loads(detailed_path.read_text())
+                except Exception as e:
+                    LOGGER.debug(f"Could not load detailed evaluations for zone findings: {e}")
+            
+            zone_recommendations = analyze_and_save_zonal_resilience(
+                args.subscription_id, 
+                resources, 
+                subscription_dir,
+                resilience_evaluations=zone_findings
+            )
+            
+            # Inject zone recommendations into evaluations (with deduplication)
+            for resource_id, zone_checks in zone_recommendations.items():
+                if resource_id in evaluations:
+                    existing_checks = evaluations[resource_id]["checks"]
+                    
+                    # Deduplicate: merge zone checks with existing APRL/Heuristic/LLM checks
+                    for zone_check in zone_checks:
+                        zone_desc_lower = zone_check.get("description", "").lower()
+                        zone_rec_id = zone_check.get("recommendation_id", "")
+                        
+                        # Check if any existing check covers the same topic (by recommendation_id or keywords)
+                        merged = False
+                        for existing_check in existing_checks:
+                            existing_rec_id = existing_check.get("recommendation_id", "")
+                            existing_desc_lower = existing_check.get("description", "").lower()
+                            
+                            # Option 1: Same recommendation_id (exact match)
+                            if zone_rec_id and existing_rec_id == zone_rec_id:
+                                # Merge validation sources
+                                existing_sources = existing_check.get("validation_source", [])
+                                if isinstance(existing_sources, str):
+                                    existing_sources = [existing_sources]
+                                if "ZoneRecommendation" not in existing_sources:
+                                    existing_sources.append("ZoneRecommendation")
+                                    existing_check["validation_source"] = existing_sources
+
+                                # Enrich existing APRL/Heuristic check with zone recommendation details
+                                existing_long = existing_check.get("long_description", "")
+                                existing_benefits = existing_check.get("potential_benefits", "")
+                                existing_learn_more = existing_check.get("learn_more") or {}
+
+                                # Treat synthetic custom KQL checks as placeholders that should be replaced
+                                placeholder_long = existing_long.lower().startswith("custom zone redundancy validation")
+                                placeholder_benefits = existing_benefits.lower() in ["", "ensures zone redundancy for high availability"]
+                                placeholder_learn_more = not existing_learn_more or existing_learn_more == {}
+
+                                if placeholder_long and zone_check.get("long_description"):
+                                    existing_check["long_description"] = zone_check.get("long_description")
+                                elif not existing_long and zone_check.get("long_description"):
+                                    existing_check["long_description"] = zone_check.get("long_description")
+
+                                if placeholder_benefits and zone_check.get("potential_benefits"):
+                                    existing_check["potential_benefits"] = zone_check.get("potential_benefits")
+                                elif not existing_benefits and zone_check.get("potential_benefits"):
+                                    existing_check["potential_benefits"] = zone_check.get("potential_benefits")
+
+                                if placeholder_learn_more and zone_check.get("learn_more"):
+                                    existing_check["learn_more"] = zone_check.get("learn_more")
+
+                                # Align impact/category with zone recommendation when placeholder content was used
+                                if placeholder_long or placeholder_benefits or placeholder_learn_more:
+                                    if zone_check.get("impact"):
+                                        existing_check["impact"] = zone_check["impact"]
+                                    if zone_check.get("category"):
+                                        existing_check["category"] = zone_check["category"]
+                                    if zone_check.get("description") and existing_desc_lower.startswith("custom zone redundancy check"):
+                                        existing_check["description"] = zone_check["description"]
+                                merged = True
+                                LOGGER.debug(f"Merged ZoneRecommendation sources for {resource_id}: {existing_rec_id}")
+                                break
+                            
+                            # Option 2: Check if any existing APRL/Heuristic check covers this zone guidance
+                            existing_sources = existing_check.get("validation_source", [])
+                            if isinstance(existing_sources, str):
+                                existing_sources = [existing_sources]
+                            if existing_sources and existing_sources[0] in ["APRL", "Heuristic"]:
+                                # Check for common zone-related keywords overlap
+                                zone_keywords = {"zone", "vmss", "flex", "redundant", "zrs", "availability"}
+                                zone_words_in_zone = {word for word in zone_keywords if word in zone_desc_lower}
+                                zone_words_in_aprl = {word for word in zone_keywords if word in existing_desc_lower}
+                                
+                                # If both mention zones/redundancy and share key terms, consider it duplicate
+                                if zone_words_in_zone and zone_words_in_aprl and len(zone_words_in_zone & zone_words_in_aprl) >= 1:
+                                    merged = True
+                                    LOGGER.debug(f"Skipping duplicate zone check '{zone_check['description'][:50]}...' - already covered by {existing_sources[0]} check '{existing_check['description'][:50]}'")
+                                    break
+                        
+                        if not merged:
+                            evaluations[resource_id]["checks"].append(zone_check)
+                            LOGGER.debug(f"Added zone recommendation to {resource_id}: {zone_check['description'][:50]}...")
+                else:
+                    LOGGER.debug(f"Resource {resource_id} not in evaluations, skipping zone checks")
+        except Exception as e:
+            LOGGER.error(f"Zonal analysis failed: {e}", exc_info=True)
+            # Don't fail the whole process if zonal analysis fails
+
+        # NOW SAVE evaluations after zone recommendations have been injected
+        LOGGER.debug("Saving evaluation results with zone recommendations...")
+        save_resilience_evaluations(args.subscription_id, evaluations)
 
         # Print summary (calculate from checks)
         total_checks = 0

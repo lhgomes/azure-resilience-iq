@@ -1,0 +1,30 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Storage/storageAccounts
+# Category: HighAvailability
+# Description: Recommendations for Azure Storage Accounts zone deployment
+
+patterns:
+  single_zone:
+    description: "Enable zone-redundant storage (ZRS or GZRS)"
+    recommendationControl: HighAvailability
+    recommendationImpact: High
+    longDescription: |
+      Storage account uses locally-redundant (LRS) replication. For production data, enable ZRS
+      (zone-redundant) or GZRS (geo-zone-redundant) to protect against zone failures.
+    potentialBenefits: "Data survives zone failures, 99.9999999999% durability (ZRS)"
+    learnMoreLink:
+      - name: "Azure Storage redundancy"
+        url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy"
+      - name: "Zone-redundant storage"
+        url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy#zone-redundant-storage"
+  
+  zone_redundant:
+    description: "Storage account is zone-redundant"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Storage account uses ZRS or GZRS, providing protection against availability zone failures.
+    potentialBenefits: "Automatic cross-zone data replication"
+    learnMoreLink:
+      - name: "Azure Storage redundancy"
+        url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy"

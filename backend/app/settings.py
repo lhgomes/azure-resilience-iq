@@ -167,6 +167,16 @@ class AppSettings:
         """Get resilience rules directory."""
         resilience_config = self.get_resilience_config()
         return resilience_config.get("rules_dir", "./config/resiliency_rules")
+    
+    def get_zone_irrelevant_types(self) -> set:
+        """Get set of resource types that don't require zone configuration.
+        
+        Returns:
+            Set of lowercase resource type strings (e.g., 'microsoft.network/virtualnetworks')
+        """
+        resilience_config = self.get_resilience_config()
+        type_list = resilience_config.get("zone_irrelevant_types", [])
+        return {t.lower() for t in type_list}
 
 
 # Global settings instance

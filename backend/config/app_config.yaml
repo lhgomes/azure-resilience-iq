@@ -39,3 +39,53 @@ resilience:
   
   # Rules directory for resilience checks
   rules_dir: "./config/resiliency_rules"
+  
+  # Azure resource types that are zone-irrelevant or zone-resilient by default
+  # These do NOT require zone configuration (control plane, regional networking, global services)
+  # Based on: https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview
+  zone_irrelevant_types:
+    # Control Plane / Metadata - no zone dependency
+    - "microsoft.resources/resourcegroups"
+    - "microsoft.managedidentity/userassignedidentities"
+    - "microsoft.authorization/roleassignments"
+    - "microsoft.authorization/policyassignments"
+    - "microsoft.authorization/roledefinitions"
+    - "microsoft.resources/deployments"
+    - "microsoft.resources/tags"
+    - "microsoft.compute/sshpublickeys"
+    - "microsoft.devtestlab/schedules"
+    - "microsoft.blueprints/blueprints"
+    
+    # Regional Networking - automatically span all zones
+    - "microsoft.network/virtualnetworks"
+    - "microsoft.network/networksecuritygroups"
+    - "microsoft.network/routetables"
+    - "microsoft.network/applicationsecuritygroups"
+    - "microsoft.network/networkwatchers"
+    - "microsoft.network/ddosprotectionplans"
+    - "microsoft.network/privatednszones"
+    
+    # Global Services - operate across regions, zones irrelevant
+    - "microsoft.network/trafficmanagerprofiles"
+    - "microsoft.network/frontdoors"
+    - "microsoft.network/frontdoorwebapplicationfirewallpolicies"
+    - "microsoft.network/dnszones"
+    - "microsoft.cdn/profiles"
+    - "microsoft.aad/domainservices"
+    - "microsoft.azureactivedirectory/b2ctenants"
+    
+    # Management & Governance - control plane
+    - "microsoft.management/managementgroups"
+    - "microsoft.resources/subscriptions"
+    - "microsoft.advisor/recommendations"
+    - "microsoft.policyinsights/policyevaluations"
+    - "microsoft.resourcegraph/queries"
+    - "microsoft.costmanagement/exports"
+    - "microsoft.portal/dashboards"
+    
+    # Monitoring & Alerting - telemetry/metadata only
+    - "microsoft.insights/actiongroups"
+    - "microsoft.insights/metricalerts"
+    - "microsoft.insights/activitylogalerts"
+    - "microsoft.insights/scheduledqueryrules"
+    - "microsoft.alertsmanagement/actionrules"

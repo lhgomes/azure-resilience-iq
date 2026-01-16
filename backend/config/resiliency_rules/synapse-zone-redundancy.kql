@@ -1,0 +1,11 @@
+// Azure Resource Graph Query
+// Find Azure Synapse workspaces in zone-enabled regions without zone redundancy
+// Synapse workspaces should be deployed with zone redundancy for high availability
+Resources
+| where type =~ 'Microsoft.Synapse/workspaces'
+| where location in~ ("australiaeast", "brazilsouth", "canadacentral", "centralindia", "centralus", "eastasia", "eastus", "eastus2", "francecentral", "germanywestcentral", "israelcentral", "italynorth", "japaneast", "japanwest", "koreacentral", "mexicocentral", "newzealandnorth", "northeurope", "norwayeast", "polandcentral", "qatarcentral", "southafricanorth", "southcentralus", "southeastasia", "spaincentral", "swedencentral", "switzerlandnorth", "uaenorth", "uksouth", "westeurope", "westus2", "westus3", "usgovvirginia", "chinanorth3")
+| where isempty(zones) or isnull(zones) or array_length(zones) == 0
+| project recommendationId="synapse-zone-redundancy-001", name, id, tags,
+    param1 = strcat("Workspace location: ", location),
+    param2 = "Recommended: Enable zone redundancy for workspace deployment",
+    param3 = strcat("Current zones: ", iff(isempty(zones) or isnull(zones), "None", tostring(zones)))

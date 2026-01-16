@@ -16,6 +16,7 @@ import os
 import yaml
 import time
 import logging
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -28,6 +29,28 @@ from app.collector.auth import get_arg_client
 from app.resilience.heuristic_validator import HeuristicValidator, ValidationStrategy
 
 LOGGER = logging.getLogger(__name__)
+
+# Namespace UUID for azure-workload-graph resilience checks
+# Using DNS namespace as base for deterministic UUID generation
+RESILIENCE_CHECK_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+
+
+def generate_resilience_check_id(resource_id: str, recommendation_id: str) -> str:
+    """
+    Generate a deterministic UUIDv5 for a resource+recommendation pair.
+    
+    This ID is used to uniquely identify checks and track overrides.
+    Must be consistent across all components (frontend, backend, storage).
+    
+    Args:
+        resource_id: Azure resource ID
+        recommendation_id: APRL recommendation GUID
+        
+    Returns:
+        Deterministic UUIDv5 string (based on resource_id|recommendation_id)
+    """
+    combined = f"{resource_id}|{recommendation_id}"
+    return str(uuid.uuid5(RESILIENCE_CHECK_NAMESPACE, combined))
 
 
 class ResiliencyCategory(str, Enum):
@@ -85,17 +108,21 @@ class APRLCatalog:
     programmatic access to rules by resource type and category.
     """
     
-    def __init__(self, aprl_root: str):
+    def __init__(self, aprl_root: str, custom_rules_dir: Optional[str] = None):
         """
         Initialize APRL catalog.
         
         Args:
             aprl_root: Path to APRL v2 repository root (e.g., './backend/aprl')
+            custom_rules_dir: Optional path to custom KQL rules directory
         """
         self.aprl_root = Path(aprl_root)
+        self.custom_rules_dir = Path(custom_rules_dir) if custom_rules_dir else None
         self.recommendations: Dict[str, List[APRLRecommendation]] = {}
         self.resource_type_index: Dict[str, str] = {}  # resource_type -> file_path
+        self.custom_kql_files: Dict[str, Path] = {}  # recommendation_id -> kql_path
         self._load_all_recommendations()
+        self._load_custom_rules()
 
     @staticmethod
     def _normalize_resource_type(resource_type: str) -> str:
@@ -160,6 +187,89 @@ class APRLCatalog:
                 
             except Exception as e:
                 LOGGER.error(f"Failed to parse recommendation in {file_path}: {e}")
+    
+    def _load_custom_rules(self) -> None:
+        """Load custom KQL rules from the custom rules directory."""
+        if not self.custom_rules_dir or not self.custom_rules_dir.exists():
+            LOGGER.debug("No custom rules directory configured or directory doesn't exist")
+            return
+        
+        LOGGER.info(f"Loading custom KQL rules from: {self.custom_rules_dir}")
+        
+        for kql_file in self.custom_rules_dir.glob("*.kql"):
+            try:
+                # Read KQL file to extract recommendation ID
+                kql_text = kql_file.read_text(encoding="utf-8")
+                
+                # Parse recommendationId from the KQL project clause
+                # Example: | project recommendationId="storage-zone-redundancy-001", ...
+                recommendation_id = None
+                for line in kql_text.splitlines():
+                    if "recommendationId" in line and "project" in line:
+                        # Extract ID between quotes
+                        import re
+                        match = re.search(r'recommendationId\s*=\s*["\']([^"\']+)["\']', line)
+                        if match:
+                            recommendation_id = match.group(1)
+                            break
+                
+                if not recommendation_id:
+                    LOGGER.warning(f"Could not extract recommendationId from {kql_file}")
+                    continue
+                
+                # Extract resource type from KQL
+                # Example: | where type =~ 'Microsoft.Storage/storageAccounts'
+                resource_type = None
+                for line in kql_text.splitlines():
+                    if "where type" in line.lower():
+                        match = re.search(r"type\s*=~?\s*['\"]([^'\"]+)['\"]", line)
+                        if match:
+                            resource_type = match.group(1)
+                            break
+                
+                if not resource_type:
+                    LOGGER.warning(f"Could not extract resource type from {kql_file}")
+                    continue
+                
+                # Store custom KQL file mapping
+                self.custom_kql_files[recommendation_id] = kql_file
+                
+                # Create a synthetic APRLRecommendation for the custom rule
+                # This allows it to be evaluated alongside APRL rules
+                description = f"Custom zone redundancy check for {resource_type}"
+                
+                # Try to extract description from comments
+                for line in kql_text.splitlines():
+                    if line.strip().startswith("//") and "Find" in line:
+                        description = line.strip().lstrip("//").strip()
+                        break
+                
+                custom_rec = APRLRecommendation(
+                    guid=recommendation_id,
+                    aprl_guid=recommendation_id,
+                    recommendation_type_id=recommendation_id,
+                    recommendations_file_path=str(kql_file),
+                    description=description,
+                    category="HighAvailability",
+                    impact="High",
+                    resource_type=resource_type,
+                    long_description=f"Custom zone redundancy validation for {resource_type}",
+                    potential_benefits="Ensures zone redundancy for high availability",
+                    automation_available=False,
+                    learn_more_links=[],
+                )
+                
+                # Index by resource type
+                resource_type_key = self._normalize_resource_type(resource_type)
+                if resource_type_key not in self.recommendations:
+                    self.recommendations[resource_type_key] = []
+                
+                self.recommendations[resource_type_key].append(custom_rec)
+                
+                LOGGER.info(f"✓ Loaded custom rule: {recommendation_id} for {resource_type}")
+                
+            except Exception as e:
+                LOGGER.error(f"Failed to load custom KQL file {kql_file}: {e}")
     
     def get_recommendations_by_resource_type(
         self, 
@@ -421,6 +531,17 @@ class APRLEvaluator:
         Returns:
             Tuple of (KQL query content if found else None, Path of KQL file if found else None)
         """
+        # First check if this is a custom rule with a direct KQL file
+        if aprl_guid in self.catalog.custom_kql_files:
+            kql_path = self.catalog.custom_kql_files[aprl_guid]
+            try:
+                LOGGER.debug(f"✓ Found custom KQL for {aprl_guid}: {kql_path}")
+                kql_text = kql_path.read_text(encoding="utf-8")
+                if kql_text.strip():
+                    return kql_text, kql_path
+            except Exception as exc:
+                LOGGER.warning(f"Failed to read custom KQL file {kql_path}: {exc}")
+        
         # Try to use the recommendations file path first (for cross-resource recommendations)
         kql_path = None
         if recommendations_file_path:
@@ -720,8 +841,8 @@ class APRLEvaluator:
                         continue
                     
                     is_failed = rid.lower() in failing_ids_lower
-                    # For non-KQL checks, retrieve the strategy to see if LLM escalation was used
-                    source = validation_source
+                    # Build source list: start with base source (APRL or Heuristic)
+                    sources = [validation_source]
                     # Get original learn_more (APRL has 0 or 1 item, stored as list)
                     learn_more = rec.learn_more_links[0] if rec.learn_more_links else {}
                     
@@ -729,14 +850,16 @@ class APRLEvaluator:
                         # Check if LLM escalation was used by looking at stored strategy
                         _, strategy = strategy_map.get((rid, rec.guid), (False, None))
                         if strategy and hasattr(strategy, 'llm_analysis_used') and strategy.llm_analysis_used:
-                            source = "LLM"
+                            # Add LLM to sources list (don't replace, append)
+                            if "LLM" not in sources:
+                                sources.append("LLM")
                             # Add LLM reasoning to the learn_more object if available
                             if hasattr(strategy, 'llm_reasoning') and strategy.llm_reasoning:
                                 # Add llm_reasoning field to existing object
                                 learn_more = dict(learn_more) if learn_more else {}
                                 learn_more["llm_reasoning"] = strategy.llm_reasoning
                     
-                    checks_map[rid].append({
+                    check_obj = {
                         "recommendation_id": rec.guid,
                         "description": rec.description,
                         "category": rec.category,
@@ -745,8 +868,10 @@ class APRLEvaluator:
                         "potential_benefits": rec.potential_benefits,
                         "learn_more": learn_more,
                         "status": "fail" if is_failed else "pass",
-                        "validation_source": source
-                    })
+                        "validation_source": sources,
+                        "resilience_check_id": generate_resilience_check_id(rid, rec.guid)
+                    }
+                    checks_map[rid].append(check_obj)
 
             if detail_log is not None:
                 detail_log.append(detail_entry)
@@ -797,7 +922,8 @@ def load_aprl_catalog(settings) -> APRLCatalog:
         Initialized APRLCatalog
     """
     aprl_root = settings.get_aprl_root()
-    catalog = APRLCatalog(aprl_root)
+    custom_rules_dir = settings.get_rules_dir()
+    catalog = APRLCatalog(aprl_root, custom_rules_dir=custom_rules_dir)
     
     summary = catalog.get_summary()
     LOGGER.debug(f"Loaded APRL catalog: {summary}")

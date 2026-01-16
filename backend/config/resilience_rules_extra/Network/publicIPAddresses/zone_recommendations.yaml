@@ -1,0 +1,28 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Network/publicIPAddresses
+# Category: HighAvailability
+# Description: Recommendations for Azure Public IP Addresses zone deployment
+
+patterns:
+  single_zone:
+    description: "Use Standard SKU zone-redundant public IP"
+    recommendationControl: HighAvailability
+    recommendationImpact: Medium
+    longDescription: |
+      Public IP is zone-pinned. For production workloads, use Standard SKU with zone-redundant
+      configuration to ensure IP availability during zone failures.
+    potentialBenefits: "IP address survives zone failures, seamless failover"
+    learnMoreLink:
+      - name: "Public IP addresses and availability zones"
+        url: "https://learn.microsoft.com/azure/virtual-network/ip-services/public-ip-addresses#availability-zone"
+  
+  zone_redundant:
+    description: "Public IP is zone-redundant"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Public IP uses Standard SKU with zone redundancy, ensuring availability across zone failures.
+    potentialBenefits: "Resilient to zone outages"
+    learnMoreLink:
+      - name: "Zone-redundant public IPs"
+        url: "https://learn.microsoft.com/azure/virtual-network/ip-services/public-ip-addresses#availability-zone"
