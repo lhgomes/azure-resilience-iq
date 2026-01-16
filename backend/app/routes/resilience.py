@@ -40,7 +40,7 @@ class OverrideRequest(BaseModel):
 
 
 class DeleteOverrideRequest(BaseModel):
-    check_uuid: str
+    resilience_check_id: str  # Can also accept check_uuid for backward compatibility
 
 
 def get_aprl_catalog() -> APRLCatalog:
@@ -357,19 +357,19 @@ def remove_override(subscription_id: str, request: DeleteOverrideRequest):
     Delete a user override.
     
     Body:
-        - check_uuid: UUID of the check override to delete
+        - resilience_check_id: UUID of the check override to delete
     
     Returns:
         Success status
     """
     try:
-        deleted = delete_override(subscription_id, request.check_uuid)
+        deleted = delete_override(subscription_id, request.resilience_check_id)
         if not deleted:
             raise HTTPException(
                 status_code=404,
-                detail=f"Override {request.check_uuid} not found"
+                detail=f"Override {request.resilience_check_id} not found"
             )
-        return {"deleted": True, "check_uuid": request.check_uuid}
+        return {"deleted": True, "resilience_check_id": request.resilience_check_id}
     except HTTPException:
         raise
     except Exception as e:

@@ -7,17 +7,21 @@ survive collector and resilience refresh cycles.
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Dict, Optional
 from datetime import datetime, timezone
-import hashlib
 
 LOGGER = logging.getLogger(__name__)
+
+# Namespace UUID for azure-workload-graph resilience checks
+# Using DNS namespace as base for deterministic UUID generation
+RESILIENCE_CHECK_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 
 def generate_check_uuid(resource_id: str, recommendation_id: str) -> str:
     """
-    Generate a deterministic UUID for a resource+recommendation pair.
+    Generate a deterministic UUIDv5 for a resource+recommendation pair.
     
     This ensures consistency across all features and allows tracking
     of overrides even after data refresh.
@@ -27,12 +31,11 @@ def generate_check_uuid(resource_id: str, recommendation_id: str) -> str:
         recommendation_id: APRL recommendation GUID
         
     Returns:
-        UUID string (hex digest of SHA256 hash)
+        Deterministic UUIDv5 string (based on resource_id|recommendation_id)
     """
-    # Create a deterministic hash from the combination
+    # Create a deterministic UUIDv5 from the combination
     combined = f"{resource_id}|{recommendation_id}"
-    hash_obj = hashlib.sha256(combined.encode('utf-8'))
-    return hash_obj.hexdigest()
+    return str(uuid.uuid5(RESILIENCE_CHECK_NAMESPACE, combined))
 
 
 def get_overrides_file_path(subscription_id: str) -> Path:

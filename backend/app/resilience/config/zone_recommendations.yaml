@@ -1,0 +1,356 @@
+# Zone Resilience Recommendations Configuration Schema
+#
+# This file defines recommendations for Azure resources based on their zone deployment patterns.
+# Each recommendation is mapped to specific deployment patterns (single_zone, multi_zone, etc.)
+# and resource types.
+#
+# Structure:
+# - resourceType: Azure resource type (e.g., Microsoft.Compute/virtualMachines)
+# - patterns: Map of deployment patterns to recommendations
+#   - single_zone: Recommendation when resource is in a single zone
+#   - multi_zone_2: Recommendation when resource spans 2 zones
+#   - zone_redundant: Recommendation for zone-redundant resources
+#   - not_applicable: For resources that don't support zones
+#   - unknown: When zone config cannot be determined
+#
+# Recommendation fields (aligned with APRL):
+# - description: Short recommendation text
+# - longDescription: Detailed explanation
+# - potentialBenefits: Benefits of following the recommendation
+# - recommendationImpact: High | Medium | Low
+# - recommendationControl: HighAvailability | DisasterRecovery | etc.
+# - learnMoreLink: Array of links to documentation
+#
+# Contribution Guidelines:
+# 1. Follow APRL recommendation structure
+# 2. Include official Microsoft Learn documentation links
+# 3. Keep descriptions concise (< 150 chars for description)
+# 4. Provide actionable guidance in longDescription
+# 5. Test with real resources before submitting
+
+# ============================================================================
+# COMPUTE RESOURCES
+# ============================================================================
+
+- resourceType: Microsoft.Compute/virtualMachines
+  patterns:
+    single_zone:
+      description: "Deploy VMs using Virtual Machine Scale Set (VMSS) Flex across availability zones"
+      aprlGuid: "2bd0be95-a825-6f47-a8c6-3db1fb5eb387"
+      recommendationControl: HighAvailability
+      recommendationImpact: High
+      longDescription: |
+        Production VM workloads should be deployed across multiple availability zones using VMSS Flex 
+        to protect against datacenter failures. Single-zone VMs are vulnerable to zone-level outages.
+        Deploy 2+ VM instances in VMSS Flex with zone spanning for automatic distribution.
+      potentialBenefits: "Enhanced fault resilience, 99.99% SLA, automatic zone distribution"
+      learnMoreLink:
+        - name: "Reliability in Virtual Machines"
+          url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machines#production-deployment-recommendations"
+        - name: "VMSS Flex orchestration mode"
+          url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes#what-has-changed-with-flexible-orchestration-mode"
+    
+    multi_zone_2:
+      description: "Deploy third availability zone for full 3-AZ resilience"
+      recommendationControl: HighAvailability
+      recommendationImpact: Medium
+      longDescription: |
+        Current deployment spans 2 availability zones. For maximum resilience, distribute across
+        all 3 availability zones to tolerate a full zone failure while maintaining capacity.
+      potentialBenefits: "Full zone redundancy, higher availability SLA"
+      learnMoreLink:
+        - name: "Availability zone service support"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-service-support"
+    
+    multi_zone_3plus:
+      description: "VM deployment meets 3-AZ requirement"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Deployment successfully spans 3 availability zones, meeting best practice for production workloads.
+        Continue to monitor zone distribution as you scale.
+      potentialBenefits: "Maximum availability and fault tolerance"
+      learnMoreLink:
+        - name: "Reliability in Virtual Machines"
+          url: "https://learn.microsoft.com/azure/reliability/reliability-virtual-machines"
+    
+    zone_redundant:
+      description: "Zone-redundant configuration active"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Resource is configured for automatic zone redundancy. Azure handles zone distribution transparently.
+      potentialBenefits: "Automatic cross-zone resilience"
+      learnMoreLink:
+        - name: "Availability zones"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"
+
+- resourceType: Microsoft.Compute/virtualMachineScaleSets
+  patterns:
+    single_zone:
+      description: "Configure VMSS for zone-spanning deployment"
+      recommendationControl: HighAvailability
+      recommendationImpact: High
+      longDescription: |
+        VMSS is currently deployed in a single zone. Enable zone spanning to distribute instances
+        across multiple availability zones for improved fault tolerance.
+      potentialBenefits: "99.99% SLA, automatic failover, zone fault tolerance"
+      learnMoreLink:
+        - name: "VMSS across availability zones"
+          url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-use-availability-zones"
+    
+    multi_zone_3plus:
+      description: "VMSS configured for multi-zone resilience"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        VMSS is properly configured to span availability zones, providing automatic distribution
+        and fault tolerance across zones.
+      potentialBenefits: "Maximum availability for scale set workloads"
+      learnMoreLink:
+        - name: "VMSS orchestration modes"
+          url: "https://learn.microsoft.com/azure/virtual-machine-scale-sets/virtual-machine-scale-sets-orchestration-modes"
+
+- resourceType: Microsoft.Compute/disks
+  patterns:
+    single_zone:
+      description: "Use Zone-Redundant Storage (ZRS) for managed disks"
+      aprlGuid: "fa0cf4f5-0b21-47b7-89a9-ee936f193ce1"
+      recommendationControl: HighAvailability
+      recommendationImpact: Medium
+      longDescription: |
+        Managed disk is zone-pinned (LRS). For critical workloads, use ZRS disks which replicate
+        data synchronously across 3 availability zones. Note: ZRS has slightly higher write latency.
+      potentialBenefits: "Protection against zone failures, 99.9999999999% durability"
+      learnMoreLink:
+        - name: "Redundancy options for managed disks"
+          url: "https://learn.microsoft.com/azure/virtual-machines/disks-redundancy"
+        - name: "Zone-redundant storage for managed disks"
+          url: "https://aka.ms/zrsdisksdoc"
+    
+    zone_redundant:
+      description: "Disk uses zone-redundant storage"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Disk is configured with ZRS, providing automatic replication across availability zones.
+      potentialBenefits: "Automatic zone-level fault tolerance"
+      learnMoreLink:
+        - name: "ZRS managed disks"
+          url: "https://learn.microsoft.com/azure/virtual-machines/disks-redundancy#zone-redundant-storage-for-managed-disks"
+
+# ============================================================================
+# NETWORK RESOURCES
+# ============================================================================
+
+- resourceType: Microsoft.Network/publicIPAddresses
+  patterns:
+    single_zone:
+      description: "Use Standard SKU zone-redundant public IP"
+      recommendationControl: HighAvailability
+      recommendationImpact: Medium
+      longDescription: |
+        Public IP is zone-pinned. For production workloads, use Standard SKU with zone-redundant
+        configuration to ensure IP availability during zone failures.
+      potentialBenefits: "IP address survives zone failures, seamless failover"
+      learnMoreLink:
+        - name: "Public IP addresses and availability zones"
+          url: "https://learn.microsoft.com/azure/virtual-network/ip-services/public-ip-addresses#availability-zone"
+    
+    zone_redundant:
+      description: "Public IP is zone-redundant"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Public IP uses Standard SKU with zone redundancy, ensuring availability across zone failures.
+      potentialBenefits: "Resilient to zone outages"
+      learnMoreLink:
+        - name: "Zone-redundant public IPs"
+          url: "https://learn.microsoft.com/azure/virtual-network/ip-services/public-ip-addresses#availability-zone"
+
+- resourceType: Microsoft.Network/networkInterfaces
+  patterns:
+    single_zone:
+      description: "Pin NIC to VM's availability zone"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Network interface should be zone-pinned to match the VM's zone for optimal performance.
+        Zone-redundant NICs can add latency.
+      potentialBenefits: "Lower latency, zone alignment with compute"
+      learnMoreLink:
+        - name: "Network interfaces and availability zones"
+          url: "https://learn.microsoft.com/azure/virtual-network/virtual-networks-overview"
+    
+    zone_redundant:
+      description: "Consider zone-pinning NIC to specific zone"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        NIC is not zone-pinned. For VMs in specific zones, zone-pinning the NIC can reduce latency.
+        For load-balanced scenarios, zone-redundant configuration is appropriate.
+      potentialBenefits: "Optimized for specific deployment pattern"
+      learnMoreLink:
+        - name: "Azure networking and availability zones"
+          url: "https://learn.microsoft.com/azure/networking/disaster-recovery-dns-traffic-manager"
+
+# ============================================================================
+# STORAGE RESOURCES
+# ============================================================================
+
+- resourceType: Microsoft.Storage/storageAccounts
+  patterns:
+    single_zone:
+      description: "Enable zone-redundant storage (ZRS or GZRS)"
+      recommendationControl: HighAvailability
+      recommendationImpact: High
+      longDescription: |
+        Storage account uses locally-redundant (LRS) replication. For production data, enable ZRS
+        (zone-redundant) or GZRS (geo-zone-redundant) to protect against zone failures.
+      potentialBenefits: "Data survives zone failures, 99.9999999999% durability (ZRS)"
+      learnMoreLink:
+        - name: "Azure Storage redundancy"
+          url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy"
+        - name: "Zone-redundant storage"
+          url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy#zone-redundant-storage"
+    
+    zone_redundant:
+      description: "Storage account is zone-redundant"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Storage account uses ZRS or GZRS, providing protection against availability zone failures.
+      potentialBenefits: "Automatic cross-zone data replication"
+      learnMoreLink:
+        - name: "Azure Storage redundancy"
+          url: "https://learn.microsoft.com/azure/storage/common/storage-redundancy"
+
+# ============================================================================
+# DATABASE RESOURCES
+# ============================================================================
+
+- resourceType: Microsoft.Sql/servers/databases
+  patterns:
+    single_zone:
+      description: "Enable zone-redundant configuration for SQL Database"
+      recommendationControl: HighAvailability
+      recommendationImpact: High
+      longDescription: |
+        Azure SQL Database should use zone-redundant configuration for Premium/Business Critical tiers
+        to ensure high availability across zone failures.
+      potentialBenefits: "99.995% SLA, automatic zone failover"
+      learnMoreLink:
+        - name: "Azure SQL Database zone redundancy"
+          url: "https://learn.microsoft.com/azure/azure-sql/database/high-availability-sla"
+    
+    zone_redundant:
+      description: "SQL Database is zone-redundant"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Database is configured for zone redundancy with automatic failover across zones.
+      potentialBenefits: "Maximum database availability"
+      learnMoreLink:
+        - name: "High availability in Azure SQL"
+          url: "https://learn.microsoft.com/azure/azure-sql/database/high-availability-sla"
+
+- resourceType: Microsoft.DocumentDB/databaseAccounts
+  patterns:
+    single_zone:
+      description: "Enable multi-region writes with availability zones"
+      recommendationControl: HighAvailability
+      recommendationImpact: High
+      longDescription: |
+        Cosmos DB should be configured with multiple regions and availability zones enabled
+        for maximum resilience and global distribution.
+      potentialBenefits: "99.999% availability, automatic failover"
+      learnMoreLink:
+        - name: "Cosmos DB high availability"
+          url: "https://learn.microsoft.com/azure/cosmos-db/high-availability"
+    
+    zone_redundant:
+      description: "Cosmos DB has availability zones enabled"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Cosmos DB is configured with availability zones for zone-level resilience.
+      potentialBenefits: "Zone fault tolerance in all regions"
+      learnMoreLink:
+        - name: "Cosmos DB availability zones"
+          url: "https://learn.microsoft.com/azure/cosmos-db/high-availability#availability-zone-support"
+
+# ============================================================================
+# GENERIC FALLBACK (for resource types not explicitly configured)
+# ============================================================================
+
+- resourceType: "*"
+  patterns:
+    single_zone:
+      description: "Consider zone-redundant or multi-zone deployment"
+      recommendationControl: HighAvailability
+      recommendationImpact: Medium
+      longDescription: |
+        Resource is deployed in a single availability zone. Review Azure documentation to determine
+        if this resource type supports zone-redundant or multi-zone deployment patterns.
+      potentialBenefits: "Improved availability and fault tolerance"
+      learnMoreLink:
+        - name: "Azure services with availability zones"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-service-support"
+    
+    multi_zone_2:
+      description: "Add third availability zone for full resilience"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Resource spans 2 availability zones. For complete fault tolerance, distribute across
+        all 3 zones if supported by the resource type.
+      potentialBenefits: "Complete zone redundancy"
+      learnMoreLink:
+        - name: "Availability zones overview"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"
+    
+    multi_zone_3plus:
+      description: "Resource meets 3-AZ deployment requirement"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Resource is properly distributed across 3 or more availability zones, following best practices.
+      potentialBenefits: "Maximum availability"
+      learnMoreLink:
+        - name: "Availability zones best practices"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"
+    
+    zone_redundant:
+      description: "Zone-redundant configuration active"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        Resource uses zone-redundant configuration with automatic cross-zone replication.
+      potentialBenefits: "Automatic zone failover"
+      learnMoreLink:
+        - name: "Availability zones"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"
+    
+    not_applicable:
+      description: "Resource type does not support availability zones"
+      recommendationControl: HighAvailability
+      recommendationImpact: Low
+      longDescription: |
+        This resource type does not currently support availability zone deployment.
+        Consider regional redundancy or other high-availability patterns.
+      potentialBenefits: "N/A"
+      learnMoreLink:
+        - name: "Azure services availability zones support"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-service-support"
+    
+    unknown:
+      description: "Verify zone configuration and support"
+      recommendationControl: HighAvailability
+      recommendationImpact: Medium
+      longDescription: |
+        Zone configuration could not be determined. Verify whether this resource type supports
+        availability zones and review current configuration in Azure Portal.
+      potentialBenefits: "Clarity on resilience posture"
+      learnMoreLink:
+        - name: "Azure availability zones"
+          url: "https://learn.microsoft.com/azure/reliability/availability-zones-overview"

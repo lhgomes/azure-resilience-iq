@@ -1,0 +1,28 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Sql/servers/databases
+# Category: HighAvailability
+# Description: Recommendations for Azure SQL Database zone deployment
+
+patterns:
+  single_zone:
+    description: "Enable zone-redundant configuration for SQL Database"
+    recommendationControl: HighAvailability
+    recommendationImpact: High
+    longDescription: |
+      Azure SQL Database should use zone-redundant configuration for Premium/Business Critical tiers
+      to ensure high availability across zone failures.
+    potentialBenefits: "99.995% SLA, automatic zone failover"
+    learnMoreLink:
+      - name: "Azure SQL Database zone redundancy"
+        url: "https://learn.microsoft.com/azure/azure-sql/database/high-availability-sla"
+  
+  zone_redundant:
+    description: "SQL Database is zone-redundant"
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Database is configured for zone redundancy with automatic failover across zones.
+    potentialBenefits: "Maximum database availability"
+    learnMoreLink:
+      - name: "High availability in Azure SQL"
+        url: "https://learn.microsoft.com/azure/azure-sql/database/high-availability-sla"

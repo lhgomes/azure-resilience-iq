@@ -1,0 +1,31 @@
+# Zone Redundancy Configuration
+# Resource Type: Microsoft.Network/networkInterfaces
+# Category: HighAvailability
+# Description: Recommendations for Azure Network Interfaces zone deployment
+
+patterns:
+  single_zone:
+    description: "Pin NIC to VM's availability zone"
+    aprlGuid: networkinterface-zone-redundancy-001
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      Network interface should be zone-pinned to match the VM's zone for optimal performance.
+      Zone-redundant NICs can add latency.
+    potentialBenefits: "Lower latency, zone alignment with compute"
+    learnMoreLink:
+      - name: "Network interfaces and availability zones"
+        url: "https://learn.microsoft.com/azure/virtual-network/virtual-networks-overview"
+  
+  zone_redundant:
+    description: "Consider zone-pinning NIC to specific zone"
+    aprlGuid: networkinterface-zone-redundancy-001
+    recommendationControl: HighAvailability
+    recommendationImpact: Low
+    longDescription: |
+      NIC is not zone-pinned. For VMs in specific zones, zone-pinning the NIC can reduce latency.
+      For load-balanced scenarios, zone-redundant configuration is appropriate.
+    potentialBenefits: "Optimized for specific deployment pattern"
+    learnMoreLink:
+      - name: "Azure networking and availability zones"
+        url: "https://learn.microsoft.com/azure/networking/disaster-recovery-dns-traffic-manager"

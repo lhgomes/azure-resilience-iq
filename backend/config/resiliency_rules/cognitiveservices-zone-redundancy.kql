@@ -1,0 +1,8 @@
+// Check Cognitive Services for zone/region redundancy
+// Services in multiple regions have better resilience
+Resources
+| where type =~ 'microsoft.cognitiveservices/accounts'
+| project recommendationId="cognitiveservices-zone-redundancy-001", name, id, tags,
+    param1 = "Single region deployment",
+    param2 = "Recommended: Deploy to multiple regions for resilience",
+    param3 = strcat("Location: ", location)

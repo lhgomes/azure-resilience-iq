@@ -6,6 +6,7 @@ import GraphCanvas, {
   GraphCanvasHandle
 } from "../components/GraphCanvasReactflow";
 import ResilienceSummary from "../components/ResilienceSummary";
+import ZonalResilienceSummary from "../components/ZonalResilienceSummary";
 import TabbedView from "../components/TabbedView";
 import EdgeDrawer, {
   EdgeData
@@ -41,6 +42,7 @@ import {
   type ViewLevel,
 } from "../domain/graphView";
 import { calculateResilienceScore, getElementWeight, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
+import { getZonalResilience, type ZonalResilienceResponse } from "../api/resilience";
 
 // Subscription-aware view: user selects a subscriptionId
 
@@ -53,6 +55,9 @@ const WorkloadView: React.FC = () => {
   const [resilience_evaluations, setResilienceEvaluations] = useState<Record<string, any> | null>(null);
   const [resilience_overrides, setResilienceOverrides] = useState<Record<string, any>>({});
   const [resilience_data, setResilienceData] = useState<any | null>(null);
+  const [zonal_resilience_data, setZonalResilienceData] = useState<ZonalResilienceResponse | null>(null);
+  const [zonal_resilience_loading, setZonalResilienceLoading] = useState(false);
+  const [zonal_resilience_error, setZonalResilienceError] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -124,39 +129,39 @@ const WorkloadView: React.FC = () => {
   };
 
   const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
-    const overrideLookup = new Map<string, { status: "pass" | "fail"; validation_source?: string; check_uuid?: string }>();
+    // Build lookup by resilience_check_id (deterministic UUIDv5 from resource_id + recommendation_id)
+    const overrideLookup = new Map<string, { status: "pass" | "fail"; validation_source?: string; resilience_check_id?: string }>();
 
-    Object.entries(overrides || {}).forEach(([checkUuid, override]) => {
-      const resourceId = String((override as any)?.resource_id || "").toLowerCase();
-      const recommendationId = String((override as any)?.recommendation_id || "").toLowerCase();
-      if (!resourceId || !recommendationId) return;
+    Object.entries(overrides || {}).forEach(([resilienceCheckId, override]) => {
+      if (!resilienceCheckId) return;
 
       const validationSource = ((override as any)?.overridden_by || "").toLowerCase() === "user"
         ? "User"
         : (override as any)?.overridden_by;
 
-      overrideLookup.set(`${resourceId}_${recommendationId}`, {
+      overrideLookup.set(resilienceCheckId, {
         status: (override as any)?.status,
         validation_source: validationSource,
-        check_uuid: checkUuid,
+        resilience_check_id: resilienceCheckId,
       });
     });
 
     return Object.fromEntries(
       Object.entries(evaluations || {}).map(([resourceId, evaluation]) => {
-        const resourceKey = resourceId.toLowerCase();
         const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
 
         const mergedChecks = checksOrFindings.map((check: any) => {
-          const recommendationId = String(check?.recommendation_id || "").toLowerCase();
-          const override = overrideLookup.get(`${resourceKey}_${recommendationId}`);
+          const resilienceCheckId = check?.resilience_check_id as string | undefined;
+          if (!resilienceCheckId) return check;
+
+          const override = overrideLookup.get(resilienceCheckId);
           if (!override) return check;
 
           return {
             ...check,
             status: override.status,
             validation_source: override.validation_source || check.validation_source,
-            check_uuid: override.check_uuid,
+            resilience_check_id: resilienceCheckId,
           };
         });
 
@@ -176,6 +181,77 @@ const WorkloadView: React.FC = () => {
         ];
       })
     );
+  }, []);
+
+  const upsertResilienceOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
+    const resilienceCheckId = override?.resilience_check_id;
+    if (!resilienceCheckId) return;
+
+    setResilienceOverrides(prev => ({
+      ...(prev || {}),
+      [resilienceCheckId]: {
+        ...(prev || {})[resilienceCheckId],
+        ...override,
+        overridden_by: override.overridden_by ?? "user",
+      },
+    }));
+  }, []);
+
+  const removeResilienceOverride = useCallback((resilienceCheckId: string) => {
+    if (!resilienceCheckId) return;
+
+    setResilienceOverrides(prev => {
+      const next = { ...(prev || {}) };
+      delete next[resilienceCheckId];
+      return next;
+    });
+  }, []);
+
+  const applyOptimisticOverrideRemoval = useCallback((resilienceCheckId: string, resourceId?: string) => {
+    if (!resilienceCheckId || !resourceId) return;
+
+    setResilienceEvaluations(prev => {
+      if (!prev || !prev[resourceId]) return prev;
+
+      const entry = prev[resourceId];
+      const updateList = (checks?: any[]) => {
+        if (!checks) return checks;
+        return checks.map(check => {
+          if (check?.resilience_check_id !== resilienceCheckId) return check;
+
+          const nextCheck = { ...check, status: "fail" as const };
+          const validationSource = check?.validation_source;
+
+          if (Array.isArray(validationSource)) {
+            const filtered = validationSource.filter((v: string) => String(v).toLowerCase() !== "user");
+            nextCheck.validation_source = filtered.length > 0 ? filtered : ["APRL"];
+          } else if (typeof validationSource === "string") {
+            const lower = validationSource.toLowerCase();
+            nextCheck.validation_source = lower === "user" || !validationSource ? "APRL" : validationSource;
+          } else {
+            nextCheck.validation_source = "APRL";
+          }
+
+          return nextCheck;
+        });
+      };
+
+      const nextFindings = updateList((entry as any).findings);
+      const nextChecks = updateList((entry as any).checks);
+      const listForCounts = (nextChecks ?? nextFindings ?? []) as any[];
+
+      return {
+        ...prev,
+        [resourceId]: {
+          ...entry,
+          findings: (entry as any).findings ? nextFindings : undefined,
+          checks: (entry as any).checks ? nextChecks : undefined,
+          passed_checks: listForCounts.filter((c: any) => c.status === "pass").length,
+          failed_checks: listForCounts.filter((c: any) => c.status === "fail").length,
+          total_checks: listForCounts.length,
+        },
+      };
+    });
   }, []);
 
   const fetchGraph = useCallback(async () => {
@@ -203,6 +279,30 @@ const WorkloadView: React.FC = () => {
       setError(err.message ?? "Unknown error");
     } finally {
       setLoading(false);
+    }
+  }, [subscriptionId]);
+
+  const handleOverrideSaved = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
+    upsertResilienceOverride(override);
+  }, [upsertResilienceOverride]);
+
+  const handleOverrideDeleted = useCallback((resilienceCheckId: string, resourceId?: string) => {
+    removeResilienceOverride(resilienceCheckId);
+    applyOptimisticOverrideRemoval(resilienceCheckId, resourceId);
+  }, [removeResilienceOverride, applyOptimisticOverrideRemoval]);
+
+  const fetchZonalResilience = useCallback(async () => {
+    if (!subscriptionId) return;
+    try {
+      setZonalResilienceLoading(true);
+      setZonalResilienceError(null);
+
+      const data = await getZonalResilience(subscriptionId);
+      setZonalResilienceData(data);
+    } catch (err: any) {
+      setZonalResilienceError(err.message ?? "Failed to load zonal resilience data");
+    } finally {
+      setZonalResilienceLoading(false);
     }
   }, [subscriptionId]);
 
@@ -388,7 +488,8 @@ const WorkloadView: React.FC = () => {
     const stored = readStoredGraph();
     setGraph(stored);
     fetchGraph();
-  }, [subscriptionId]); // Only re-fetch when subscription changes
+    fetchZonalResilience();
+  }, [subscriptionId, fetchZonalResilience]); // Only re-fetch when subscription changes
 
   // Accept edge
   const handleAcceptEdge = async (edgeId: string) => {
@@ -1277,7 +1378,7 @@ const WorkloadView: React.FC = () => {
           >
             {sidebarOpen ? "◀ Hide" : "▶ Show"} Menu
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Workload Graph</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Azure Workload Insights</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label htmlFor="subscriptionId" style={{ fontSize: 12, color: "#9AA0A6" }}>Subscription</label>
             <select
@@ -1467,7 +1568,7 @@ const WorkloadView: React.FC = () => {
                 icon: "🛡️",
                 content: resilience_evaluations ? (
                   <ResilienceSummary
-                    evaluations={resilience_evaluations}
+                    evaluations={resilience_evaluations || {}}
                     workloadScore={resilience_data?.workload_score}
                     subscriptionId={subscriptionId}
                     graphData={graph}
@@ -1475,10 +1576,36 @@ const WorkloadView: React.FC = () => {
                     viewLevel={viewLevel}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    onOverrideSaved={handleOverrideSaved}
+                    onOverrideDeleted={handleOverrideDeleted}
                   />
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
                     No resilience data available
+                  </div>
+                ),
+              },
+              {
+                label: "Zonal Resilience",
+                icon: "🌍",
+                content: zonal_resilience_loading ? (
+                  <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
+                    Loading zonal resilience data...
+                  </div>
+                ) : zonal_resilience_error ? (
+                  <div style={{ padding: "32px", color: "#dc2626" }}>
+                    <strong>Error:</strong> {zonal_resilience_error}
+                  </div>
+                ) : zonal_resilience_data ? (
+                  <ZonalResilienceSummary 
+                    data={zonal_resilience_data} 
+                    graphData={graph}
+                    resourceGroupFilter={resourceGroupFilter}
+                    serviceFilter={serviceFilter}
+                  />
+                ) : (
+                  <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
+                    No zonal resilience data available
                   </div>
                 ),
               },

@@ -1,0 +1,11 @@
+// Azure Resource Graph Query
+// Find Container Instances in zone-enabled regions without zone redundancy
+// Container Instances can be deployed across availability zones for high availability
+Resources
+| where type =~ 'Microsoft.ContainerInstance/containerGroups'
+| where location in~ ("australiaeast", "brazilsouth", "canadacentral", "centralindia", "centralus", "eastasia", "eastus", "eastus2", "francecentral", "germanywestcentral", "israelcentral", "italynorth", "japaneast", "japanwest", "koreacentral", "mexicocentral", "newzealandnorth", "northeurope", "norwayeast", "polandcentral", "qatarcentral", "southafricanorth", "southcentralus", "southeastasia", "spaincentral", "swedencentral", "switzerlandnorth", "uaenorth", "uksouth", "westeurope", "westus2", "westus3", "usgovvirginia", "chinanorth3")
+| where isempty(zones) or isnull(zones) or array_length(zones) == 0
+| project recommendationId="containerinstance-zone-redundancy-001", name, id, tags,
+    param1 = strcat("Container group location: ", location),
+    param2 = "Recommended: Deploy container groups across availability zones",
+    param3 = strcat("OS Type: ", properties.osType)

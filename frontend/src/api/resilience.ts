@@ -32,6 +32,7 @@ export interface CategoryScore {
 
 export interface ResilienceCheck {
   recommendation_id: string;
+  resilience_check_id: string;  // Unique ID based on resource_id + recommendation_id
   description: string;
   category: string;
   impact: 'High' | 'Medium' | 'Low';
@@ -44,7 +45,7 @@ export interface ResilienceCheck {
   };
   criticality_weight: number;
   status: 'pass' | 'fail' | 'pending';
-  validation_source: 'APRL' | 'Heuristic' | 'LLM' | 'PendingReview';
+  validation_source: string[];  // List of validation sources: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
   impact_weight: number;
   contribution_percent: number;
   is_critical: boolean;
@@ -167,7 +168,8 @@ export function getScoreStatus(score: number): string {
  * Override interfaces
  */
 export interface OverrideData {
-  check_uuid: string;
+  resilience_check_id: string;  // New primary ID
+  check_uuid?: string;  // Deprecated, kept for backward compatibility
   resource_id: string;
   recommendation_id: string;
   status: 'pass' | 'fail';
@@ -215,12 +217,12 @@ export async function saveOverride(
  */
 export async function deleteOverride(
   subscriptionId: string,
-  checkUuid: string
-): Promise<{ deleted: boolean; check_uuid: string }> {
+  resilienceCheckId: string
+): Promise<{ deleted: boolean; resilience_check_id: string }> {
   return apiJson(`/api/resilience/${encodeURIComponent(subscriptionId)}/overrides`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ check_uuid: checkUuid }),
+    body: JSON.stringify({ resilience_check_id: resilienceCheckId }),
   });
 }
 
@@ -239,5 +241,111 @@ export async function getCheckOverride(
   return apiJson(
     `/api/resilience/${encodeURIComponent(subscriptionId)}/overrides/check?${params}`
   );
+}
+
+/**
+ * Zonal Resilience Types and APIs
+ */
+
+export type DeploymentPattern = 'zone_redundant' | 'multi_zone' | 'single_zone' | 'not_applicable' | 'unknown';
+
+export interface ZonalData {
+  zones_used: string[];
+  is_zone_redundant: boolean;
+  zone_count: number;
+  meets_3az_requirement: boolean;
+  deployment_pattern: DeploymentPattern;
+  recommendation: string;
+}
+
+export interface ResourceZonalAnalysis {
+  resource_id: string;
+  resource_name: string;
+  resource_type: string;
+  location: string;
+  zonal_data: ZonalData;
+}
+
+export interface ZonalResilienceSummary {
+  total_resources: number;
+  zone_redundant_resources: number;
+  multi_zone_resources: number;
+  single_zone_resources: number;
+  not_applicable_resources: number;
+  unknown_zone_resources: number;
+  compliant_3az_resources: number;
+  overall_3az_compliant: boolean;
+  zonal_resilience_score: number;
+  compliance_percentage: number;
+  regional_analysis?: {
+    total_regions: number;
+    zone_enabled_regions_count: number;
+    non_zone_regions_count: number;
+    resources_in_zone_regions: number;
+    resources_in_non_zone_regions: number;
+    regions: string[];
+    zone_enabled_regions: string[];
+    non_zone_regions: string[];
+  };
+}
+
+export interface ZonalResilienceResponse {
+  subscription_id: string;
+  analysis_timestamp: string;
+  summary?: ZonalResilienceSummary;  // Optional - will be calculated frontend-side from resources
+  resources: ResourceZonalAnalysis[];
+}
+
+/**
+ * Get zonal resilience analysis for a subscription
+ */
+export async function getZonalResilience(
+  subscriptionId: string
+): Promise<ZonalResilienceResponse> {
+  return apiJson(
+    `/api/subscriptions/${encodeURIComponent(subscriptionId)}/zonal-resilience`
+  );
+}
+
+/**
+ * Get deployment pattern display name
+ */
+export function getDeploymentPatternLabel(pattern: DeploymentPattern): string {
+  const labels: Record<DeploymentPattern, string> = {
+    zone_redundant: 'Zone Redundant',
+    multi_zone: 'Multi-Zone',
+    single_zone: 'Single Zone',
+    not_applicable: 'Not Applicable',
+    unknown: 'Unknown',
+  };
+  return labels[pattern] || pattern;
+}
+
+/**
+ * Get deployment pattern color for UI
+ */
+export function getDeploymentPatternColor(pattern: DeploymentPattern): string {
+  const colors: Record<DeploymentPattern, string> = {
+    zone_redundant: '#10b981',  // Green
+    multi_zone: '#3b82f6',      // Blue
+    single_zone: '#f59e0b',     // Amber
+    not_applicable: '#9ca3af',  // Gray
+    unknown: '#6b7280',         // Dark gray
+  };
+  return colors[pattern] || '#9ca3af';
+}
+
+/**
+ * Get deployment pattern icon
+ */
+export function getDeploymentPatternIcon(pattern: DeploymentPattern): string {
+  const icons: Record<DeploymentPattern, string> = {
+    zone_redundant: '✓',   // Checkmark
+    multi_zone: '◉◉◉',     // Multiple circles
+    single_zone: '◉',      // Single circle
+    not_applicable: '—',   // Dash
+    unknown: '?',          // Question mark
+  };
+  return icons[pattern] || '?';
 }
 

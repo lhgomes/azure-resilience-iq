@@ -45,7 +45,7 @@ def main():
 
     resources = query_resources(
         subscription_id=args.subscription_id,
-        resource_groups=args.resource_group,
+        resource_groups=args.resource_group.lower(),
         tags=tags,
     )
 
