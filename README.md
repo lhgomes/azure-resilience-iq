@@ -22,7 +22,7 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 
 ```bash
 git clone <repository-url>
-cd azure-workload-graph
+cd azure-workload-insights
 ```
 
 ### 2. Backend Setup
@@ -173,7 +173,7 @@ The frontend will be available at `http://localhost:5173`.
 ## Project Structure
 
 ```
-azure-workload-graph/
+azure-workload-insights/
 ├── backend/
 │   ├── app/
 │   │   ├── collector/        # Azure Resource Graph collector
