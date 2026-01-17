@@ -75,10 +75,10 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <strong>Edge Colors:</strong>
+          <strong>Edge Colors (Multi-Source Signals):</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
             <div style={{ marginBottom: 3 }}>
-              <span style={{ color: "#5EA0EF" }}>━ Blue: ARG (Azure Resource Graph)</span>
+              <span style={{ color: "#5EA0EF" }}>━ Blue: ARM Declared (Azure Resource Manager)</span>
             </div>
             <div style={{ marginBottom: 3 }}>
               <span style={{ color: "#22c55e" }}>━ Green: Manual (user-created)</span>
@@ -88,6 +88,9 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
             </div>
             <div style={{ marginBottom: 3 }}>
               <span style={{ color: "#9AA0A6" }}>╌ Gray dashed: Heuristic</span>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11 }}>
+              12 signal types: ARM_Declared, PrivateEndpoint, FlowLog, AppInsights, ConnectionString, AppConfig, PrivateDNS, SubnetRouting, DNSZoneLink, RouteTable, VNetCoupling, NSGRule
             </div>
           </div>
         </div>
@@ -138,6 +141,13 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
             <div>
               Configured in app_config.yaml. See README for details.
             </div>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <strong>Resilience Groups:</strong>
+          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
+            Auto-detected groups: Availability Sets, VMSS, Load Balancer backends, Storage geo-redundancy, SQL failover groups, Cosmos replication, and custom groups. Resources evaluated in group context.
           </div>
         </div>
 
