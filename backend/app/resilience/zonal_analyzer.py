@@ -166,8 +166,10 @@ class ZonalAnalyzer:
             True
         """
         properties = resource.get("properties", {})
-        resource_type = resource.get("type", "").lower()
-        location = resource.get("location", "").lower()
+        resource_type_raw = resource.get("type") or properties.get("type") or ""
+        resource_type = str(resource_type_raw).lower()
+        location_raw = resource.get("location") or properties.get("location") or ""
+        location = str(location_raw).lower()
         sku = resource.get("sku", {})
         sku_name = sku.get("name", "") if isinstance(sku, dict) else ""
         
@@ -205,12 +207,38 @@ class ZonalAnalyzer:
             zones = [zones]
         zones = [str(z) for z in zones] if zones else []
         
+        # Special handling for AKS: Check node pool availability zones
+        if resource_type == "microsoft.containerservice/managedclusters" and not zones:
+            # Check default_node_pool.availability_zones
+            default_pool = properties.get("default_node_pool", {})
+            if default_pool and isinstance(default_pool, dict):
+                zones = default_pool.get("availability_zones", [])
+            
+            # Fallback: Check nodePoolProfiles (Azure API response format)
+            if not zones:
+                node_pools = properties.get("nodePoolProfiles", [])
+                if node_pools and isinstance(node_pools, list) and len(node_pools) > 0:
+                    zones = node_pools[0].get("availabilityZones", [])
+            
+            # Normalize to list of strings
+            if isinstance(zones, str):
+                zones = [zones]
+            zones = [str(z) for z in zones] if zones else []
+        
         # Special handling for Virtual Networks: Check subnet architecture
         if resource_type == "microsoft.network/virtualnetworks":
             return ZonalAnalyzer._analyze_vnet_zone_architecture(resource, location)
         
         # Check if resource is inherently zone-redundant by SKU/type
         is_zone_redundant = ZonalAnalyzer._is_zone_redundant_sku(sku_name, properties)
+        
+        # For resources with explicit zone_redundant property (e.g., SQL Database),
+        # if not zone-redundant and no zones specified, mark as single-zone
+        has_explicit_zone_redundant = "zone_redundant" in properties or "zoneRedundant" in properties
+        
+        # Check for storage account replication types
+        replication_type = properties.get("account_replication_type", "")
+        is_lrs = replication_type.upper() == "LRS"  # LRS = Locally Redundant = Single Zone
         
         # Determine deployment pattern
         if is_zone_redundant:
@@ -232,6 +260,20 @@ class ZonalAnalyzer:
             pattern = DeploymentPattern.SINGLE_ZONE
             zone_count = 1
             meets_3az = False
+        
+        elif has_explicit_zone_redundant and not is_zone_redundant:
+            # Resource has explicit zone_redundant=false property, so it's single-zone
+            pattern = DeploymentPattern.SINGLE_ZONE
+            zone_count = 1
+            meets_3az = False
+            zones = ["unknown"]  # Mark that it's single-zone but zone not specified
+        
+        elif is_lrs:
+            # Storage account with LRS (Locally Redundant Storage) = Single Zone
+            pattern = DeploymentPattern.SINGLE_ZONE
+            zone_count = 1
+            meets_3az = False
+            zones = ["unknown"]  # Mark that it's single-zone but zone not specified
             
         else:
             # No zone information available
@@ -521,6 +563,12 @@ class ZonalAnalyzer:
             True if the resource is zone-redundant
         """
         if not sku_name:
+            # For storage accounts, check account_replication_type
+            replication_type = properties.get("account_replication_type", "")
+            if replication_type:
+                sku_name = replication_type
+        
+        if not sku_name:
             return False
         
         # Check against known zone-redundant patterns from config
@@ -529,8 +577,8 @@ class ZonalAnalyzer:
             if re.match(pattern, sku_name, re.IGNORECASE):
                 return True
         
-        # Check for explicit zone redundancy in properties
-        zone_redundant_prop = properties.get("zoneRedundant", False)
+        # Check for explicit zone redundancy in properties (handle both camelCase and snake_case)
+        zone_redundant_prop = properties.get("zoneRedundant") or properties.get("zone_redundant")
         if zone_redundant_prop:
             return True
         

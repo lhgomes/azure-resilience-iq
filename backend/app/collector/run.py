@@ -11,6 +11,8 @@ from app.relationships.extract_runtime import query_flow_logs, query_application
 from app.relationships.utils import norm_id
 from app.graph.builder import edge_id
 
+def normalize_resource_groups(resource_groups):
+    return [rg.lower() for rg in resource_groups]
 
 def get_subscription_name(subscription_id: str) -> str:
     """Fetch subscription name from Azure."""
@@ -45,7 +47,7 @@ def main():
 
     resources = query_resources(
         subscription_id=args.subscription_id,
-        resource_groups=args.resource_group.lower(),
+        resource_groups=normalize_resource_groups(args.resource_group) if args.resource_group else None,
         tags=tags,
     )
 
@@ -71,6 +73,7 @@ def main():
     resources_output = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
+        "virtual_resources": False,
         "resources": output
     }
     
@@ -121,6 +124,7 @@ def main():
     edges_output_data = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
+        "virtual_resources": False,
         "edges": edges_output
     }
     edges_file.write_text(json.dumps(edges_output_data, indent=2))

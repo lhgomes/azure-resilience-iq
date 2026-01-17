@@ -508,9 +508,20 @@ def main():
         # Handle new format with subscription metadata
         if isinstance(resources_data, dict) and "resources" in resources_data:
             resources = resources_data["resources"]
+            subscription_name = resources_data.get("subscription_name", "")
+            virtual_resources = bool(resources_data.get("virtual_resources", False))
         else:
             # Fallback for direct list format
             resources = resources_data
+            subscription_name = ""
+            virtual_resources = False
+        
+        # Detect if this is a virtual (non-Azure) subscription, e.g., Terraform input
+        is_terraform_subscription = virtual_resources or subscription_name == "Terraform"
+        if virtual_resources:
+            LOGGER.info("Virtual resources input detected. Using LLM-based evaluation instead of KQL.")
+        elif is_terraform_subscription:
+            LOGGER.info("Terraform-generated subscription detected via name. Using LLM-based evaluation instead of KQL.")
         
         LOGGER.info("Loaded %d resources", len(resources))
 
@@ -539,6 +550,7 @@ def main():
                 resources=res_list,
                 subscription_id=args.subscription_id,
                 detail_log=detail_log,
+                is_virtual_subscription=virtual_resources,
             )
 
             for resource_id, result in batch_results.items():
@@ -567,6 +579,7 @@ def main():
                 resources=[sub_resource],
                 subscription_id=args.subscription_id,
                 detail_log=detail_log,
+                is_virtual_subscription=virtual_resources,
             )
             
             for resource_id, result in sub_results.items():

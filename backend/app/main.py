@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.settings import load_settings
 from app.routes.resilience import router as resilience_router
 from app.routes.unified_recommendations import router as unified_recommendations_router
+from app.routes.terraform import router as terraform_router
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
@@ -42,7 +43,7 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
-app = FastAPI(title="Azure Workload Insights")
+app = FastAPI(title="Azure Resilience IQ")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,6 +55,7 @@ app.add_middleware(
 # Register API routes
 app.include_router(resilience_router)
 app.include_router(unified_recommendations_router)
+app.include_router(terraform_router)
 
 
 class CreateEdgeRequest(BaseModel):

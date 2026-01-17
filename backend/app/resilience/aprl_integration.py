@@ -553,7 +553,7 @@ class APRLEvaluator:
                     kql_text = kql_path.read_text(encoding="utf-8")
                     marker = kql_text.strip().lower()
                     if not marker:
-                        LOGGER.info(
+                        LOGGER.debug(
                             "Skipping empty KQL for %s (aprlGuid=%s)",
                             resource_type,
                             aprl_guid,
@@ -563,7 +563,7 @@ class APRLEvaluator:
                         "cannot-be-validated-with-arg" in marker
                         or "under-development" in marker
                     ):
-                        LOGGER.info(
+                        LOGGER.debug(
                             "Skipping placeholder KQL for %s (aprlGuid=%s)",
                             resource_type,
                             aprl_guid,
@@ -678,8 +678,18 @@ class APRLEvaluator:
         resources: List[Dict[str, Any]],
         subscription_id: str,
         detail_log: Optional[List[Dict[str, Any]]] = None,
+        is_virtual_subscription: bool = False,
     ) -> Dict[str, APRLEvaluationResult]:
-        """Evaluate all resources of a type with one KQL per recommendation, batch pending guidance."""
+        """
+        Evaluate all resources of a type with one KQL per recommendation, batch pending guidance.
+        
+        For virtual resources (where resources don't exist in Azure, e.g., from Terraform),
+        skip KQL queries and use LLM-based evaluation instead with APRL recommendations.
+        All other resources without KQL also go through unified LLM evaluation.
+        
+        Args:
+            is_virtual_subscription: If True, skip all KQL queries. KQL cannot query non-existent resources.
+        """
 
         results: Dict[str, APRLEvaluationResult] = {}
         resource_ids = [r.get("id") for r in resources if r.get("id")]
@@ -729,41 +739,82 @@ class APRLEvaluator:
                 "status": None,
             }
 
-            if kql_query:
-                filtered_query = self._inject_resource_filter(kql_query, resource_ids_lower)
-                detail_entry["query"] = filtered_query
-                try:
-                    rows = self._execute_kql(subscription_id, filtered_query)
-                    failing_ids = {
-                        row.get("id") for row in rows if isinstance(row, dict) and row.get("id")
-                    }
-                    detail_entry["rows"] = rows
-                    detail_entry["status"] = "success"
-                except HttpResponseError as exc:
-                    LOGGER.error(
-                        "KQL execution failed for resource_type=%s recommendation=%s: %s",
-                        resource_type,
-                        rec.guid,
-                        exc,
-                    )
-                    failing_ids = set()
-                    detail_entry["error"] = str(exc)
-                    detail_entry["status"] = "error_http"
-                except ServiceResponseError as exc:
-                    LOGGER.error(
-                        "Transient KQL error for resource_type=%s recommendation=%s: %s",
-                        resource_type,
-                        rec.guid,
-                        exc,
-                    )
-                    failing_ids = set()
-                    detail_entry["error"] = str(exc)
-                    detail_entry["status"] = "error_transient"
-            else:
-                detail_entry["status"] = "missing_kql"
-                # Try property-based fallback checks using heuristic validator with LLM escalation
+            # If this is a virtual subscription, skip KQL entirely and mark all resources as pending
+            if is_virtual_subscription:
+                # Mark all resources as pending for LLM evaluation
+                for res in resources:
+                    rid = res.get("id")
+                    if rid:
+                        idx = len(checks_map[rid])
+                        pending_items.append({
+                            "id": f"{rid}:{rec.guid}",
+                            "description": rec.description,
+                            "impact": rec.impact,
+                            "long_description": rec.long_description,
+                            "potential_benefits": rec.potential_benefits,
+                            "resource": res,  # Include full resource for LLM analysis
+                        })
+                        pending_map[(rid, rec.guid)] = idx
+                        checks_map[rid].append({
+                            "recommendation_id": rec.guid,
+                            "description": rec.description,
+                            "category": rec.category,
+                            "impact": rec.impact,
+                            "long_description": rec.long_description,
+                            "potential_benefits": rec.potential_benefits,
+                            "learn_more": rec.learn_more_links,
+                            "status": "pending",
+                            "validation_source": "PendingReview",
+                            "resilience_check_id": generate_resilience_check_id(rid, rec.guid),
+                        })
+                detail_entry["status"] = "skipped_virtual_subscription"
+                detail_entry["reason"] = "Virtual subscription - KQL not applicable"
                 LOGGER.debug(
-                    "No KQL for %s recommendation=%s; trying heuristic validation",
+                    "Skipping KQL for virtual subscription; using LLM evaluation for %s recommendation=%s",
+                    resource_type,
+                    rec.guid,
+                )
+            elif kql_query:
+                # Only use KQL if we have non-virtual resources to evaluate
+                non_virtual_resources = [r for r in resources if not r.get("virtual_resources", False)]
+                if non_virtual_resources:
+                    non_virtual_ids = [r.get("id") for r in non_virtual_resources if r.get("id")]
+                    non_virtual_ids_lower = [rid.lower() for rid in non_virtual_ids]
+                    filtered_query = self._inject_resource_filter(kql_query, non_virtual_ids_lower)
+                    detail_entry["query"] = filtered_query
+                    try:
+                        rows = self._execute_kql(subscription_id, filtered_query)
+                        failing_ids = {
+                            row.get("id") for row in rows if isinstance(row, dict) and row.get("id")
+                        }
+                        detail_entry["rows"] = rows
+                        detail_entry["status"] = "success"
+                    except HttpResponseError as exc:
+                        LOGGER.error(
+                            "KQL execution failed for resource_type=%s recommendation=%s: %s",
+                            resource_type,
+                            rec.guid,
+                            exc,
+                        )
+                        failing_ids = set()
+                        detail_entry["error"] = str(exc)
+                        detail_entry["status"] = "error_http"
+                    except ServiceResponseError as exc:
+                        LOGGER.error(
+                            "Transient KQL error for resource_type=%s recommendation=%s: %s",
+                            resource_type,
+                            rec.guid,
+                            exc,
+                        )
+                        failing_ids = set()
+                        detail_entry["error"] = str(exc)
+                        detail_entry["status"] = "error_transient"
+            
+            # Handle property-based heuristic validation for resources without KQL
+            # (Skip this if subscription is virtual - all items go to LLM)
+            if not kql_query and not is_virtual_subscription:
+                LOGGER.debug(
+                    "No KQL for %s recommendation=%s; using heuristic validation",
                     resource_type,
                     rec.guid,
                 )
@@ -804,7 +855,8 @@ class APRLEvaluator:
                                 "potential_benefits": rec.potential_benefits,
                                 "learn_more": rec.learn_more_links,
                                 "status": "pending",
-                                "validation_source": "PendingReview"
+                                "validation_source": "PendingReview",
+                                "resilience_check_id": generate_resilience_check_id(rid, rec.guid),
                             })
                         elif strategy and strategy.confidence >= 0.5:
                             # Strategy has sufficient confidence - add as heuristic/LLM result
@@ -876,22 +928,31 @@ class APRLEvaluator:
             if detail_log is not None:
                 detail_log.append(detail_entry)
 
-        # Batch call to generate guidance for all pending items
+        # Handle pending items that need LLM evaluation/guidance
+        # Use unified evaluation for both virtual and missing-KQL items
+        # This analyzes actual resource properties for consistent, accurate results
         if pending_items:
             validator = HeuristicValidator(aoai_client=self.aoai_client)
-            guidance_map = validator.generate_batch_user_guidance(pending_items)
-            # Apply guidance to checks
+            
+            # Unified evaluation: All pending items analyzed for compliance without KQL
+            eval_map = validator.evaluate_resources_without_kql(pending_items)
+            
             for item in pending_items:
                 rec_id = item["id"]
                 rid, guid = rec_id.split(":", 1)
                 idx = pending_map.get((rid, guid))
-                if idx is not None:
-                    guide = guidance_map.get(rec_id, {})
-                    checks_map[rid][idx]["learn_more"] = [
-                        {"header": guide.get("quick_header", "Manual review required"),
-                         "guide": guide.get("practical_guide", "Consult Azure documentation.")}
-                    ]
-
+                if idx is not None and rec_id in eval_map:
+                    eval_result = eval_map[rec_id]
+                    # Update check with evaluation result
+                    checks_map[rid][idx]["status"] = eval_result.get("status", "pending")
+                    # Use unified format with learn_more URL from LLM
+                    checks_map[rid][idx]["learn_more"] = {
+                        "name": eval_result.get("quick_header", "Review required"),
+                        "url": eval_result.get("learn_more_url", None),  # Use URL suggested by LLM
+                        "llm_reasoning": eval_result.get("practical_guide", ""),
+                    }
+                    checks_map[rid][idx]["validation_source"] = ["LLM"]
+        
         # Build per-resource results
         for res in resources:
             rid = res.get("id")

@@ -14,11 +14,66 @@ Supports:
 import json
 import logging
 import re
+import uuid
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.settings import load_settings
+
 LOGGER = logging.getLogger(__name__)
+
+
+def _resource_id_to_uuid(resource_id: str) -> str:
+    """Generate a stable UUIDv5 from a resource ID to reduce token usage in LLM calls."""
+    namespace = uuid.NAMESPACE_DNS
+    return str(uuid.uuid5(namespace, resource_id))
+
+
+def _extract_partial_json_array(text: str, array_key: str) -> Optional[List[Dict[str, Any]]]:
+    """Best-effort extraction of complete JSON objects from a truncated array."""
+    key_pos = text.find(f'"{array_key}"')
+    if key_pos == -1:
+        return None
+    start_bracket = text.find('[', key_pos)
+    if start_bracket == -1:
+        return None
+
+    objects: List[Dict[str, Any]] = []
+    depth = 0
+    in_string = False
+    escape = False
+    obj_start: Optional[int] = None
+
+    for idx, ch in enumerate(text[start_bracket + 1:], start=start_bracket + 1):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\':
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            if depth == 0:
+                obj_start = idx
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and obj_start is not None:
+                candidate = text[obj_start:idx + 1]
+                try:
+                    objects.append(json.loads(candidate))
+                except json.JSONDecodeError:
+                    pass
+                obj_start = None
+        elif ch == ']' and depth == 0:
+            break
+
+    return objects or None
 
 
 @dataclass
@@ -50,6 +105,7 @@ class HeuristicValidator:
         """
         self.aoai_client = aoai_client
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
+        self.learn_more_defaults = load_settings().get_learn_more_defaults()
 
     @staticmethod
     def _extract_keywords(text: str) -> List[str]:
@@ -334,6 +390,8 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
             )
             
             response_text = response.choices[0].message.content.strip()
+            LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
+            LOGGER.debug("LLM raw response (truncated): %s", response_text[:2000])
             
             # Parse JSON response
             try:
@@ -576,10 +634,14 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
                 for item in pending_items
             }
 
+        # Map full IDs to short UUIDs to reduce token usage
+        uuid_to_full_id: Dict[str, str] = {}
         recommendations_text = ""
         for item in pending_items:
+            item_uuid = _resource_id_to_uuid(item['id'])
+            uuid_to_full_id[item_uuid] = item['id']
             recommendations_text += f"""
-ID: {item['id']}
+ID: {item_uuid}
 Title: {item['description']}
 Impact: {item['impact']}
 Details: {item['long_description']}
@@ -594,7 +656,7 @@ Respond in JSON format ONLY, with this structure:
 {{
   "recommendations": [
     {{
-      "id": "the-recommendation-id",
+      "id": "the-recommendation-uuid",
       "quick_header": "Check if backup is enabled and retention is set",
       "practical_guide": "Go to Azure Portal > [Resource Type] > Backup. Verify backup is enabled and retention policy meets your requirements. Can also use: az backup vault list --resource-group <rg-name>. See: https://learn.microsoft.com/azure/backup/backup-overview"
     }},
@@ -606,11 +668,16 @@ RECOMMENDATIONS TO PROCESS:{recommendations_text}
 
 Requirements for practical guides:
 - Include specific Azure Portal navigation path
-- Include Azure CLI command example if applicable
+- Include Azure CLI command example if applicable (escape quotes properly for JSON)
 - Include official Microsoft documentation link
 - Focus on what to verify, not how to implement
 - Be actionable in 5 minutes
 - Keep under 150 words per guide
+
+IMPORTANT: When including Azure CLI queries, escape all quotes properly:
+- Use single quotes for the outer query string
+- Use escaped double quotes (\\\" ) inside JMESPath queries
+- Example: 'az storage account list --query \"[?sku.name==\\\"Standard_GRS\\\"]\"'
 
 RETURN ONLY VALID JSON, no markdown, no explanations."""
 
@@ -630,25 +697,47 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
                     }
                 ],
                 temperature=0.2,
-                max_tokens=2000,
+                max_tokens=4000,
             )
 
             response_text = response.choices[0].message.content.strip()
 
             try:
                 parsed = json.loads(response_text)
-            except json.JSONDecodeError:
-                import re
-                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                if not json_match:
-                    raise
-                parsed = json.loads(json_match.group())
+            except json.JSONDecodeError as decode_err:
+                # Persist the full raw response for debugging malformed JSON from the model
+                try:
+                    import datetime
+                    dump_path = Path("/tmp") / f"llm_terraform_response_{datetime.datetime.utcnow().isoformat()}.txt"
+                    dump_path.write_text(response_text)
+                    LOGGER.error("Saved malformed LLM response to %s", dump_path)
+                except Exception as dump_err:
+                    LOGGER.warning("Failed to persist malformed LLM response: %s", dump_err)
+
+                partial = _extract_partial_json_array(response_text, "recommendations")
+                if partial:
+                    parsed = {"recommendations": partial}
+                    LOGGER.warning("Recovered %d partial recommendation items from malformed JSON", len(partial))
+                else:
+                    import re
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if not json_match:
+                        raise decode_err
+                    parsed = json.loads(json_match.group())
+            LOGGER.debug("LLM parsed type: %s keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else None)
 
             result: Dict[str, Dict[str, str]] = {}
             for rec in parsed.get('recommendations', []):
-                rec_id = rec.get('id')
-                if rec_id:
-                    result[rec_id] = {
+                rec_uuid = rec.get('id')
+                if rec_uuid and rec_uuid in uuid_to_full_id:
+                    full_id = uuid_to_full_id[rec_uuid]
+                    result[full_id] = {
+                        'quick_header': rec.get('quick_header', 'Manual review required'),
+                        'practical_guide': rec.get('practical_guide', '')
+                    }
+                elif rec_uuid:
+                    # UUID not in mapping; try to use it directly (fallback)
+                    result[rec_uuid] = {
                         'quick_header': rec.get('quick_header', 'Manual review required'),
                         'practical_guide': rec.get('practical_guide', '')
                     }
@@ -665,7 +754,456 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
                 }
                 for item in pending_items
             }
+    
+    @staticmethod
+    def _sanitize_cli_quotes(response_text: str) -> str:
+        """
+        Sanitize Azure CLI commands in LLM response by replacing problematic quote patterns.
+        
+        Prevents JSON parsing errors from unescaped quotes in JMESPath queries like:
+        --query "[?sku.name=='Standard_GRS']"
+        
+        Args:
+            response_text: Raw LLM response text
+            
+        Returns:
+            Sanitized response with fixed quotes
+        """
+        import re
+        
+        # Pattern 1: Fix --query with double-quoted array expressions
+        # Replace: --query "[...]" with --query '[...]'
+        response_text = re.sub(
+            r'--query\s+"(\[[^\]]+\])"',
+            r"--query '\1'",
+            response_text
+        )
+        
+        # Pattern 2: Fix --query with other double-quoted expressions
+        # Replace: --query "..." with --query '...'
+        response_text = re.sub(
+            r'--query\s+"([^"]+)"',
+            r"--query '\1'",
+            response_text
+        )
+        
+        return response_text
 
+    def _check_obvious_failures(
+        self,
+        resource_type: str,
+        description: str,
+        resource: Dict[str, Any],
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Check for obvious FAIL conditions before LLM evaluation.
+        
+        Returns (status, reasoning) if a definitive result can be determined, else None.
+        This catches explicit non-compliant configurations to avoid unnecessary LLM calls.
+        
+        Args:
+            resource_type: Azure resource type
+            description: Recommendation description
+            resource: Resource configuration
+            
+        Returns:
+            (status, reasoning) tuple if obvious failure detected, None otherwise
+        """
+        # SQL logical server geo-replication / failover group checks
+        if "sql/servers" in resource_type.lower():
+            desc_lower = description.lower()
+            if "geo replication" in desc_lower or "failover" in desc_lower or "secondary" in desc_lower:
+                props = resource.get("properties", {}) if isinstance(resource, dict) else {}
+                has_geo = any(
+                    props.get(key)
+                    for key in [
+                        "failover_groups",
+                        "auto_failover_groups",
+                        "replication_links",
+                        "replication_role",
+                        "partner_servers",
+                        "secondary_endpoints",
+                    ]
+                )
+                if not has_geo:
+                    return (
+                        "fail",
+                        "No geo-replication or failover groups configured for this SQL server",
+                    )
+
+        # SQL database geo-replication checks
+        if "sql/servers/databases" in resource_type.lower():
+            if "geo-replication" in description.lower() or "failover" in description.lower():
+                # Check for explicit zone_redundant = false (obvious fail)
+                if resource.get("zone_redundant") is False:
+                    return ("fail", "zone_redundant is explicitly set to false - no geo-replication configured")
+                
+                # Check for absence of geo-replication properties (obvious fail)
+                has_geo_replication = (
+                    resource.get("active_geo_replication_enabled") or
+                    resource.get("failover_group") or
+                    resource.get("secondary_replicas") or
+                    resource.get("enable_failover_group")
+                )
+                if not has_geo_replication:
+                    return ("fail", "No active geo-replication, failover groups, or secondary replicas configured")
+        
+        # AKS cluster zone redundancy checks
+        if "kubernetes/managedclusters" in resource_type.lower():
+            if "zone" in description.lower() or "availability" in description.lower():
+                # Check if explicitly single-zone
+                default_node_pool = resource.get("default_node_pool", {})
+                if isinstance(default_node_pool, dict):
+                    zones = default_node_pool.get("availability_zones") or default_node_pool.get("zones")
+                    if zones and len(zones) == 1:
+                        return ("fail", f"Only single availability zone configured: {zones}")
+                    elif not zones:
+                        return ("fail", "No availability zones or zone redundancy configured")
+        
+        # Storage account redundancy checks
+        if "storage/storageaccounts" in resource_type.lower():
+            if "geo" in description.lower() or "redundancy" in description.lower() or "replication" in description.lower():
+                replication_type = resource.get("replication_type") or resource.get("account_replication_type")
+                if replication_type and "LRS" in str(replication_type).upper():
+                    return ("fail", f"Replication type is {replication_type} - not geo-redundant")
+                elif replication_type and "GRS" not in str(replication_type).upper() and "GZRS" not in str(replication_type).upper():
+                    return ("fail", f"Replication type {replication_type} is not geo-redundant")
+        
+        # Cosmos DB multi-region checks
+        if "documentdb/databaseaccounts" in resource_type.lower():
+            if "multi-region" in description.lower() or "failover" in description.lower():
+                locations = resource.get("locations") or resource.get("regions") or resource.get("geo_locations")
+                if not locations or len(locations) < 2:
+                    return ("fail", "No multi-region configuration detected - only single region")
+        
+        return None
+    
+    def evaluate_resources_without_kql(
+        self,
+        pending_items: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Evaluate resources against APRL recommendations when KQL is unavailable.
+        
+        This handles both:
+        1. Virtual/Terraform resources (don't exist in Azure, analyze config directly)
+        2. Collector resources with missing KQL rules (analyze actual Azure properties)
+        
+        Since these resources cannot be queried via KQL, we use LLM to analyze
+        the resource configuration and recommendation to determine compliance.
+        
+        Args:
+            pending_items: List of items with recommendation and resource info
+        
+        Returns:
+            Dict mapping item_id to evaluation result with status, guidance, and URL
+        """
+        if not pending_items:
+            return {}
+        
+        if not self.aoai_client:
+            # Without LLM, mark all as requiring review
+            return {
+                item['id']: {
+                    'status': 'pending',
+                    'reason': 'LLM unavailable',
+                    'quick_header': 'Manual review required',
+                    'practical_guide': 'LLM evaluation unavailable. Please manually review the resource against the recommendation.'
+                }
+                for item in pending_items
+            }
+
+        import os
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        if not deployment:
+            return {
+                item['id']: {
+                    'status': 'pending',
+                    'reason': 'LLM not configured',
+                    'quick_header': 'Manual review required',
+                    'practical_guide': 'LLM not configured. Please consult Azure documentation.'
+                }
+                for item in pending_items
+            }
+        
+        # Build evaluation prompt with resources and recommendations, using short UUIDs
+        uuid_to_full_id: Dict[str, str] = {}
+        uuid_to_resource_type: Dict[str, str] = {}
+        evaluations_text = ""
+        heuristic_results: Dict[str, Dict[str, Any]] = {}  # Track items with definitive heuristic results
+        items_for_llm = []  # Items that need LLM evaluation
+        
+        for item in pending_items:
+            item_uuid = _resource_id_to_uuid(item['id'])
+            uuid_to_full_id[item_uuid] = item['id']
+            resource_type = item.get('resource', {}).get('type', '')
+            uuid_to_resource_type[item_uuid] = resource_type.lower() if resource_type else ""
+            description = item.get('description', '')
+            resource = item.get('resource', {})
+            
+            # First: Try heuristic pre-check for obvious failures
+            heuristic_result = self._check_obvious_failures(resource_type, description, resource)
+            if heuristic_result:
+                status, reasoning = heuristic_result
+                heuristic_results[item['id']] = {
+                    'status': status,
+                    'reasoning': reasoning,
+                    'quick_header': 'Heuristic check' if status == 'fail' else 'Configured',
+                    'practical_guide': f"Configuration issue detected: {reasoning}",
+                    'llm_evaluated': False,  # Mark as heuristic, not LLM-based
+                }
+                LOGGER.debug(f"✓ Heuristic pre-check FAIL for {item['id']}: {reasoning}")
+                continue
+            
+            # If no obvious failure, add to LLM evaluation list
+            items_for_llm.append(item)
+            
+            # Include full resource properties up to 2000 chars to ensure critical properties like availability_zones, zones, etc. are visible
+            # Note: resources.json now has sanitized properties from terraform generator, no need to clean here
+            resource_json = json.dumps(resource, indent=2)[:2000]
+            evaluations_text += f"""
+ID: {item_uuid}
+Recommendation: {description}
+Impact: {item['impact']}
+Details: {item['long_description']}
+Benefits: {item['potential_benefits']}
+Resource Configuration:
+{resource_json}
+---"""
+        
+        # If all items were handled by heuristics, return early
+        if not items_for_llm:
+            LOGGER.info(f"✓ All {len(heuristic_results)} items evaluated via heuristics, skipping LLM")
+            return heuristic_results
+        
+        def _default_learn_url(resource_type: str) -> str:
+            """Return a deterministic Microsoft Learn URL for the given resource type."""
+            normalized = (resource_type or "").lower()
+            for key, url in self.learn_more_defaults.items():
+                if normalized.startswith(key):
+                    return url
+            return "https://learn.microsoft.com/en-us/azure/reliability/"
+
+        def _normalize_learn_url(candidate_url: Any, resource_type: str) -> str:
+            """Ensure the learn URL is a Microsoft Learn link; otherwise fallback to a service quick start."""
+            if candidate_url:
+                candidate = str(candidate_url).strip()
+                if candidate.startswith("https://learn.microsoft.com/"):
+                    return candidate
+            return _default_learn_url(resource_type)
+
+        prompt = f"""You are an Azure resilience expert evaluating resources against Azure best practices.
+
+These resources may be:
+- Terraform-defined resources (analyze configuration directly)
+- Azure resources from Azure Portal (analyze actual properties)
+
+For each resource and recommendation pair below, determine COMPLIANCE:
+
+STATUS RULES (STRICT):
+- "pass" = All required configuration is present and correctly set
+- "fail" = Required configuration is MISSING or EXPLICITLY DISABLED (this is the default assumption)
+- "pending" = ONLY if the property is truly ambiguous or cannot be determined from the data
+           (Use "pending" very rarely - only for properties that are genuinely unclear)
+
+For each evaluation, provide:
+1. id: The item UUID
+2. status: "pass" or "fail" (almost never "pending")
+3. reasoning: Why it passes or fails (1-2 sentences, be specific)
+4. quick_header: Short status label (e.g., "Pass - Zone Redundant" or "Fail - GRS Not Enabled")
+5. practical_guide: Specific steps to fix the issue:
+   - For Terraform: Specific properties to add/modify (e.g., "Set 'zone_redundant = true' in the configuration")
+   - For Azure resources: Steps using Azure Portal (e.g., "Go to Portal > [Resource] > Settings and enable GRS replication")
+6. learn_more_url: Official Microsoft Learn documentation URL most relevant to this recommendation (e.g., https://learn.microsoft.com/en-us/azure/reliability/...); if uncertain, leave empty and the system will apply an official default URL.
+
+Response format - RETURN ONLY VALID JSON:
+{{
+  "evaluations": [
+    {{
+      "id": "uuid-here",
+      "status": "pass" or "fail",
+      "reasoning": "Specific reason based on observed properties...",
+      "quick_header": "Status header",
+      "practical_guide": "Specific steps to address (Terraform properties or Portal steps)...",
+      "learn_more_url": "https://learn.microsoft.com/en-us/azure/..."
+    }},
+    ...
+  ]
+}}
+
+RESOURCES AND RECOMMENDATIONS:{evaluations_text}
+
+PROPERTY DETECTION RULES:
+- If a property is NOT in the resource JSON, assume it's not configured → "fail"
+- If a property is explicitly false/disabled (e.g., zone_redundant=false) → "fail"
+- If a property is empty/null and required → "fail"
+- If all required properties are present and enabled → "pass"
+- Only use "pending" if a property's meaning is genuinely ambiguous (extremely rare)
+
+SPECIFIC CHECKS:
+- SQL databases: Check for zone_redundant=true, active_geo_replication, failover groups
+- AKS clusters: Check 'availability_zones', 'zones' in default_node_pool
+- Multi-region: Check 'locations' or 'regions' arrays for multiple entries
+- Zone redundancy: Look for 'availability_zones', 'zones', 'zone_redundant', 'enable_zone_redundancy'
+- Replication: Check for failover groups, secondary replicas, geo-replication config
+
+MICROSOFT LEARN URL GUIDELINES:
+- Use base URLs from https://learn.microsoft.com/en-us/azure/ (not docs.microsoft.com or other domains)
+- Include specific resource type in path (e.g., azure/storage, azure/reliability, azure/sql-database)
+- Prefer "/reliability/" or "/architecture/" sections for resilience topics
+- If you are not certain of the exact page, leave the URL blank (the system will supply a correct official link)
+
+CRITICAL: Absence of evidence IS evidence of absence. If a resilience property is missing from the configuration, the resource FAILS that requirement."""
+        
+        try:
+            LOGGER.info(f"Evaluating {len(pending_items)} resources without KQL with LLM")
+            
+            response = self.aoai_client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert Azure resilience evaluator. Analyze Terraform resources for compliance. Generate only valid JSON responses.",
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=4500,
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
+            
+            # Sanitize CLI commands: replace double quotes with single quotes in Azure CLI examples
+            # to prevent JSON parsing errors from unescaped quotes in JMESPath queries
+            response_text = self._sanitize_cli_quotes(response_text)
+
+            try:
+                parsed = json.loads(response_text)
+            except json.JSONDecodeError as decode_err:
+                # Persist the full raw response for debugging malformed JSON from the model
+                try:
+                    import datetime
+                    dump_path = Path("/tmp") / f"llm_terraform_response_{datetime.datetime.utcnow().isoformat()}.txt"
+                    dump_path.write_text(response_text)
+                    LOGGER.error("Saved malformed LLM response to %s", dump_path)
+                except Exception as dump_err:
+                    LOGGER.warning("Failed to persist malformed LLM response: %s", dump_err)
+
+                partial = _extract_partial_json_array(response_text, "evaluations")
+                if partial:
+                    parsed = {"evaluations": partial}
+                    LOGGER.warning("Recovered %d partial evaluation items from malformed JSON", len(partial))
+                else:
+                    import re
+                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                    if not json_match:
+                        raise decode_err
+                    parsed = json.loads(json_match.group())
+            LOGGER.debug("LLM parsed type: %s keys: %s", type(parsed), list(parsed.keys()) if isinstance(parsed, dict) else None)
+            
+            # Log raw parsed structure for debugging
+            import pprint
+            LOGGER.debug("Full parsed structure:\n%s", pprint.pformat(parsed))
+
+            # Start with heuristic results already determined
+            result: Dict[str, Dict[str, Any]] = dict(heuristic_results)
+            
+            # Add LLM results for items that needed evaluation
+            if isinstance(parsed, dict):
+                eval_block = parsed.get('evaluations')
+                if eval_block is None:
+                    eval_block = parsed.get('recommendations')
+                    if eval_block is not None:
+                        LOGGER.debug("Using 'recommendations' key as evaluations block")
+                if eval_block is None:
+                    LOGGER.warning("LLM response missing 'evaluations' key; got keys=%s", list(parsed.keys()))
+                    return result
+            else:
+                eval_block = []
+
+            LOGGER.debug("Evaluations block type: %s len: %s", type(eval_block), len(eval_block) if hasattr(eval_block, '__len__') else None)
+            try:
+                if isinstance(eval_block, list) and eval_block:
+                    LOGGER.debug("Evaluations sample[0]: %s", eval_block[0])
+                elif isinstance(eval_block, dict) and eval_block:
+                    first_key = next(iter(eval_block.keys()))
+                    LOGGER.debug("Evaluations sample key=%r value=%s", first_key, eval_block[first_key])
+            except Exception as log_err:
+                LOGGER.debug("Unable to log evaluation sample: %s", log_err)
+
+            def _add_eval(item_id_raw: Any, eval_item: Dict[str, Any]):
+                item_uuid = str(item_id_raw)
+                # Map UUID back to full resource ID
+                full_id = uuid_to_full_id.get(item_uuid, item_uuid)
+                result[full_id] = {
+                    'status': eval_item.get('status', 'pending'),
+                    'reasoning': eval_item.get('reasoning', ''),
+                    'quick_header': eval_item.get('quick_header', 'Review required'),
+                    'practical_guide': eval_item.get('practical_guide', 'See APRL documentation'),
+                    'learn_more_url': _normalize_learn_url(eval_item.get('learn_more_url', None), uuid_to_resource_type.get(item_uuid, "")),
+                    'llm_evaluated': True,
+                }
+
+            # Support both list and dict payloads from the LLM
+            if isinstance(eval_block, dict):
+                LOGGER.debug("Evaluations block is dict with %d entries", len(eval_block))
+                for item_id_raw, eval_item in eval_block.items():
+                    if not isinstance(eval_item, dict):
+                        LOGGER.debug("Skipping non-dict evaluation item from LLM response (dict form): %s", eval_item)
+                        continue
+                    try:
+                        try:
+                            hash(item_id_raw)
+                        except TypeError:
+                            LOGGER.warning("Skipping eval item with unhashable id key (dict form): %r", item_id_raw)
+                            continue
+                        _add_eval(item_id_raw, eval_item)
+                    except Exception as err:
+                        LOGGER.warning("Failed to add eval item (dict form): id=%r err=%s item=%s", item_id_raw, err, eval_item)
+            else:
+                if not isinstance(eval_block, list):
+                    LOGGER.debug("Evaluations block unexpected type: %s", type(eval_block))
+                for eval_item in eval_block:
+                    if not isinstance(eval_item, dict):
+                        LOGGER.debug("Skipping non-dict evaluation item from LLM response: %s", eval_item)
+                        continue
+
+                    item_id_raw = eval_item.get('id')
+                    if not item_id_raw:
+                        LOGGER.debug("Skipping evaluation with missing id: %s", eval_item)
+                        continue
+
+                    try:
+                        try:
+                            hash(item_id_raw)
+                        except TypeError:
+                            LOGGER.warning("Skipping eval item with unhashable id (list form): %r", item_id_raw)
+                            continue
+                        _add_eval(item_id_raw, eval_item)
+                    except Exception as err:
+                        LOGGER.warning("Failed to add eval item (list form): id=%r err=%s item=%s", item_id_raw, err, eval_item)
+
+            return result
+        
+        except Exception as e:
+            LOGGER.exception("Failed to evaluate Terraform resources via LLM: %s", e)
+            # Start with heuristic results that were already successful
+            fallback: Dict[str, Dict[str, Any]] = dict(heuristic_results)
+            # Add pending status for items that failed LLM evaluation
+            for item in items_for_llm:
+                item_id = item.get('id') or f"pending-{len(fallback)}"
+                if item_id not in fallback:  # Don't override heuristic results
+                    fallback[item_id] = {
+                        'status': 'pending',
+                        'reason': 'LLM evaluation failed',
+                        'quick_header': 'Manual review required',
+                        'practical_guide': 'LLM evaluation encountered an error. Please manually review.'
+                    }
+            return fallback
     def apply_strategy(
         self,
         strategy: ValidationStrategy,

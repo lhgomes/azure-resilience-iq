@@ -15,7 +15,7 @@ interface ResilienceEvaluation {
 interface ResilienceOverride {
   resource_id: string;
   recommendation_id: string;
-  status: "pass" | "fail";
+  status: "pass" | "fail" | "pending";
   overridden_at?: string;
   overridden_by?: string;
   resilience_check_id?: string;
@@ -53,7 +53,7 @@ interface ResilienceSummaryProps {
 }
 
 const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
-  const overrideMap: Record<string, { status: "pass" | "fail"; validation_source: string; resilience_check_id?: string }> = {};
+  const overrideMap: Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }> = {};
   if (!overrides) return overrideMap;
 
   Object.entries(overrides).forEach(([resilience_check_id, override]) => {
@@ -225,7 +225,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   onOverrideDeleted,
 }) => {
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
-  const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail">("fail");
+  const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail" | "pending">("fail");
   const [breakdownView, setBreakdownView] = useState<"category" | "impact" | "service">("category");
   const [sortColumn, setSortColumn] = useState<SortColumn>("weight");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
@@ -233,7 +233,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const [filterImpact, setFilterImpact] = useState<string | null>(null);
   const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
   const [resourceFilter, setResourceFilter] = useState("");
-  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail"; validation_source: string; resilience_check_id?: string }>>({});
+  const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }>>({});
+  const [visibleTooltip, setVisibleTooltip] = useState<string | null>(null);
 
   // Fetch weights from backend once and reuse across all calculations
   const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
@@ -806,7 +807,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             resourceName: evaluation.resource_name,
           };
         })
-        .filter((f: any) => filterStatus === "all" || f.status === filterStatus)
+        .filter((f: any) => filterStatus === "all" || (filterStatus === "pending" ? f.status === "pending" : f.status === filterStatus))
         .filter((f: any) => !filterCategory || f.category === filterCategory)
         .filter((f: any) => !filterImpact || f.impact === filterImpact)
         .filter((f: any) => !filterValidationSource || f.validation_source.includes(filterValidationSource));
@@ -942,7 +943,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       return;
     }
 
-    const newStatus: "pass" | "fail" = currentStatus === "fail" ? "pass" : "fail";
+    // Toggle logic: fail→pass, pending→pass, pass→fail
+    const newStatus: "pass" | "fail" = currentStatus === "fail" || currentStatus === "pending" ? "pass" : "fail";
     
     // Optimistically update UI using resilience_check_id as key
     setUserOverrides(prev => {
@@ -966,14 +968,22 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         newStatus,
         "user"
       );
+
+      // Prefer check_uuid from backend (authoritative). Fallback to the incoming id if not present.
+      const savedCheckId = (saved as any)?.check_uuid || resilienceCheckId;
+      if (!savedCheckId) {
+        console.warn("Override saved but no resilience_check_id available; skipping local state update.");
+        return;
+      }
+
       // Update local state with backend confirmation
       setUserOverrides(prev => {
         const updated = {
           ...prev,
-          [resilienceCheckId]: {
-            status: newStatus as "pass" | "fail",
+          [savedCheckId]: {
+            status: newStatus as "pass" | "fail" | "pending",
             validation_source: "User",
-            resilience_check_id: resilienceCheckId,
+            resilience_check_id: savedCheckId,
           },
         };
         
@@ -983,12 +993,12 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           const stored = localStorage.getItem(storageKey) || '{}';
           const data = JSON.parse(stored);
           data.overrides = data.overrides || {};
-          data.overrides[resilienceCheckId] = {
+          data.overrides[savedCheckId] = {
             resource_id: resourceId,
             recommendation_id: recommendationId,
             status: newStatus,
             overridden_by: "user",
-            resilience_check_id: resilienceCheckId,
+            resilience_check_id: savedCheckId,
           };
           data.timestamp = new Date().toISOString();
           localStorage.setItem(storageKey, JSON.stringify(data));
@@ -1002,7 +1012,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         recommendation_id: recommendationId,
         status: newStatus,
         overridden_by: "user",
-        resilience_check_id: resilienceCheckId,
+        resilience_check_id: savedCheckId,
       });
     } catch (error) {
       console.error("Failed to save override:", error);
@@ -1024,6 +1034,11 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     if (!subscriptionId) return;
     
     try {
+      if (!resilienceCheckId) {
+        console.warn("deleteOverride: resilience_check_id missing; aborting delete request.");
+        return;
+      }
+
       await deleteOverride(subscriptionId, resilienceCheckId);
       
       // Update local state immediately by removing the override
@@ -1038,7 +1053,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         const storageKey = `resilience_${subscriptionId}`;
         const stored = localStorage.getItem(storageKey) || '{}';
         const data = JSON.parse(stored);
-        if (data.overrides) {
+        if (data.overrides && resilienceCheckId in data.overrides) {
           delete data.overrides[resilienceCheckId];
         }
         data.timestamp = new Date().toISOString();
@@ -1053,7 +1068,9 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   };
 
   const getStatusColor = (status: string) => {
-    return status === "pass" ? "#10b981" : "#ef4444";
+    if (status === "pass") return "#10b981";
+    if (status === "pending") return "#6b7280";
+    return "#ef4444";
   };
 
   const exportToExcel = () => {
@@ -1571,6 +1588,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             Passed
           </button>
           <button
+            onClick={() => setFilterStatus("pending")}
+            style={{
+              padding: "6px 16px",
+              borderRadius: "6px",
+              border: filterStatus === "pending" ? "2px solid #9ca3af" : "1px solid #d1d5db",
+              background: filterStatus === "pending" ? "#f3f4f6" : "#fff",
+              color: filterStatus === "pending" ? "#4b5563" : "#6b7280",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+          >
+            Pending
+          </button>
+          <button
             onClick={() => setFilterStatus("all")}
             style={{
               padding: "6px 16px",
@@ -1972,7 +2004,6 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
               {findingsWithContribution.map((finding, idx) => (
                 <tr
                   key={idx}
-                  title={finding.long_description || ""}
                   style={{
                     borderBottom: "1px solid #e5e7eb",
                     background: idx % 2 === 0 ? "#fff" : "#f9fafb",
@@ -1993,29 +2024,75 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     </div>
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    <span>{finding.description}</span>
-                    {finding.validation_source.includes("LLM") && (finding.learn_more as any)?.llm_reasoning && (
-                      <span
-                        style={{
-                          marginLeft: "8px",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: "18px",
-                          height: "18px",
-                          borderRadius: "999px",
-                          background: "#e0f2fe",
-                          color: "#1d4ed8",
-                          cursor: "help",
-                          fontSize: "12px",
-                          fontWeight: 800,
-                          border: "1px solid #bfdbfe",
-                        }}
-                        title={(finding.learn_more as any)?.llm_reasoning}
-                      >
-                        i
-                      </span>
-                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span>{finding.description}</span>
+                      {(finding.learn_more as any)?.llm_reasoning && (() => {
+                        const tooltipId = `tooltip-${finding.resourceId}-${finding.resilience_check_id}`;
+                        const isTooltipVisible = visibleTooltip === tooltipId;
+                        const learnMore = finding.learn_more as any;
+                        return (
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: "20px",
+                              height: "20px",
+                              minWidth: "20px",
+                              borderRadius: "50%",
+                              background: "#dbeafe",
+                              color: "#1e40af",
+                              cursor: "help",
+                              fontSize: "13px",
+                              fontWeight: 700,
+                              border: "1px solid #93c5fd",
+                              position: "relative",
+                            }}
+                            onMouseEnter={() => setVisibleTooltip(tooltipId)}
+                            onMouseLeave={() => setVisibleTooltip(null)}
+                          >
+                            ?
+                            <div
+                              style={{
+                                position: "absolute",
+                                top: "110%",
+                                left: "50%",
+                                transform: "translateX(-50%)",
+                                background: "#0f172a",
+                                color: "#e5e7eb",
+                                padding: "12px 14px",
+                                borderRadius: "10px",
+                                fontSize: "13px",
+                                whiteSpace: "normal",
+                                width: "320px",
+                                maxWidth: "360px",
+                                zIndex: 1000,
+                                opacity: isTooltipVisible ? 1 : 0,
+                                pointerEvents: isTooltipVisible ? "auto" : "none",
+                                transition: "opacity 0.18s ease",
+                                marginTop: "12px",
+                                boxShadow: "0 18px 38px -12px rgba(15, 23, 42, 0.45)",
+                                lineHeight: "1.5",
+                                border: "1px solid rgba(148, 163, 184, 0.35)",
+                                textAlign: "left",
+                              }}
+                              className="tooltip-content"
+                            >
+                              {learnMore?.name && (
+                                <div style={{ fontWeight: 700, marginBottom: "8px", color: "#fff", fontSize: "14px" }}>
+                                  {learnMore.name}
+                                </div>
+                              )}
+                              {learnMore?.llm_reasoning && (
+                                <div style={{ fontSize: "13px", color: "#e5e7eb" }}>
+                                  {learnMore.llm_reasoning}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
                     {finding.potential_benefits ? (
@@ -2074,7 +2151,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                             display: "inline-block",
                             padding: "4px 8px",
                             borderRadius: "4px",
-                            background: finding.status === "pass" ? "#ecfdf5" : "#fee2e2",
+                            background: finding.status === "pass" ? "#ecfdf5" : finding.status === "pending" ? "#f3f4f6" : "#fee2e2",
                             color: getStatusColor(finding.status),
                             fontWeight: 600,
                             fontSize: "11px",
@@ -2082,7 +2159,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                         >
                           {finding.status.toUpperCase()}
                         </span>
-                        {finding.status === "fail" && (
+                        {(finding.status === "fail" || finding.status === "pending") && (
                           <button
                             type="button"
                             onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.resilience_check_id, finding.status)}
