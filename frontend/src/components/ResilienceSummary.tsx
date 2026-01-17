@@ -1144,7 +1144,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   };
 
   return (
-    <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
+    <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", display: "flex", flexDirection: "column" }}>
       {/* Header Section - Overview Card */}
       <div
         style={{
@@ -1154,6 +1154,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           marginBottom: "24px",
           boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
           border: "1px solid #e5e7eb",
+          flexShrink: 0,
         }}
       >
         <h1
@@ -1548,10 +1549,14 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           padding: "10px",
           boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
           border: "1px solid #e5e7eb",
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
         }}
       >
         {/* Filter Buttons */}
-        <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end", justifyContent: "space-between" }}>
+        <div style={{ marginBottom: "8px", display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end", justifyContent: "space-between", flexShrink: 0 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "flex-end" }}>
           <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "6px" }}>
             Findings Details
@@ -1743,9 +1748,10 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         {/* Findings Table */}
         <div
           style={{
-            overflowX: "auto",
             border: "1px solid #e5e7eb",
             borderRadius: "8px",
+            flex: 1,
+            minHeight: 0,
           }}
         >
           <table

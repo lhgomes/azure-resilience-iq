@@ -116,6 +116,10 @@ class TerraformResourceGenerator:
         """
         # Convert Terraform resources to standard format
         self._convert_resources()
+
+        # Enrich parent resources to align with Collector output format
+        # - Embed subnet details inside VNet properties
+        self._embed_vnet_subnets()
         
         # Generate relationships/edges
         self._generate_edges()
@@ -155,6 +159,98 @@ class TerraformResourceGenerator:
         }
         
         return resources_output, edges_output
+
+    def _embed_vnet_subnets(self) -> None:
+        """Embed subnet information inside each VNet's properties.
+
+        The Azure ARG collector includes a `properties.subnets` array within
+        Virtual Network resources. Terraform-generated data models subnets as
+        separate resources. To keep parity with the collector output and avoid
+        downstream analyzer "Unknown" results, we enrich VNets with a subnets
+        list assembled from child subnet resources.
+
+        This keeps subnet resources as standalone entries and also mirrors
+        the embedded structure expected by components that read VNet subnets
+        from `properties.subnets`.
+        """
+        # Build quick lists of VNets and Subnets
+        vnets: List[Tuple[str, GeneratedResource]] = []
+        subnets: List[GeneratedResource] = []
+
+        for res_id, res in self.generated_resources.items():
+            res_type = (res.type or "").lower()
+            if res_type == "microsoft.network/virtualnetworks":
+                vnets.append((res_id, res))
+            elif res_type == "microsoft.network/virtualnetworks/subnets":
+                subnets.append(res)
+
+        if not vnets or not subnets:
+            return  # Nothing to embed
+
+        # Index subnets by their parent VNet name (from properties.virtual_network_name)
+        subnets_by_vnet: Dict[str, List[GeneratedResource]] = {}
+        for sn in subnets:
+            props = sn.properties or {}
+            vnet_name = (props.get("virtual_network_name") or "").lower()
+            if not vnet_name:
+                # Try inferring from ID path if available
+                rid = (sn.id or "").lower()
+                # Expect .../virtualnetworks/<name>/subnets/<subnet>
+                try:
+                    parts = rid.split("/virtualnetworks/")
+                    if len(parts) > 1:
+                        vnet_part = parts[1]
+                        vnet_name_in_id = vnet_part.split("/subnets/")[0]
+                        vnet_name = vnet_name_in_id
+                except Exception:
+                    pass
+            if vnet_name:
+                subnets_by_vnet.setdefault(vnet_name, []).append(sn)
+
+        # Attach matching subnets to each VNet's properties
+        for vnet_id, vnet in vnets:
+            vnet_name_key = (vnet.name or (vnet.properties or {}).get("name", "")).lower()
+            if not vnet_name_key:
+                continue
+
+            vnet_props = vnet.properties or {}
+            existing_subnets = vnet_props.get("subnets")
+            # If already present (e.g., manually added), do not override
+            if isinstance(existing_subnets, list) and existing_subnets:
+                continue
+
+            children = subnets_by_vnet.get(vnet_name_key, [])
+            if not children:
+                continue
+
+            embedded_subnets: List[Dict[str, Any]] = []
+            for sn in children:
+                sn_props = sn.properties or {}
+                # Map Terraform-style `address_prefixes` to Azure ARG `addressPrefix`
+                address_prefix = None
+                prefixes = sn_props.get("address_prefixes")
+                if isinstance(prefixes, list) and prefixes:
+                    address_prefix = prefixes[0]
+                elif isinstance(prefixes, str):
+                    address_prefix = prefixes
+
+                embedded_subnets.append({
+                    "properties": {
+                        # Minimal fields to satisfy analyzer expectations
+                        "addressPrefix": address_prefix,
+                        # Policies/delegations omitted in Terraform virtual data
+                        "delegations": [],
+                        "privateLinkServiceNetworkPolicies": "Enabled",
+                        "privateEndpointNetworkPolicies": "Enabled",
+                    },
+                    "name": sn.name,
+                    "type": "Microsoft.Network/virtualNetworks/subnets",
+                    "id": sn.id,
+                })
+
+            # Write back into VNet properties
+            vnet_props["subnets"] = embedded_subnets
+            vnet.properties = vnet_props
     
     def _resolve_resource_references(self, obj: Any) -> Any:
         """
@@ -618,10 +714,11 @@ class TerraformResourceGenerator:
                                 self._add_edge(res_id, cont_id, "contains", "Terraform")
             
             elif resource.type.lower() == "microsoft.network/virtualnetworks/subnets":
-                # Subnet -> VNet (parent)
+                # Subnet -> VNet (subnet depends on VNet, cannot exist without it)
                 vnet_id = self._find_vnet_reference(props)
                 if vnet_id:
-                    self._add_edge(vnet_id, res_id, "contains", "Terraform")
+                    # Subnet is source (dependent), VNet is target (can exist independently)
+                    self._add_edge(res_id, vnet_id, "be_contained_in", "Terraform")
             
             elif resource.type.lower() == "microsoft.network/networkinterfaces":
                 # NIC -> Subnet relationship
@@ -649,16 +746,6 @@ class TerraformResourceGenerator:
                             op_props = op.properties or {}
                             if (op_props.get("api_name") or "").lower() == api_name.lower():
                                 self._add_edge(res_id, op_id, "contains", "Terraform")
-
-            elif resource.type.lower() == "microsoft.network/virtualnetworks":
-                # VNet -> Subnets (parent contains child)
-                vnet_name = resource.name or props.get("name")
-                if vnet_name:
-                    for subnet_id, subnet in self.generated_resources.items():
-                        if subnet.type.lower() == "microsoft.network/virtualnetworks/subnets":
-                            subnet_props = subnet.properties or {}
-                            if (subnet_props.get("virtual_network_name") or "").lower() == vnet_name.lower():
-                                self._add_edge(res_id, subnet_id, "contains", "Terraform")
 
             elif resource.type.lower() == "microsoft.documentdb/databaseaccounts":
                 # Cosmos Account -> Databases (parent contains child)
@@ -841,9 +928,13 @@ class TerraformResourceGenerator:
             return vnet_id
         
         if vnet_name:
+            # Match by name (case-insensitive)
+            vnet_name_lower = vnet_name.lower()
             for res_id, resource in self.generated_resources.items():
-                if "virtualNetworks" in resource.type and vnet_name in resource.id:
-                    return res_id
+                if resource.type.lower() == "microsoft.network/virtualnetworks":
+                    res_name = (resource.name or resource.properties.get("name", "")).lower()
+                    if res_name == vnet_name_lower:
+                        return res_id
         
         return None
     
