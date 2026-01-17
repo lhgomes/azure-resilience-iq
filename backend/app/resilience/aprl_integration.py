@@ -266,7 +266,7 @@ class APRLCatalog:
                 
                 self.recommendations[resource_type_key].append(custom_rec)
                 
-                LOGGER.info(f"✓ Loaded custom rule: {recommendation_id} for {resource_type}")
+                LOGGER.debug(f"✓ Loaded custom rule: {recommendation_id} for {resource_type}")
                 
             except Exception as e:
                 LOGGER.error(f"Failed to load custom KQL file {kql_file}: {e}")
@@ -492,7 +492,7 @@ class APRLEvaluator:
                 escalation_reason = f"low confidence ({strategy.confidence:.0%})"
         
         if should_escalate:
-            LOGGER.info(
+            LOGGER.debug(
                 f"🔍 Escalating to full LLM analysis for {aprl_guid}: {escalation_reason}"
             )
             llm_fails, llm_reasoning = validator._llm_full_resource_analysis(
@@ -513,7 +513,7 @@ class APRLEvaluator:
                     strategy.llm_analysis_used = True
                     strategy.strategy_type = "llm"  # Mark as LLM-based for validation_source
                 is_failing = llm_fails
-                LOGGER.info(
+                LOGGER.debug(
                     f"✓ LLM full analysis: {'FAILS' if llm_fails else 'PASSES'} - {llm_reasoning[:100]}"
                 )
         

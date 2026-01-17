@@ -985,6 +985,7 @@ const WorkloadView: React.FC = () => {
       setIsRefreshing(true);
       setError(null);
 
+      // Kick off async LLM refresh
       const response = await fetch(
         `/api/subscriptions/${subscriptionId}/refresh`,
         { method: "POST" }
@@ -992,13 +993,30 @@ const WorkloadView: React.FC = () => {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || "Refresh failed");
+        throw new Error(errorData.detail || "Refresh start failed");
       }
 
-      const result = await response.json();
-      console.info("Refresh completed", result);
+      // Poll status until completed/failed
+      const pollStatus = async (): Promise<string> => {
+        const s = await fetch(`/api/subscriptions/${subscriptionId}/refresh/status`);
+        if (!s.ok) throw new Error("Status check failed");
+        const data = await s.json();
+        return data.status || "idle";
+      };
 
-      // Refresh the graph from server
+      let status = await pollStatus();
+      const start = Date.now();
+      const timeoutMs = 5 * 60 * 1000; // 5 minutes
+      while (status === "running" && Date.now() - start < timeoutMs) {
+        await new Promise((r) => setTimeout(r, 2000));
+        status = await pollStatus();
+      }
+
+      if (status === "failed") {
+        throw new Error("LLM refresh failed");
+      }
+
+      // Refresh the graph from server after completion
       await fetchGraph();
 
       // Clear the dirty flag
@@ -1440,7 +1458,10 @@ const WorkloadView: React.FC = () => {
               Change
             </button>
             <button
-              onClick={() => fetchGraph()}
+              onClick={() => {
+                fetchGraph();
+                fetchZonalResilience();
+              }}
               disabled={!subscriptionId}
               style={{
                 padding: "6px 12px",
@@ -1451,7 +1472,7 @@ const WorkloadView: React.FC = () => {
                 cursor: subscriptionId ? "pointer" : "not-allowed",
                 fontSize: 12
               }}
-              title="Reload graph from server"
+              title="Reload graph and zonal resilience data from server"
             >
               Reload
             </button>

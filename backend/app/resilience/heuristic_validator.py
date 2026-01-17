@@ -415,7 +415,7 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
             logic = parsed.get("logic", "LLM-analyzed validation")
             notes = parsed.get("notes", "")
             
-            LOGGER.info(
+            LOGGER.debug(
                 f"LLM strategy created for {aprl_guid}: "
                 f"confidence={confidence:.0%}, logic={logic}"
             )
@@ -497,8 +497,8 @@ Be specific about which properties are missing or incorrectly configured.
 RETURN ONLY VALID JSON."""
         
         try:
-            LOGGER.info(
-                f"🔍 Deep LLM analysis for {aprl_guid} (impact: {impact}) on resource {resource.get('name')}"
+            LOGGER.debug(
+                f"Deep LLM analysis for {aprl_guid} (impact: {impact}) on resource {resource.get('name')}"
             )
             
             response = self.aoai_client.chat.completions.create(
@@ -531,7 +531,7 @@ RETURN ONLY VALID JSON."""
             reasoning = parsed.get("reasoning", "")
             confidence = parsed.get("confidence", 0.0)
             
-            LOGGER.info(
+            LOGGER.debug(
                 f"LLM full analysis result: fails={fails}, confidence={confidence:.0%}, "
                 f"reasoning={reasoning[:80]}..."
             )

@@ -196,6 +196,30 @@ class ZonalAnalyzer:
                 recommendation="N/A - This resource type does not support availability zones",
             )
         
+        # THIRD CHECK: SQL Servers are logical containers; zone config is at database level
+        # VNets and subnets are regional resources that inherently span all zones
+        # No configuration option exists to make them zone-specific
+        if resource_type in ["microsoft.network/virtualnetworks", "microsoft.network/virtualnetworks/subnets"]:
+            return ZonalData(
+                zones_used=[],
+                is_zone_redundant=False,
+                zone_count=0,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.NOT_APPLICABLE,
+                recommendation="N/A - VNets and subnets are regional resources that automatically span all availability zones.",
+            )
+        
+        # SQL Server is a logical container - zone resilience configured at database level
+        if resource_type == "microsoft.sql/servers":
+            return ZonalData(
+                zones_used=[],
+                is_zone_redundant=False,
+                zone_count=0,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.NOT_APPLICABLE,
+                recommendation="N/A - SQL Server is a logical container. Zone resilience is configured at the database level.",
+            )
+        
         # Check zones property (most common)
         zones = properties.get("zones", [])
         if not zones:
@@ -225,10 +249,6 @@ class ZonalAnalyzer:
                 zones = [zones]
             zones = [str(z) for z in zones] if zones else []
         
-        # Special handling for Virtual Networks: Check subnet architecture
-        if resource_type == "microsoft.network/virtualnetworks":
-            return ZonalAnalyzer._analyze_vnet_zone_architecture(resource, location)
-        
         # Check if resource is inherently zone-redundant by SKU/type
         is_zone_redundant = ZonalAnalyzer._is_zone_redundant_sku(sku_name, properties)
         
@@ -238,6 +258,14 @@ class ZonalAnalyzer:
         
         # Check for storage account replication types
         replication_type = properties.get("account_replication_type", "")
+        
+        # For storage accounts, also check SKU name (e.g., "Standard_LRS", "Standard_GRS", "Standard_ZRS")
+        if not replication_type and resource_type == "microsoft.storage/storageaccounts" and sku_name:
+            # Extract replication type from SKU name (e.g., "Standard_LRS" -> "LRS")
+            sku_parts = sku_name.split("_")
+            if len(sku_parts) >= 2:
+                replication_type = sku_parts[-1]  # Get the last part after underscore
+        
         is_lrs = replication_type.upper() == "LRS"  # LRS = Locally Redundant = Single Zone
         
         # Determine deployment pattern
