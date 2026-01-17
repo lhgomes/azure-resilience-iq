@@ -7,11 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.settings import load_settings
 from app.routes.resilience import router as resilience_router
 from app.routes.unified_recommendations import router as unified_recommendations_router
+from app.routes.terraform import router as terraform_router
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
 from app.intent.manual_edge import ManualEdge
 from app.intent.node_override import NodeOverride
+import subprocess
+import sys
+import threading
+import json
+from datetime import datetime
+from pathlib import Path
+from app.config import get_subscription_dir
 
 from app.intent.overrides import EdgeOverride, EdgeDecision
 from app.storage.manual_edges_store import save_manual_edge, delete_manual_edge, load_manual_edges
@@ -42,7 +50,7 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
-app = FastAPI(title="Azure Workload Insights")
+app = FastAPI(title="Azure Resilience IQ")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,6 +62,7 @@ app.add_middleware(
 # Register API routes
 app.include_router(resilience_router)
 app.include_router(unified_recommendations_router)
+app.include_router(terraform_router)
 
 
 class CreateEdgeRequest(BaseModel):
@@ -432,3 +441,80 @@ def get_graph(subscription_id: str):
 @app.get("/api/subscriptions/{subscription_id}/reviews")
 def review_inbox(subscription_id: str):
     return get_review_inbox(subscription_id)
+
+
+@app.post("/api/subscriptions/{subscription_id}/refresh")
+def refresh_subscription(subscription_id: str):
+    """Start asynchronous LLM annotation refresh for a subscription.
+
+    Spawns `python -m app.llm.run --subscription-id {subscription_id}` in the background
+    and writes status updates to data/{subscription_id}/llm_refresh_status.json for polling.
+    """
+    try:
+        # Prepare status file
+        sub_dir: Path = get_subscription_dir(subscription_id)
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        status_file = sub_dir / "llm_refresh_status.json"
+
+        def write_status(data: dict):
+            try:
+                status_file.write_text(json.dumps(data, indent=2))
+            except Exception:
+                pass
+
+        # If an existing job is running, return current status
+        if status_file.exists():
+            try:
+                current = json.loads(status_file.read_text())
+                if current.get("status") == "running":
+                    return {"status": "running"}
+            except Exception:
+                pass
+
+        # Start background process
+        cmd = [sys.executable, "-m", "app.llm.run", "--subscription-id", subscription_id]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Write initial status
+        write_status({
+            "status": "running",
+            "pid": proc.pid,
+            "started_at": datetime.utcnow().isoformat() + "Z",
+        })
+
+        def monitor():
+            try:
+                stdout, stderr = proc.communicate()
+                rc = proc.returncode
+                write_status({
+                    "status": "completed" if rc == 0 else "failed",
+                    "pid": proc.pid,
+                    "started_at": datetime.utcnow().isoformat() + "Z",
+                    "finished_at": datetime.utcnow().isoformat() + "Z",
+                    "returncode": rc,
+                    "stdout_tail": stdout[-1000:] if isinstance(stdout, str) else None,
+                    "stderr_tail": stderr[-1000:] if isinstance(stderr, str) else None,
+                })
+            except Exception as e:
+                write_status({
+                    "status": "failed",
+                    "error": str(e),
+                    "finished_at": datetime.utcnow().isoformat() + "Z",
+                })
+
+        threading.Thread(target=monitor, daemon=True).start()
+        return {"status": "running", "pid": proc.pid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/subscriptions/{subscription_id}/refresh/status")
+def refresh_status(subscription_id: str):
+    """Return the current LLM refresh status for polling."""
+    try:
+        status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
+        if not status_file.exists():
+            return {"status": "idle"}
+        return json.loads(status_file.read_text())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -105,6 +105,7 @@ class AppSettings:
                 },
                 "aprl_root": "./backend/aprl",
                 "rules_dir": "./config/resiliency_rules",
+                "learn_more_defaults": {},
             },
         }
     
@@ -177,6 +178,13 @@ class AppSettings:
         resilience_config = self.get_resilience_config()
         type_list = resilience_config.get("zone_irrelevant_types", [])
         return {t.lower() for t in type_list}
+
+    def get_learn_more_defaults(self) -> Dict[str, str]:
+        """Get mapping of resource type prefixes to default Microsoft Learn URLs."""
+        resilience_config = self.get_resilience_config()
+        defaults = resilience_config.get("learn_more_defaults", {})
+        # Normalize keys to lowercase for case-insensitive matching
+        return {k.lower(): v for k, v in defaults.items()}
 
 
 # Global settings instance

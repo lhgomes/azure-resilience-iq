@@ -412,6 +412,12 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
   // Apply filters from sidebar (resource groups and services)
   const sidebarFiltered = useMemo(() => {
     return data.resources.filter((resource) => {
+      // Exclude NOT_APPLICABLE resources (VNets, subnets, SQL Servers - infrastructure/containers)
+      // These are regional resources with no zone configuration options
+      if (resource.zonal_data.deployment_pattern === "not_applicable") {
+        return false;
+      }
+
       // Resource group filter
       if (resourceGroupFilter && resourceGroupFilter.size > 0) {
         const rg = getResourceGroup(resource.resource_id);

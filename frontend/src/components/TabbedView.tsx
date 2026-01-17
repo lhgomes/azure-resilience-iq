@@ -13,7 +13,7 @@ const TabbedView: React.FC<TabsProps> = ({ tabs, defaultTab = 0 }) => {
   const [activeTab, setActiveTab] = useState(defaultTab);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%" }}>
       {/* Tab Headers */}
       <div
         style={{
@@ -21,6 +21,7 @@ const TabbedView: React.FC<TabsProps> = ({ tabs, defaultTab = 0 }) => {
           borderBottom: "2px solid #e5e7eb",
           background: "#f9fafb",
           gap: "0",
+          flexShrink: 0,
         }}
       >
         {tabs.map((tab, idx) => (
