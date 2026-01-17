@@ -47,20 +47,21 @@ interface AzureNodeProps {
 
 const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) => {
   const [iconError, setIconError] = useState(false);
-  const [showTooltip, setShowTooltip] = useState(false);
-  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const [showWeightTooltip, setShowWeightTooltip] = useState(false);
+  const [weightTooltipPosition, setWeightTooltipPosition] = useState({ x: 0, y: 0 });
   const [resilience, setResilience] = useState<{ score: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
+  const weightRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (showTooltip && nodeRef.current) {
-      const rect = nodeRef.current.getBoundingClientRect();
-      setTooltipPosition({
-        x: rect.left + rect.width / 2,
-        y: rect.bottom + 12
+    if (showWeightTooltip && weightRef.current) {
+      const rect = weightRef.current.getBoundingClientRect();
+      setWeightTooltipPosition({
+        x: rect.right + 8,
+        y: rect.top + rect.height / 2
       });
     }
-  }, [showTooltip]);
+  }, [showWeightTooltip]);
 
   // Extract resilience score from node metadata
   useEffect(() => {
@@ -185,7 +186,6 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         <div
           onClick={(e) => {
             e.stopPropagation();
-            setShowTooltip(false);
             data.onRemoveFromGroup?.();
           }}
           style={{
@@ -228,10 +228,6 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           display: "flex",
           flexDirection: "column"
         }}
-        onMouseEnter={() => {
-          if (data.ai_tooltip || data.user_tooltip) setShowTooltip(true);
-        }}
-        onMouseLeave={() => setShowTooltip(false)}
       >
         {/* Category header */}
         <div style={{
@@ -386,7 +382,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
               justifyContent: "center",
               gap: "4px"
             }}>
-              <ConfidenceIcon size={14} color="#6b7280" />
+              <ConfidenceIcon size={14} />
               <span style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937" }}>
                 {confidence}
               </span>
@@ -399,51 +395,55 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
               justifyContent: "center",
               gap: "4px"
             }}>
-              <WeightIcon size={14} color="#6b7280" />
-              <span style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937" }}>
+              <WeightIcon size={14} />
+              <span 
+                ref={weightRef}
+                style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", cursor: "help" }}
+                onMouseEnter={() => {
+                  if (data.ai_tooltip) setShowWeightTooltip(true);
+                }}
+                onMouseLeave={() => setShowWeightTooltip(false)}
+              >
                 {elementWeight}
               </span>
             </div>
           </div>
         </div>
       
+      {/* Handles on all sides - can be both source and target */}
       <Handle 
-        id="t"
+        id="top"
         position={Position.Top} 
-        type="target" 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
-        id="b"
+        id="bottom"
         position={Position.Bottom} 
-        type="source" 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
-        id="l"
+        id="left"
         position={Position.Left} 
-        type="target" 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
-        id="r"
+        id="right"
         position={Position.Right} 
-        type="source" 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
     </div>
 
-    {(data.ai_tooltip || data.user_tooltip) && showTooltip && createPortal(
+    {data.ai_tooltip && showWeightTooltip && createPortal(
       <div
         style={{
           position: "fixed",
-          left: `${tooltipPosition.x}px`,
-          top: `${tooltipPosition.y}px`,
-          transform: "translateX(-50%)",
+          left: `${weightTooltipPosition.x}px`,
+          top: `${weightTooltipPosition.y}px`,
+          transform: "translateY(-50%)",
           minWidth: "200px",
           maxWidth: "280px",
           background: "#111827",
@@ -459,27 +459,16 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           lineHeight: 1.4
         }}
       >
-        {data.user_tooltip && (
-          <div style={{ marginBottom: data.ai_tooltip ? 10 : 0 }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.user_tooltip.title}</div>
-            {data.user_tooltip.items.map((item, idx) => (
-              <div key={`u-${idx}`} style={{ marginBottom: 4 }}>
-                <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {data.ai_tooltip && (
-          <div>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>{data.ai_tooltip.title}</div>
-            {data.ai_tooltip.items.map((item, idx) => (
-              <div key={`a-${idx}`} style={{ marginBottom: 4 }}>
-                <span style={{ color: "#9CA3AF" }}>{item.label}:</span> {item.value}
-              </div>
-            ))}
-          </div>
-        )}
+        {(() => {
+          const reasonItem = data.ai_tooltip.items.find(item => item.label.toLowerCase() === "reason");
+          return reasonItem ? (
+            <div style={{ lineHeight: 1.5 }}>
+              {reasonItem.value}
+            </div>
+          ) : (
+            <div style={{ color: "#9CA3AF" }}>No reasoning available</div>
+          );
+        })()}
       </div>,
       document.body
     )}
