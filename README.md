@@ -84,6 +84,8 @@ az account set --subscription <your-subscription-id>
 
 ### Step 1: Collect Azure Resources
 
+#### Option A: Azure Resource Graph (Live Resources)
+
 Run the collector to fetch resources from your Azure subscription:
 
 ```bash
@@ -104,7 +106,23 @@ python -m app.collector.run \
   --tag environment=production
 ```
 
-This creates:
+#### Option B: Terraform Configuration (Pre-deployment Analysis)
+
+Import resources directly from Terraform files without Azure access:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m app.terraform.run --terraform-dir <path-to-terraform-files>
+```
+
+**Or via Web UI**:
+1. Start the backend server (see Step 4)
+2. Open the frontend (see Step 5)
+3. Click "📦 Import Terraform Configuration"
+4. Upload your `.tf` or `.json` files
+
+Both options create:
 - `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
 - `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
 
@@ -123,6 +141,8 @@ This analyzes resources and generates:
 - Category-based evaluations (Availability, Data, Disaster Recovery, etc.)
 - Pass/fail status for each recommendation
 - Resilience scores and weighted metrics
+- **Availability zone analysis** (deployment patterns, 3-AZ compliance)
+- **Resilience correlation groups** (Availability Sets, VMSS, Load Balancers, etc.)
 
 Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
@@ -258,6 +278,38 @@ The LLM annotator uses signal confidence to:
 - Elevate criticality for high-confidence edges (≥0.9)
 - Apply caution for lower-confidence edges (<0.7)
 - Justify dependency assessments based on signal evidence
+
+## Resilience Correlation & Grouping
+
+The application automatically identifies and visualizes **resilience groups** - collections of resources configured for high availability and fault tolerance:
+
+### Automatic Group Discovery
+
+The system detects 8 types of resilience groups:
+
+| Group Type | Description | Example |
+|-----------|-------------|----------|
+| **Availability Set** | VMs distributed across fault/update domains | 3 VMs in zones 1,2,3 |
+| **VMSS** | Virtual Machine Scale Set instances | Auto-scaling web tier |
+| **Load Balancer Backend** | Resources behind a load balancer | 4 VMs in backend pool |
+| **Storage Geo-Redundancy** | Geo-replicated storage accounts | GRS/GZRS storage |
+| **SQL Failover Group** | Database high availability pairs | Primary + secondary DB |
+| **Cosmos DB Replication** | Multi-region Cosmos accounts | Global distribution |
+| **Custom Groups** | Tag-based logical groupings | User-defined collections |
+| **Cross-Zone Groups** | Resources spanning multiple AZs | Multi-zone deployments |
+
+### Visual Integration
+
+- Groups automatically appear as **graph groups** in the workload visualization
+- Resources are visually clustered by their resilience configuration
+- Group metadata shows member count, zones, and resilience status
+- No manual configuration required
+
+### Context-Aware Recommendations
+
+Resilience evaluations consider group membership:
+- Single-zone VM in an Availability Set: ✅ "Multi-zone resilience achieved through Availability Set"
+- Standalone single-zone VM: ⚠️ "Migrate to multi-zone deployment"
 
 ## Scoring & Resilience Calculation
 
@@ -417,6 +469,7 @@ The backend provides the following main endpoints:
 - `GET /api/resilience/weights` - Get resilience category weights
 - `GET /api/resilience/categories` - Get available resilience categories
 - `GET /api/resilience/evaluate/{subscription_id}/summary` - Get resilience summary
+- `GET /api/resilience/evaluate/{subscription_id}/zonal-resilience` - Get zonal resilience analysis
 - `GET /api/resilience/{subscription_id}/overrides` - List resilience evaluation overrides
 - `POST /api/resilience/{subscription_id}/overrides` - Create resilience override
 - `DELETE /api/resilience/{subscription_id}/overrides` - Delete resilience override
@@ -425,6 +478,10 @@ The backend provides the following main endpoints:
 - `GET /api/{subscription_id}/resources/{resource_id}/recommendations` - Get recommendations for specific resource
 - `GET /api/{subscription_id}/recommendations/by-category/{category}` - Get recommendations by category
 - `GET /api/{subscription_id}/recommendations/summary` - Get recommendations summary
+
+### Terraform Endpoints
+- `POST /api/terraform/upload` - Upload and process Terraform files (.tf or .json)
+- Form parameters: `files` (multi-file upload), `subscription_id` (optional), `subscription_name` (optional)
 
 ## Development Workflow
 
@@ -480,6 +537,73 @@ To update the graph with new Azure resources:
 ### Frontend Configuration
 
 The frontend proxies API requests to the backend at `http://127.0.0.1:8000` (configured in `vite.config.ts`).
+
+## Zonal Resilience Analysis
+
+The application includes a dedicated **Zonal Resilience** tab that analyzes Azure Availability Zone configuration across all resources:
+
+### Features
+
+- **Compliance Score**: Visual percentage of resources meeting 3-AZ best practices
+- **Deployment Pattern Breakdown**: Resources categorized by zone configuration:
+  - 🟢 **Zone Redundant**: Platform-managed cross-zone replication
+  - 🔵 **Multi-Zone**: Deployed across 2-3 availability zones
+  - 🟡 **Single Zone**: Pinned to one zone (risk of zone failure)
+  - ⚪ **Unknown**: Configuration unclear or not detected
+  - ⚫ **Not Applicable**: Resource type doesn't support zones
+- **Regional Analysis**: Zone-enabled vs non-zone regions
+- **Interactive Resource Table**: 
+  - Sortable by name, pattern, compliance
+  - Filterable by deployment pattern
+  - Shows assigned zones and 3-AZ status
+- **Smart Recommendations**: Actionable guidance based on current deployment
+
+### Access
+
+1. Run resilience evaluation: `python -m app.resilience.run --subscription-id <id>`
+2. Start the frontend application
+3. Select your subscription
+4. Click the **"Zonal Resilience"** tab (🌍 icon)
+
+## Terraform Configuration Analysis
+
+Analyze infrastructure **before deployment** by importing Terraform configurations:
+
+### Use Cases
+
+- **Pre-deployment validation**: Identify resilience issues before provisioning
+- **Infrastructure review**: Audit existing Terraform code
+- **Offline analysis**: No Azure subscription or permissions required
+
+### Quick Start
+
+```bash
+# Import from directory
+python -m app.terraform.run --terraform-dir ./my-terraform
+
+# Or single file
+python -m app.terraform.run --terraform-file ./main.tf
+
+# Then analyze
+python -m app.resilience.run --subscription-id <generated-id>
+python -m app.llm.run --subscription-id <generated-id>  # Optional
+```
+
+### Supported Resources
+
+30+ Azure resource types including:
+- Compute: VMs, VMSS, AKS, Container Instances, App Services
+- Storage: Storage Accounts, Managed Disks, File Shares
+- Databases: SQL, PostgreSQL, MySQL, Cosmos DB, Redis
+- Networking: VNets, Subnets, NSGs, Load Balancers, Application Gateways
+- Platform: Key Vault, App Configuration, Service Bus, Event Hubs
+
+### Features
+
+- **HCL and JSON support**: Parses both `.tf` and Terraform JSON state files
+- **SKU extraction**: Captures tier, size, and zone configuration
+- **Relationship detection**: Identifies dependencies between resources
+- **Full pipeline compatibility**: Works with all resilience and LLM modules
 
 ## Troubleshooting
 
