@@ -130,7 +130,7 @@ const WorkloadView: React.FC = () => {
 
   const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
     // Build lookup by resilience_check_id (deterministic UUIDv5 from resource_id + recommendation_id)
-    const overrideLookup = new Map<string, { status: "pass" | "fail"; validation_source?: string; resilience_check_id?: string }>();
+    const overrideLookup = new Map<string, { status: "pass" | "fail" | "pending"; validation_source?: string; resilience_check_id?: string }>();
 
     Object.entries(overrides || {}).forEach(([resilienceCheckId, override]) => {
       if (!resilienceCheckId) return;
@@ -183,7 +183,7 @@ const WorkloadView: React.FC = () => {
     );
   }, []);
 
-  const upsertResilienceOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
+  const upsertResilienceOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
     const resilienceCheckId = override?.resilience_check_id;
     if (!resilienceCheckId) return;
 
@@ -275,6 +275,11 @@ const WorkloadView: React.FC = () => {
         setResilienceData(null);
         setResilienceEvaluations(null);
       }
+      
+      // Reset filters after loading new graph data so all options are checked
+      setServiceFilter(new Set());
+      setResourceGroupFilter(new Set());
+      setExpandedCategories(new Set());
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
@@ -282,7 +287,7 @@ const WorkloadView: React.FC = () => {
     }
   }, [subscriptionId]);
 
-  const handleOverrideSaved = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
+  const handleOverrideSaved = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
     upsertResilienceOverride(override);
   }, [upsertResilienceOverride]);
 
@@ -373,7 +378,9 @@ const WorkloadView: React.FC = () => {
   useEffect(() => {
     if (serviceOptions.length && serviceFilter.size === 0) {
       const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+      const allCategories = serviceOptions.map(cat => cat.category);
       setServiceFilter(new Set(allServices));
+      setExpandedCategories(new Set(allCategories));
     }
   }, [serviceOptions, serviceFilter.size]);
 
@@ -1007,6 +1014,13 @@ const WorkloadView: React.FC = () => {
   // Always respect the view level selection
   const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
 
+  const resetFiltersToAll = useCallback(() => {
+    // Reset filters - empty sets will trigger useEffect hooks to select all options
+    setServiceFilter(new Set());
+    setResourceGroupFilter(new Set());
+    setExpandedCategories(new Set());
+  }, []);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsResizing(true);
     e.preventDefault();
@@ -1037,6 +1051,7 @@ const WorkloadView: React.FC = () => {
     setSubscriptionId(subId);
     localStorage.setItem("awg_subscription_id", subId);
     setShowSubscriptionPicker(false);
+    resetFiltersToAll();
   };
 
   if (showSubscriptionPicker) {
@@ -1378,7 +1393,7 @@ const WorkloadView: React.FC = () => {
           >
             {sidebarOpen ? "◀ Hide" : "▶ Show"} Menu
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Azure Workload Insights</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Azure Resilience IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label htmlFor="subscriptionId" style={{ fontSize: 12, color: "#9AA0A6" }}>Subscription</label>
             <select
@@ -1407,7 +1422,10 @@ const WorkloadView: React.FC = () => {
               ))}
             </select>
             <button
-              onClick={() => setShowSubscriptionPicker(true)}
+              onClick={() => {
+                resetFiltersToAll();
+                setShowSubscriptionPicker(true);
+              }}
               style={{
                 padding: "6px 12px",
                 background: "#1f2937",

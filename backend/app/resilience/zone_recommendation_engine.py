@@ -183,7 +183,7 @@ class ZoneRecommendationEngine:
             self._load_hardcoded_fallback()
             return
         
-        LOGGER.info(f"Found {len(yaml_files)} zone recommendation files in {self.config_path}")
+        LOGGER.debug(f"Found {len(yaml_files)} zone recommendation files in {self.config_path}")
         
         files_loaded = 0
         files_failed = 0
@@ -199,10 +199,11 @@ class ZoneRecommendationEngine:
                 continue
         
         if self.recommendations:
-            LOGGER.info(
+            LOGGER.debug(
                 f"✓ Loaded zone recommendations: {files_loaded} files, "
                 f"{len(self.recommendations)} resource types"
             )
+            LOGGER.debug(f"Loaded resource types: {sorted(self.recommendations.keys())}")
         else:
             LOGGER.warning("No valid recommendations loaded, using hardcoded fallback")
             self._load_hardcoded_fallback()
@@ -266,6 +267,9 @@ class ZoneRecommendationEngine:
         if not resource_type:
             LOGGER.warning(f"Could not infer resource type from path: {yaml_file}")
             return
+        
+        # Normalize to lowercase for consistent lookups
+        resource_type = resource_type.lower()
         
         # Parse patterns into recommendations
         self.recommendations[resource_type] = {}
@@ -472,6 +476,11 @@ class ZoneRecommendationEngine:
                 if pattern_key in patterns:
                     LOGGER.debug(f"Found recommendation: {resource_type} -> {pattern_key}")
                     return patterns[pattern_key]
+                # Pattern not found for this resource type, try single_zone as fallback
+                # (most resources have single_zone pattern defined)
+                if 'single_zone' in patterns and pattern_key == 'unknown':
+                    LOGGER.debug(f"Using single_zone fallback for {resource_type} -> {pattern_key}")
+                    return patterns['single_zone']
         
         # Fallback to generic (*) recommendations
         if "*" in self.recommendations:
@@ -481,7 +490,8 @@ class ZoneRecommendationEngine:
                 return generic_patterns[pattern_key]
         
         # Final fallback: hardcoded default
-        LOGGER.warning(f"No recommendation found for {resource_type} -> {pattern_key}, using default")
+        # Use DEBUG level - these are expected for child resources and types without zone files
+        LOGGER.debug(f"No recommendation found for {resource_type} -> {pattern_key}, using default")
         return ZoneRecommendation(
             description="Review zone configuration",
             long_description="No specific recommendation available for this resource type and pattern.",
