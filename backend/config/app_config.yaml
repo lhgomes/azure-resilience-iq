@@ -39,6 +39,17 @@ resilience:
   
   # Rules directory for resilience checks
   rules_dir: "./config/resiliency_rules"
+
+  # Default Microsoft Learn URLs by resource type prefix (lowercase)
+  learn_more_defaults:
+    "microsoft.network/virtualnetworks": "https://learn.microsoft.com/en-us/azure/virtual-network/virtual-networks-overview"
+    "microsoft.containerregistry/registries": "https://learn.microsoft.com/en-us/azure/container-registry/container-registry-best-practices"
+    "microsoft.containerservice/managedclusters": "https://learn.microsoft.com/en-us/azure/aks/availability-zones"
+    "microsoft.storage/storageaccounts": "https://learn.microsoft.com/en-us/azure/storage/common/storage-redundancy"
+    "microsoft.storage/storageaccounts/blobservices/containers": "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-overview"
+    "microsoft.sql/servers/databases": "https://learn.microsoft.com/en-us/azure/azure-sql/database/high-availability-sla"
+    "microsoft.sql/servers": "https://learn.microsoft.com/en-us/azure/azure-sql/database/high-availability-sla"
+    "microsoft.documentdb/databaseaccounts": "https://learn.microsoft.com/en-us/azure/cosmos-db/high-availability"
   
   # Azure resource types that are zone-irrelevant or zone-resilient by default
   # These do NOT require zone configuration (control plane, regional networking, global services)
