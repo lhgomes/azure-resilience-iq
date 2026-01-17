@@ -1,5 +1,5 @@
 import React from "react";
-import { BaseEdge, EdgeLabelRenderer, getStraightPath, EdgeProps } from "reactflow";
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, EdgeProps } from "reactflow";
 
 const AzureEdge: React.FC<EdgeProps> = ({
   id,
@@ -13,11 +13,13 @@ const AzureEdge: React.FC<EdgeProps> = ({
   selected,
   markerEnd
 }) => {
-  const [edgePath, labelX, labelY] = getStraightPath({
+  const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
+    sourcePosition,
     targetX,
-    targetY
+    targetY,
+    targetPosition
   });
 
   const edgeData = data as any || {};

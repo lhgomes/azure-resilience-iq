@@ -13,12 +13,15 @@ import ReactFlow, {
   ConnectionMode,
   OnSelectionChangeParams,
   NodeDragHandler,
+  applyNodeChanges,
+  NodeChange,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import dagre from "dagre";
 import AzureNode from "./AzureNode";
 import AzureEdge from "./AzureEdge";
 import AzureGroupNode from "./AzureGroupNode";
+import { getEdgeHandles } from "../utils/edgeHandles";
 
 export interface GraphNode {
   id: string;
@@ -280,6 +283,26 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
   }, [rfNodes, rfEdges]);
 
+  // Add handle selection based on laid out node positions
+  const edgesWithHandles: Edge[] = useMemo(() => {
+    return rfEdges.map(e => {
+      // Find source and target node positions from laid out nodes
+      const sourceNode = layoutedNodes.find(n => n.id === e.source);
+      const targetNode = layoutedNodes.find(n => n.id === e.target);
+      
+      if (!sourceNode || !targetNode) {
+        return { ...e, sourceHandle: "bottom", targetHandle: "top" };
+      }
+
+      const { sourceHandle, targetHandle } = getEdgeHandles(
+        sourceNode.position,
+        targetNode.position
+      );
+
+      return { ...e, sourceHandle, targetHandle };
+    });
+  }, [rfEdges, layoutedNodes]);
+
   // Hydrate group containers based on node metadata.
   useEffect(() => {
     const membersByGroup = new Map<string, { label: string | null; memberIds: string[] }>();
@@ -450,7 +473,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   }, [layoutedNodes, groups, groupMembership, toggleGroupCollapsed]);
 
   const composedEdges = useMemo((): Edge[] => {
-    if (groups.length === 0) return rfEdges;
+    if (groups.length === 0) return edgesWithHandles;
 
     const collapsedGroupByMember = new Map<string, string>();
     const collapsedGroupIds = new Set<string>();
@@ -459,12 +482,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       collapsedGroupIds.add(g.id);
       for (const id of g.memberIds) collapsedGroupByMember.set(id, g.id);
     }
-    if (collapsedGroupIds.size === 0) return rfEdges;
+    if (collapsedGroupIds.size === 0) return edgesWithHandles;
 
     const agg = new Map<string, { base: Edge; count: number }>();
     const mapEndpoint = (nodeId: string): string => collapsedGroupByMember.get(nodeId) ?? nodeId;
 
-    for (const e of rfEdges) {
+    for (const e of edgesWithHandles) {
       const src = mapEndpoint(e.source);
       const tgt = mapEndpoint(e.target);
 
@@ -502,11 +525,57 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         },
       };
     });
-  }, [rfEdges, groups]);
+  }, [edgesWithHandles, groups]);
 
-  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(composedNodes);
+  const [flowNodes, setFlowNodes, onNodesChangeDefault] = useNodesState(composedNodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(composedEdges);
 
+  // Custom onNodesChange that recomputes edge handles when drag ends
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      // Apply node changes first
+      const updatedNodes = applyNodeChanges(changes, flowNodes);
+      setFlowNodes(updatedNodes);
+
+      // Check if any drag operation ended
+      const dragEnded = changes.some(
+        (change) =>
+          change.type === "position" &&
+          change.dragging === false
+      );
+
+      // Recompute edge handles if drag ended
+      if (dragEnded) {
+        const updatedEdges = composedEdges.map((edge) => {
+          const sourceNode = updatedNodes.find((n) => n.id === edge.source);
+          const targetNode = updatedNodes.find((n) => n.id === edge.target);
+
+          if (!sourceNode || !targetNode) {
+            return edge;
+          }
+
+          const { sourceHandle, targetHandle } = getEdgeHandles(
+            sourceNode.position,
+            targetNode.position
+          );
+
+          // Only update if handles changed
+          if (
+            sourceHandle !== edge.sourceHandle ||
+            targetHandle !== edge.targetHandle
+          ) {
+            return { ...edge, sourceHandle, targetHandle };
+          }
+          return edge;
+        });
+
+        setFlowEdges(updatedEdges);
+      }
+    },
+    [flowNodes, composedEdges, setFlowNodes, setFlowEdges]
+  );
+
+  // Sync composed nodes/edges on initial load
   useEffect(() => {
     setFlowNodes(composedNodes);
   }, [composedNodes, setFlowNodes]);
