@@ -56,6 +56,8 @@ def main():
     for r in resources:
         resource_dict = r.model_dump()
         resource_dict['id'] = norm_id(resource_dict['id'])
+        # Explicitly mark collected Azure resources as non-virtual
+        resource_dict['virtual'] = False
         normalized_resources.append(resource_dict)
     
     output = normalized_resources
@@ -73,7 +75,6 @@ def main():
     resources_output = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
-        "virtual_resources": False,
         "resources": output
     }
     
@@ -124,7 +125,6 @@ def main():
     edges_output_data = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
-        "virtual_resources": False,
         "edges": edges_output
     }
     edges_file.write_text(json.dumps(edges_output_data, indent=2))

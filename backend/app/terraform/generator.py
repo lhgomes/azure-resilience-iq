@@ -27,6 +27,7 @@ class GeneratedResource:
     properties: Dict[str, Any] = None
     sku: Optional[Dict[str, Any]] = None
     zones: Optional[List[str]] = None
+    virtual: bool = True
 
 
 class TerraformResourceGenerator:
@@ -145,7 +146,6 @@ class TerraformResourceGenerator:
         resources_output = {
             "subscription_id": self.subscription_id,
             "subscription_name": self.subscription_name,
-            "virtual_resources": True,
             "resources": [
                 self._resource_to_dict(r) for r in resources_list
             ]
@@ -154,7 +154,6 @@ class TerraformResourceGenerator:
         edges_output = {
             "subscription_id": self.subscription_id,
             "subscription_name": self.subscription_name,
-            "virtual_resources": True,
             "edges": filtered_edges
         }
         
@@ -366,6 +365,7 @@ class TerraformResourceGenerator:
                 properties=self._extract_properties(tf_resource.type, attrs),
                 sku=self._get_sku(tf_resource.type, attrs),
                 zones=self._get_zones(attrs),
+                virtual=True,
             )
             
             self.generated_resources[resource_id] = resource
@@ -1005,6 +1005,7 @@ class TerraformResourceGenerator:
             "properties": resource.properties or {},
             "sku": resource.sku,
             "zones": resource.zones,
+            "virtual": bool(resource.virtual),
         }
 
 

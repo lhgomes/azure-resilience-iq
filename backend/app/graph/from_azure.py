@@ -117,6 +117,7 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "tags": r.get("tags") or {},
                 "importance": importance,
                 "display_name": base_name,
+                "virtual": bool(r.get("virtual", False)),
             }
         ))
 

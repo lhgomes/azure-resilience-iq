@@ -509,19 +509,23 @@ def main():
         if isinstance(resources_data, dict) and "resources" in resources_data:
             resources = resources_data["resources"]
             subscription_name = resources_data.get("subscription_name", "")
-            virtual_resources = bool(resources_data.get("virtual_resources", False))
+            subscription_virtual_flag = bool(resources_data.get("virtual_resources", False))
         else:
             # Fallback for direct list format
             resources = resources_data
             subscription_name = ""
-            virtual_resources = False
-        
+            subscription_virtual_flag = False
+
+        virtual_flags = [bool(res.get("virtual", False)) for res in resources]
+        all_virtual_resources = bool(resources) and all(virtual_flags)
+        any_virtual_resources = any(virtual_flags)
+
         # Detect if this is a virtual (non-Azure) subscription, e.g., Terraform input
-        is_terraform_subscription = virtual_resources or subscription_name == "Terraform"
-        if virtual_resources:
+        is_virtual_subscription = subscription_virtual_flag or all_virtual_resources or subscription_name == "Terraform"
+        if is_virtual_subscription:
             LOGGER.info("Virtual resources input detected. Using LLM-based evaluation instead of KQL.")
-        elif is_terraform_subscription:
-            LOGGER.info("Terraform-generated subscription detected via name. Using LLM-based evaluation instead of KQL.")
+        elif any_virtual_resources:
+            LOGGER.info("Mixed virtual/non-virtual resources detected; KQL will target non-virtual resources only.")
         
         LOGGER.info("Loaded %d resources", len(resources))
 
@@ -550,7 +554,7 @@ def main():
                 resources=res_list,
                 subscription_id=args.subscription_id,
                 detail_log=detail_log,
-                is_virtual_subscription=virtual_resources,
+                is_virtual_subscription=is_virtual_subscription,
             )
 
             for resource_id, result in batch_results.items():
@@ -579,7 +583,7 @@ def main():
                 resources=[sub_resource],
                 subscription_id=args.subscription_id,
                 detail_log=detail_log,
-                is_virtual_subscription=virtual_resources,
+                is_virtual_subscription=is_virtual_subscription,
             )
             
             for resource_id, result in sub_results.items():
