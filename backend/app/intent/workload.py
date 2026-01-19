@@ -1,5 +1,16 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Dict, List, Optional
+
+
+class GraphViewport(BaseModel):
+    x: float
+    y: float
+    zoom: float
+
+
+class GraphViewState(BaseModel):
+    viewport: Optional[GraphViewport] = None
+    node_positions: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
 
 class WorkloadViewState(BaseModel):
@@ -11,6 +22,7 @@ class WorkloadViewState(BaseModel):
     service_filter: List[str] = Field(default_factory=list)
     expanded_categories: List[str] = Field(default_factory=list)
     show_legend: bool = False
+    graph_view: Optional[GraphViewState] = None
 
 
 class Workload(BaseModel):

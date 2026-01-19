@@ -62,6 +62,13 @@ const WorkloadView: React.FC = () => {
     () => Array.from(selectedSubscriptions).sort(),
     [selectedSubscriptions]
   );
+  const selectedSubscriptionOptions = useMemo(
+    () =>
+      subscriptions
+        .filter(sub => selectedSubscriptions.has(sub.id))
+        .map(sub => ({ id: sub.id, name: sub.name })),
+    [subscriptions, selectedSubscriptions]
+  );
   const selectionKey = useMemo(
     () => selectedSubscriptionIds.join("|"),
     [selectedSubscriptionIds]
@@ -127,6 +134,8 @@ const WorkloadView: React.FC = () => {
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const skipFilterResetRef = useRef(false);
   const pendingWorkloadApplyRef = useRef(false);
+  const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
+  const skipNextFitViewRef = useRef(false);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
@@ -185,10 +194,19 @@ const WorkloadView: React.FC = () => {
     service_filter: Array.from(serviceFilter),
     expanded_categories: Array.from(expandedCategories),
     show_legend: showLegend,
+    graph_view: graphCanvasRef.current?.getViewState() ?? undefined,
   }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend]);
 
   const normalizeWorkloadViewState = useCallback((state: WorkloadViewState): WorkloadViewState => {
     const sort = (values: string[]) => [...values].map(String).sort();
+    const normalizePositions = (positions?: Record<string, { x: number; y: number }>) => {
+      if (!positions) return {} as Record<string, { x: number; y: number }>;
+      return Object.fromEntries(
+        Object.entries(positions)
+          .map(([id, pos]) => [id, { x: pos.x, y: pos.y }])
+          .sort(([a], [b]) => String(a).localeCompare(String(b)))
+      );
+    };
     return {
       selected_subscriptions: sort(state.selected_subscriptions || []),
       view_level: state.view_level || "overview",
@@ -198,6 +216,14 @@ const WorkloadView: React.FC = () => {
       service_filter: sort(state.service_filter || []),
       expanded_categories: sort(state.expanded_categories || []),
       show_legend: !!state.show_legend,
+      graph_view: state.graph_view
+        ? {
+            viewport: state.graph_view.viewport
+              ? { x: state.graph_view.viewport.x, y: state.graph_view.viewport.y, zoom: state.graph_view.viewport.zoom }
+              : undefined,
+            node_positions: normalizePositions(state.graph_view.node_positions),
+          }
+        : undefined,
     };
   }, []);
 
@@ -227,6 +253,10 @@ const WorkloadView: React.FC = () => {
   const applyWorkloadViewState = useCallback((state: WorkloadViewState) => {
     skipFilterResetRef.current = true;
     pendingWorkloadApplyRef.current = true;
+    setPendingGraphView(state.graph_view ?? null);
+    if (state.graph_view) {
+      skipNextFitViewRef.current = true;
+    }
     setSelectedSubscriptions(new Set(state.selected_subscriptions || []));
     setViewLevel((state.view_level as ViewLevel) || "overview");
     setAiLayerEnabled(state.ai_layer_enabled ?? true);
@@ -530,8 +560,16 @@ const WorkloadView: React.FC = () => {
 
   // Fit view when filters change
   useEffect(() => {
+    if (skipNextFitViewRef.current) {
+      skipNextFitViewRef.current = false;
+      return;
+    }
     graphCanvasRef.current?.fitView();
   }, [viewLevel, serviceFilter, resourceGroupFilter]);
+
+  useEffect(() => {
+    if (!graph) return;
+  }, [graph]);
 
   // Clear selections when view level changes
   useEffect(() => {
@@ -1919,6 +1957,8 @@ const WorkloadView: React.FC = () => {
                         ref={graphCanvasRef}
                         nodes={nodesForView}
                         edges={edgesForView}
+                        graphViewState={pendingGraphView}
+                        onGraphViewApplied={() => setPendingGraphView(null)}
                         selectedEdgeId={selectedEdge?.id ?? null}
                         userLayerEnabled={userLayerEnabled}
                         maxImportance={maxImportance}
@@ -1996,7 +2036,7 @@ const WorkloadView: React.FC = () => {
                     evaluations={resilience_evaluations || {}}
                     workloadScore={resilience_data?.workload_score}
                     subscriptionId={singleSubscriptionId ?? undefined}
-                    subscriptionOptions={subscriptions.map(sub => ({ id: sub.id, name: sub.name }))}
+                    subscriptionOptions={selectedSubscriptionOptions}
                     graphData={graph ?? undefined}
                     overrides={resilience_overrides}
                     viewLevel={viewLevel}

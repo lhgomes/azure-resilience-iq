@@ -89,6 +89,10 @@ export interface WorkloadViewState {
   service_filter: string[];
   expanded_categories: string[];
   show_legend: boolean;
+  graph_view?: {
+    viewport?: { x: number; y: number; zoom: number };
+    node_positions?: Record<string, { x: number; y: number }>;
+  };
 }
 
 export interface WorkloadSummary {
