@@ -188,7 +188,79 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173`.
 
-**First Time**: When you first open the app, you'll see a subscription picker. Select the subscription you collected data for, and the graph will load automatically.
+**First Time**: When you first open the app, you'll see a subscription selector in the sidebar. You can:
+- Select a **single subscription** to view its workload graph
+- Select **multiple subscriptions** to view a merged cross-subscription graph
+- Create and save **workload views** with specific filter configurations
+
+## Multi-Subscription View & Workload Management
+
+### Multi-Subscription Support
+
+The application supports analyzing **multiple Azure subscriptions simultaneously**:
+
+**Features**:
+- Select one or more subscriptions from the sidebar
+- View merged graph combining resources from all selected subscriptions
+- Unified resilience evaluations across subscriptions
+- Cross-subscription filtering (resource groups, services)
+- Subscription-aware node and edge metadata
+
+**How It Works**:
+1. Collect data from each subscription separately:
+   ```bash
+   python -m app.collector.run --subscription-id <subscription-1>
+   python -m app.resilience.run --subscription-id <subscription-1>
+   
+   python -m app.collector.run --subscription-id <subscription-2>
+   python -m app.resilience.run --subscription-id <subscription-2>
+   ```
+
+2. In the UI, select multiple subscriptions from the sidebar
+3. The graph automatically merges:
+   - Nodes (deduplicated by resource ID)
+   - Edges (preserved from all subscriptions)
+   - LLM annotations (first occurrence wins)
+   - Resilience evaluations (merged by resource ID)
+   - User overrides (combined across subscriptions)
+
+**Use Cases**:
+- Cross-subscription dependency analysis
+- Enterprise-wide resilience posture
+- Multi-tenant workload visualization
+- Development/staging/production comparison
+
+### Workload Views
+
+Save and restore specific configurations as **named workloads**:
+
+**What's Saved in a Workload**:
+- Selected subscriptions
+- View level (overview, detailed, implementation)
+- AI/User layer toggles
+- Resource group filters
+- Service type filters
+- Expanded filter categories
+- Graph viewport and node positions
+
+**Workflow**:
+1. Configure your view (subscriptions, filters, layout)
+2. Click **"Save Workload"** in the sidebar
+3. Enter a name (e.g., "Production AKS Cluster", "Dev Environment")
+4. Later, select the workload from the dropdown to restore the exact view
+
+**Workload Management**:
+- **Create**: Save current view state with a name
+- **Load**: Restore a saved workload (subscriptions, filters, positions)
+- **Update**: Save changes to an existing workload
+- **Rename**: Change workload name
+- **Delete**: Remove a saved workload
+
+**Dirty State Tracking**:
+The UI shows when your current view differs from the saved workload, prompting you to save changes.
+
+**Storage**:
+Workloads are stored in `backend/data/workload/workloads.json` and persist across sessions.
 
 ## Project Structure
 
@@ -478,6 +550,19 @@ The backend provides the following main endpoints:
 - `GET /api/{subscription_id}/resources/{resource_id}/recommendations` - Get recommendations for specific resource
 - `GET /api/{subscription_id}/recommendations/by-category/{category}` - Get recommendations by category
 - `GET /api/{subscription_id}/recommendations/summary` - Get recommendations summary
+
+### Workload Management Endpoints
+- `GET /api/workloads` - List all saved workload views
+- `GET /api/workloads/{workload_id}` - Get a specific workload view
+- `POST /api/workloads` - Create a new workload view
+  - Body: `{"name": "string", "view_state": {...}}`
+- `PATCH /api/workloads/{workload_id}` - Update workload name or view state
+  - Body: `{"name": "string" (optional), "view_state": {...} (optional)}`
+- `DELETE /api/workloads/{workload_id}` - Delete a workload view
+
+### Subscription Refresh Endpoints
+- `POST /api/subscriptions/{subscription_id}/refresh` - Start async LLM annotation refresh
+- `GET /api/subscriptions/{subscription_id}/refresh/status` - Check refresh job status
 
 ### Terraform Endpoints
 - `POST /api/terraform/upload` - Upload and process Terraform files (.tf or .json)
