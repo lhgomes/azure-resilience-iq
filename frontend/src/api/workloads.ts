@@ -78,6 +78,30 @@ export interface RawGraphSnapshot {
   resilience_overrides?: Record<string, any>;
 }
 
+export type WorkloadViewLevel = "overview" | "network" | "full";
+
+export interface WorkloadViewState {
+  selected_subscriptions: string[];
+  view_level: WorkloadViewLevel;
+  ai_layer_enabled: boolean;
+  user_layer_enabled: boolean;
+  resource_group_filter: string[];
+  service_filter: string[];
+  expanded_categories: string[];
+  show_legend: boolean;
+}
+
+export interface WorkloadSummary {
+  workload_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkloadRecord extends WorkloadSummary {
+  view_state: WorkloadViewState;
+}
+
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -117,6 +141,37 @@ export async function fetchSubscriptions(): Promise<SubscriptionInfo[]> {
 
 export async function fetchWorkloadGraph(subscriptionId: SubscriptionId): Promise<RawGraphSnapshot> {
   return await apiJson<RawGraphSnapshot>(subscriptionPath(subscriptionId, `/graph`));
+}
+
+export async function listWorkloads(): Promise<WorkloadSummary[]> {
+  return await apiJson<WorkloadSummary[]>("/api/workloads");
+}
+
+export async function getWorkload(workloadId: string): Promise<WorkloadRecord> {
+  return await apiJson<WorkloadRecord>(`/api/workloads/${encodeURIComponent(workloadId)}`);
+}
+
+export async function createWorkload(payload: { name: string; view_state: WorkloadViewState }): Promise<WorkloadRecord> {
+  return await apiJson<WorkloadRecord>("/api/workloads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateWorkload(
+  workloadId: string,
+  payload: { name?: string; view_state?: WorkloadViewState }
+): Promise<WorkloadRecord> {
+  return await apiJson<WorkloadRecord>(`/api/workloads/${encodeURIComponent(workloadId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteWorkload(workloadId: string): Promise<void> {
+  await apiNoBody(`/api/workloads/${encodeURIComponent(workloadId)}`, { method: "DELETE" });
 }
 
 export async function acceptEdge(subscriptionId: SubscriptionId, edgeId: string): Promise<void> {

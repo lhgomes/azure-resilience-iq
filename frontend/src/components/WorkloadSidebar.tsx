@@ -21,6 +21,19 @@ interface Props {
   selectedSubscriptions: Set<string>;
   onSelectedSubscriptionsChange: (next: Set<string>) => void;
 
+  workloads: Array<{ workload_id: string; name: string; updated_at?: string }>;
+  activeWorkloadId: string | null;
+  workloadName: string;
+  onWorkloadNameChange: (next: string) => void;
+  onWorkloadSelect: (workloadId: string | null) => void;
+  onWorkloadCreate: () => void;
+  onWorkloadSave: () => void;
+  onWorkloadRename: () => void;
+  onWorkloadDelete: () => void;
+  workloadError?: string | null;
+  workloadDirty?: boolean;
+  workloadNewDirty?: boolean;
+
   viewLevel: ViewLevel;
   onViewLevelChange: (next: ViewLevel) => void;
 
@@ -58,6 +71,122 @@ const WorkloadSidebar: React.FC<Props> = props => {
       }}
     >
       <h3 style={{ margin: "0 0 20px 0", color: "#eee", fontSize: 16 }}>Controls</h3>
+
+      {/* Workload Views */}
+      <div style={{ marginBottom: 20 }}>
+        <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
+          Workload
+        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <select
+            value={props.activeWorkloadId ?? ""}
+            onChange={e => props.onWorkloadSelect(e.target.value || null)}
+            style={{
+              width: "100%",
+              background: "#181818",
+              color: "#fff",
+              border: "1px solid #333",
+              padding: "8px",
+              borderRadius: 4,
+            }}
+          >
+            <option value="">Select workload</option>
+            {props.workloads.map(workload => (
+              <option key={workload.workload_id} value={workload.workload_id}>
+                {workload.name}
+              </option>
+            ))}
+          </select>
+
+          <input
+            type="text"
+            value={props.workloadName}
+            onChange={e => props.onWorkloadNameChange(e.target.value)}
+            placeholder="Workload name"
+            style={{
+              width: "100%",
+              background: "#181818",
+              color: "#fff",
+              border: "1px solid #333",
+              padding: "8px",
+              borderRadius: 4,
+            }}
+          />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <button
+              onClick={props.onWorkloadCreate}
+              disabled={!props.workloadName.trim()}
+              style={{
+                padding: "8px",
+                background: props.workloadName.trim()
+                  ? (!props.activeWorkloadId && props.workloadNewDirty ? "#2563eb" : "#1f3a5f")
+                  : "#222",
+                color: props.workloadName.trim() ? "#fff" : "#666",
+                border: !props.activeWorkloadId && props.workloadNewDirty ? "1px solid #60a5fa" : "1px solid #333",
+                borderRadius: 4,
+                cursor: props.workloadName.trim() ? "pointer" : "not-allowed",
+                fontSize: 12,
+                boxShadow: !props.activeWorkloadId && props.workloadNewDirty ? "0 0 0 1px rgba(96,165,250,0.4)" : "none",
+              }}
+            >
+              Save New
+            </button>
+            <button
+              onClick={props.onWorkloadSave}
+              disabled={!props.activeWorkloadId}
+              style={{
+                padding: "8px",
+                background: props.activeWorkloadId
+                  ? (props.workloadDirty ? "#16a34a" : "#0f3d2e")
+                  : "#222",
+                color: props.activeWorkloadId ? "#fff" : "#666",
+                border: props.workloadDirty ? "1px solid #4ade80" : "1px solid #333",
+                borderRadius: 4,
+                cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
+                fontSize: 12,
+                boxShadow: props.workloadDirty ? "0 0 0 1px rgba(74,222,128,0.35)" : "none",
+              }}
+            >
+              Save Changes
+            </button>
+            <button
+              onClick={props.onWorkloadRename}
+              disabled={!props.activeWorkloadId || !props.workloadName.trim()}
+              style={{
+                padding: "8px",
+                background: props.activeWorkloadId && props.workloadName.trim() ? "#3b2b1a" : "#222",
+                color: props.activeWorkloadId && props.workloadName.trim() ? "#fff" : "#666",
+                border: "1px solid #333",
+                borderRadius: 4,
+                cursor: props.activeWorkloadId && props.workloadName.trim() ? "pointer" : "not-allowed",
+                fontSize: 12,
+              }}
+            >
+              Rename
+            </button>
+            <button
+              onClick={props.onWorkloadDelete}
+              disabled={!props.activeWorkloadId}
+              style={{
+                padding: "8px",
+                background: props.activeWorkloadId ? "#4a1c1c" : "#222",
+                color: props.activeWorkloadId ? "#fff" : "#666",
+                border: "1px solid #333",
+                borderRadius: 4,
+                cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
+                fontSize: 12,
+              }}
+            >
+              Delete
+            </button>
+          </div>
+
+          {props.workloadError && (
+            <div style={{ fontSize: 11, color: "#f87171" }}>{props.workloadError}</div>
+          )}
+        </div>
+      </div>
 
       {/* Subscription Selector */}
       <div style={{ marginBottom: 20 }}>

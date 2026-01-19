@@ -30,7 +30,15 @@ import {
   deleteGroup,
   addNodeToGroup,
   removeNodeFromGroup,
+  listWorkloads,
+  getWorkload,
+  createWorkload,
+  updateWorkload,
+  deleteWorkload,
   type SubscriptionInfo,
+  type WorkloadRecord,
+  type WorkloadSummary,
+  type WorkloadViewState,
 } from "../api/workloads";
 import {
   buildViewGraph,
@@ -84,6 +92,12 @@ const WorkloadView: React.FC = () => {
   const [isResizing, setIsResizing] = useState(false);
   const [activeSubscriptionId, setActiveSubscriptionId] = useState<string | null>(null);
 
+  const [workloads, setWorkloads] = useState<WorkloadSummary[]>([]);
+  const [activeWorkloadId, setActiveWorkloadId] = useState<string | null>(null);
+  const [activeWorkloadState, setActiveWorkloadState] = useState<WorkloadViewState | null>(null);
+  const [workloadName, setWorkloadName] = useState("");
+  const [workloadError, setWorkloadError] = useState<string | null>(null);
+
   // Default both layers to enabled; no URL sync
   const [aiLayerEnabled, setAiLayerEnabled] = useState(true);
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
@@ -111,6 +125,8 @@ const WorkloadView: React.FC = () => {
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const skipFilterResetRef = useRef(false);
+  const pendingWorkloadApplyRef = useRef(false);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
@@ -159,6 +175,76 @@ const WorkloadView: React.FC = () => {
       return next;
     });
   };
+
+  const buildWorkloadViewState = useCallback((): WorkloadViewState => ({
+    selected_subscriptions: selectedSubscriptionIds,
+    view_level: viewLevel,
+    ai_layer_enabled: aiLayerEnabled,
+    user_layer_enabled: userLayerEnabled,
+    resource_group_filter: Array.from(resourceGroupFilter),
+    service_filter: Array.from(serviceFilter),
+    expanded_categories: Array.from(expandedCategories),
+    show_legend: showLegend,
+  }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend]);
+
+  const normalizeWorkloadViewState = useCallback((state: WorkloadViewState): WorkloadViewState => {
+    const sort = (values: string[]) => [...values].map(String).sort();
+    return {
+      selected_subscriptions: sort(state.selected_subscriptions || []),
+      view_level: state.view_level || "overview",
+      ai_layer_enabled: state.ai_layer_enabled ?? true,
+      user_layer_enabled: state.user_layer_enabled ?? true,
+      resource_group_filter: sort(state.resource_group_filter || []),
+      service_filter: sort(state.service_filter || []),
+      expanded_categories: sort(state.expanded_categories || []),
+      show_legend: !!state.show_legend,
+    };
+  }, []);
+
+  const isWorkloadDirty = useMemo(() => {
+    if (!activeWorkloadId || !activeWorkloadState) return false;
+    const current = normalizeWorkloadViewState(buildWorkloadViewState());
+    const saved = normalizeWorkloadViewState(activeWorkloadState);
+    return JSON.stringify(current) !== JSON.stringify(saved);
+  }, [activeWorkloadId, activeWorkloadState, buildWorkloadViewState, normalizeWorkloadViewState]);
+
+  const isNewWorkloadDirty = useMemo(() => {
+    if (activeWorkloadId) return false;
+    const current = normalizeWorkloadViewState(buildWorkloadViewState());
+    const defaultState = normalizeWorkloadViewState({
+      selected_subscriptions: [],
+      view_level: "overview",
+      ai_layer_enabled: true,
+      user_layer_enabled: true,
+      resource_group_filter: [],
+      service_filter: [],
+      expanded_categories: [],
+      show_legend: false,
+    });
+    return JSON.stringify(current) !== JSON.stringify(defaultState);
+  }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState]);
+
+  const applyWorkloadViewState = useCallback((state: WorkloadViewState) => {
+    skipFilterResetRef.current = true;
+    pendingWorkloadApplyRef.current = true;
+    setSelectedSubscriptions(new Set(state.selected_subscriptions || []));
+    setViewLevel((state.view_level as ViewLevel) || "overview");
+    setAiLayerEnabled(state.ai_layer_enabled ?? true);
+    setUserLayerEnabled(state.user_layer_enabled ?? true);
+    setResourceGroupFilter(new Set(state.resource_group_filter || []));
+    setServiceFilter(new Set(state.service_filter || []));
+    setExpandedCategories(new Set(state.expanded_categories || []));
+    setShowLegend(!!state.show_legend);
+  }, []);
+
+  const loadWorkloads = useCallback(async () => {
+    try {
+      const list = await listWorkloads();
+      setWorkloads(list);
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to load workloads");
+    }
+  }, []);
 
   const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
     // Build lookup by resilience_check_id (deterministic UUIDv5 from resource_id + recommendation_id)
@@ -328,10 +414,14 @@ const WorkloadView: React.FC = () => {
 
       setResilienceOverrides(mergedOverrides);
 
-      // Reset filters after loading new graph data so all options are checked
-      setServiceFilter(new Set());
-      setResourceGroupFilter(new Set());
-      setExpandedCategories(new Set());
+      if (skipFilterResetRef.current) {
+        skipFilterResetRef.current = false;
+      } else {
+        // Reset filters after loading new graph data so all options are checked
+        setServiceFilter(new Set());
+        setResourceGroupFilter(new Set());
+        setExpandedCategories(new Set());
+      }
     } catch (err: any) {
       setError(err.message ?? "Unknown error");
     } finally {
@@ -415,6 +505,10 @@ const WorkloadView: React.FC = () => {
       });
   }, []);
 
+  useEffect(() => {
+    loadWorkloads();
+  }, [loadWorkloads]);
+
   // Fetch weights from backend
   useEffect(() => {
     const loadWeights = async () => {
@@ -482,7 +576,13 @@ const WorkloadView: React.FC = () => {
 
   useEffect(() => {
     if (!resourceGroupOptions.length) {
+      if (pendingWorkloadApplyRef.current) return;
       if (resourceGroupFilter.size) setResourceGroupFilter(new Set());
+      return;
+    }
+
+    if (pendingWorkloadApplyRef.current) {
+      pendingWorkloadApplyRef.current = false;
       return;
     }
 
@@ -1313,6 +1413,86 @@ const WorkloadView: React.FC = () => {
     resetFiltersToAll();
   }, [resetFiltersToAll]);
 
+  const handleWorkloadSelect = useCallback(async (workloadId: string | null) => {
+    setWorkloadError(null);
+    if (!workloadId) {
+      setActiveWorkloadId(null);
+      setWorkloadName("");
+      return;
+    }
+    try {
+      const workload = await getWorkload(workloadId);
+      setActiveWorkloadId(workload.workload_id);
+      setWorkloadName(workload.name);
+      setActiveWorkloadState(workload.view_state);
+      applyWorkloadViewState(workload.view_state);
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to load workload");
+    }
+  }, [applyWorkloadViewState]);
+
+  const handleWorkloadCreate = useCallback(async () => {
+    const name = workloadName.trim();
+    if (!name) {
+      setWorkloadError("Workload name is required.");
+      return;
+    }
+    try {
+      setWorkloadError(null);
+      const view_state = buildWorkloadViewState();
+      const created = await createWorkload({ name, view_state });
+      setActiveWorkloadId(created.workload_id);
+      setActiveWorkloadState(created.view_state);
+      await loadWorkloads();
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to save workload");
+    }
+  }, [workloadName, buildWorkloadViewState, loadWorkloads]);
+
+  const handleWorkloadSave = useCallback(async () => {
+    if (!activeWorkloadId) return;
+    try {
+      setWorkloadError(null);
+      const view_state = buildWorkloadViewState();
+      const updated = await updateWorkload(activeWorkloadId, { view_state });
+      setActiveWorkloadState(updated.view_state);
+      await loadWorkloads();
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to update workload");
+    }
+  }, [activeWorkloadId, buildWorkloadViewState, loadWorkloads]);
+
+  const handleWorkloadRename = useCallback(async () => {
+    if (!activeWorkloadId) return;
+    const name = workloadName.trim();
+    if (!name) {
+      setWorkloadError("Workload name is required.");
+      return;
+    }
+    try {
+      setWorkloadError(null);
+      const updated = await updateWorkload(activeWorkloadId, { name });
+      setWorkloadName(updated.name);
+      await loadWorkloads();
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to rename workload");
+    }
+  }, [activeWorkloadId, workloadName, loadWorkloads]);
+
+  const handleWorkloadDelete = useCallback(async () => {
+    if (!activeWorkloadId) return;
+    try {
+      setWorkloadError(null);
+      await deleteWorkload(activeWorkloadId);
+      setActiveWorkloadId(null);
+      setActiveWorkloadState(null);
+      setWorkloadName("");
+      await loadWorkloads();
+    } catch (err: any) {
+      setWorkloadError(err.message ?? "Failed to delete workload");
+    }
+  }, [activeWorkloadId, loadWorkloads]);
+
   useEffect(() => {
     if (activeSubscriptionId && selectedSubscriptionIds.includes(activeSubscriptionId)) return;
     if (singleSubscriptionId) {
@@ -1448,6 +1628,18 @@ const WorkloadView: React.FC = () => {
             subscriptions={subscriptions.map(sub => ({ id: sub.id, name: sub.name }))}
             selectedSubscriptions={selectedSubscriptions}
             onSelectedSubscriptionsChange={handleSelectedSubscriptionsChange}
+            workloads={workloads}
+            activeWorkloadId={activeWorkloadId}
+            workloadName={workloadName}
+            onWorkloadNameChange={setWorkloadName}
+            onWorkloadSelect={handleWorkloadSelect}
+            onWorkloadCreate={handleWorkloadCreate}
+            onWorkloadSave={handleWorkloadSave}
+            onWorkloadRename={handleWorkloadRename}
+            onWorkloadDelete={handleWorkloadDelete}
+            workloadError={workloadError}
+            workloadDirty={isWorkloadDirty}
+            workloadNewDirty={isNewWorkloadDirty}
             viewLevel={viewLevel}
             onViewLevelChange={setViewLevel}
             aiLayerEnabled={aiLayerEnabled}
