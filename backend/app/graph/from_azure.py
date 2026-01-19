@@ -117,6 +117,7 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "tags": r.get("tags") or {},
                 "importance": importance,
                 "display_name": base_name,
+                "virtual": bool(r.get("virtual", False)),
             }
         ))
 
@@ -264,7 +265,9 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
         if me.id in existing_ids:
             continue
 
-        if norm_id(me.source) not in gb.nodes or norm_id(me.target) not in gb.nodes:
+        # Allow cross-subscription manual edges by only requiring the source
+        # node to exist in the current subscription graph.
+        if norm_id(me.source) not in gb.nodes:
             continue
 
         merged_edges.append(Edge(

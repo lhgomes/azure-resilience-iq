@@ -71,6 +71,11 @@ interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
   userLayerEnabled: boolean;
+  graphViewState?: {
+    viewport?: { x: number; y: number; zoom: number };
+    node_positions?: Record<string, { x: number; y: number }>;
+  } | null;
+  onGraphViewApplied?: () => void;
   selectedEdgeId?: string | null;
   onEdgeSelected?: (edge: GraphEdge | null) => void;
   onNodeSelected?: (nodeId: string | null) => void;
@@ -97,6 +102,14 @@ const nodeTypesWithGroups: NodeTypes = { ...nodeTypes, azureGroup: AzureGroupNod
 
 export interface GraphCanvasHandle {
   fitView: () => void;
+  getViewState: () => {
+    viewport: { x: number; y: number; zoom: number };
+    node_positions: Record<string, { x: number; y: number }>;
+  } | null;
+  setViewState: (state: {
+    viewport?: { x: number; y: number; zoom: number };
+    node_positions?: Record<string, { x: number; y: number }>;
+  } | null) => void;
 }
 
 const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
@@ -104,6 +117,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     nodes: nodesProp,
     edges: edgesProp,
     userLayerEnabled,
+    graphViewState,
+    onGraphViewApplied,
     onEdgeSelected,
     onNodeSelected,
     maxImportance = 1,
@@ -118,14 +133,19 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     selectedEdgeId = null,
   } = props;
   
-  const { fitView } = useReactFlow();
+  const { fitView, getViewport, setViewport } = useReactFlow();
+  const flowNodesRef = useRef<Node[]>([]);
+  const [savedPositions, setSavedPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const skipNextFitViewRef = useRef(false);
+  const lastMissingLogRef = useRef<string | null>(null);
+  const justAppliedGraphViewRef = useRef(false);
 
-  // Expose fitView to parent via ref
-  useImperativeHandle(ref, () => ({
-    fitView: () => {
-      setTimeout(() => fitView(), 100);
-    }
-  }), [fitView]);
+  const normalizePositions = useCallback((positions?: Record<string, { x: number; y: number }>) => {
+    if (!positions) return {} as Record<string, { x: number; y: number }>;
+    return Object.fromEntries(
+      Object.entries(positions).map(([id, pos]) => [String(id).toLowerCase(), { x: pos.x, y: pos.y }])
+    );
+  }, []);
 
   const [groups, setGroups] = useState<GroupState[]>([]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
@@ -146,6 +166,33 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   }, [nodesProp, maxImportance]);
 
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map(n => n.id)), [visibleNodes]);
+
+  // When the node set changes (e.g., new graph loaded), clear saved positions so they get fresh Dagre layout.
+  // But DON'T clear if graphViewState is pending (it will re-apply positions) or if we just applied positions.
+  useEffect(() => {
+    if (graphViewState?.node_positions) {
+      // graphViewState is pending, will apply positions - don't clear yet
+      return;
+    }
+    
+    if (justAppliedGraphViewRef.current) {
+      // We just applied positions from graphViewState, don't clear them now
+      justAppliedGraphViewRef.current = false;
+      return;
+    }
+
+    const currentIds = new Set(visibleNodes.map(n => String(n.id).toLowerCase()));
+    const savedIds = new Set(Object.keys(savedPositions));
+    
+    // Check if node set has substantially changed (more than just filtering)
+    const oldHasSaved = savedIds.size > 0;
+    const currentHasNodes = currentIds.size > 0;
+    const noOverlap = Array.from(currentIds).every(id => !savedIds.has(id));
+    
+    if (oldHasSaved && currentHasNodes && noOverlap) {
+      setSavedPositions({});
+    }
+  }, [visibleNodes, savedPositions, graphViewState?.node_positions]);
 
   // Merge backend-provided grouping with local pending moves (for immediate UX after drag/drop).
   const groupInfoByNodeId = useMemo(() => {
@@ -240,12 +287,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       markerEnd: { type: MarkerType.ArrowClosed },
     }));
     
-    // Debug logging for manual edges
-    const manualEdges = edges.filter(e => e.data.origin === "manual");
-    if (manualEdges.length > 0) {
-      console.log("Manual edges found:", manualEdges);
-    }
-    
     return edges;
   }, [visibleEdges, userLayerEnabled, selectedEdgeId]);
 
@@ -275,13 +316,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
     return rfNodes.map(node => {
       const pos = g.node(node.id);
+      const saved = savedPositions[String(node.id).toLowerCase()];
+      if (saved) {
+        return {
+          ...node,
+          position: { x: saved.x, y: saved.y },
+        };
+      }
       if (!pos) return { ...node, position: { x: 0, y: 0 } };
       return {
         ...node,
         position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 },
       };
     });
-  }, [rfNodes, rfEdges]);
+  }, [rfNodes, rfEdges, savedPositions]);
 
   // Add handle selection based on laid out node positions
   const edgesWithHandles: Edge[] = useMemo(() => {
@@ -530,6 +578,89 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const [flowNodes, setFlowNodes, onNodesChangeDefault] = useNodesState(composedNodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(composedEdges);
 
+  // Expose fitView to parent via ref
+  useImperativeHandle(ref, () => ({
+    fitView: () => {
+      setTimeout(() => fitView(), 100);
+    },
+    getViewState: () => {
+      try {
+        const viewport = getViewport();
+        const nodes = flowNodesRef.current || [];
+        const node_positions = Object.fromEntries(
+          nodes.map(n => [String(n.id).toLowerCase(), { x: n.position.x, y: n.position.y }])
+        );
+        return { viewport, node_positions };
+      } catch {
+        return null;
+      }
+    },
+    setViewState: (state) => {
+      if (!state) return;
+      if (state.node_positions) {
+        setSavedPositions(normalizePositions(state.node_positions));
+      }
+      if (state.viewport) {
+        skipNextFitViewRef.current = true;
+        setTimeout(() => setViewport(state.viewport!), 0);
+      }
+    }
+  }), [fitView, getViewport, setViewport, setSavedPositions, normalizePositions]);
+
+  useEffect(() => {
+    flowNodesRef.current = flowNodes;
+  }, [flowNodes]);
+
+  useEffect(() => {
+    if (!graphViewState) {
+      return;
+    }
+    
+    const hasPositions = !!graphViewState.node_positions && Object.keys(graphViewState.node_positions).length > 0;
+
+    if (hasPositions && visibleNodes.length === 0) {
+      return;
+    }
+
+    if (graphViewState.node_positions) {
+      const normalized = normalizePositions(graphViewState.node_positions);
+      setSavedPositions(normalized);
+      
+      const visibleIds = new Set(visibleNodes.map(n => String(n.id).toLowerCase()));
+      const missing = Object.keys(normalized).filter(key => !visibleIds.has(key));
+      const matched = Object.keys(normalized).filter(key => visibleIds.has(key));
+      const logKey = JSON.stringify({ missing, visibleCount: visibleIds.size });
+      if (missing.length > 0 && lastMissingLogRef.current !== logKey) {
+        lastMissingLogRef.current = logKey;
+      }
+      
+      setFlowNodes(prev => {
+        return prev.map(n => {
+          const pos = normalized[String(n.id).toLowerCase()];
+          return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n;
+        });
+      });
+      
+      // Mark that we just applied graphViewState positions
+      justAppliedGraphViewRef.current = true;
+      
+      // Only call onGraphViewApplied after a small delay to let positions render
+      setTimeout(() => {
+        onGraphViewApplied?.();
+      }, 50);
+      
+      if (hasPositions && matched.length === 0) {
+        console.log("[GraphCanvas] Has positions but no matches, returning");
+        return;
+      }
+    }
+
+    if (graphViewState.viewport) {
+      skipNextFitViewRef.current = true;
+      setTimeout(() => setViewport(graphViewState.viewport!), 0);
+    }
+  }, [graphViewState, normalizePositions, onGraphViewApplied, setViewport, visibleNodes]);
+
   // Custom onNodesChange that recomputes edge handles when drag ends
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -578,13 +709,17 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   // Sync composed nodes/edges on initial load
   useEffect(() => {
     setFlowNodes(composedNodes);
-  }, [composedNodes, setFlowNodes]);
+  }, [composedNodes, setFlowNodes, setViewport]);
 
   useEffect(() => {
     setFlowEdges(composedEdges);
   }, [composedEdges, setFlowEdges]);
 
   useEffect(() => {
+    if (skipNextFitViewRef.current) {
+      skipNextFitViewRef.current = false;
+      return;
+    }
     setTimeout(() => fitView(), 100);
   }, [fitView]);
 

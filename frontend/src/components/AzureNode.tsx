@@ -52,6 +52,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const [resilience, setResilience] = useState<{ score: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const weightRef = useRef<HTMLDivElement>(null);
+  const isVirtual = Boolean((data.metadata as any)?.virtual);
 
   useEffect(() => {
     if (showWeightTooltip && weightRef.current) {
@@ -229,6 +230,28 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           flexDirection: "column"
         }}
       >
+        {isVirtual && (
+          <div
+            title="This resource is part of the target state and not yet deployed."
+            style={{
+              position: "absolute",
+              top: "44px",
+              left: "69px",
+              border: "1px solid #6b7280",
+              color: "#374151",
+              background: "rgba(235,235,235,0.90)",
+              padding: "2px 6px",
+              borderRadius: "999px",
+              fontSize: "6px",
+              fontWeight: 700,
+              letterSpacing: "0.6px",
+              textTransform: "uppercase",
+              zIndex: 12
+            }}
+          >
+            VIRTUAL
+          </div>
+        )}
         {/* Category header */}
         <div style={{
           background: categoryColor,
@@ -413,24 +436,28 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
       {/* Handles on all sides - can be both source and target */}
       <Handle 
         id="top"
+        type="target"
         position={Position.Top} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
         id="bottom"
+        type="source"
         position={Position.Bottom} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
         id="left"
+        type="target"
         position={Position.Left} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
         id="right"
+        type="source"
         position={Position.Right} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}

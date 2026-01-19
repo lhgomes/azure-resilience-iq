@@ -27,6 +27,7 @@ class GeneratedResource:
     properties: Dict[str, Any] = None
     sku: Optional[Dict[str, Any]] = None
     zones: Optional[List[str]] = None
+    virtual: bool = True
 
 
 class TerraformResourceGenerator:
@@ -145,7 +146,6 @@ class TerraformResourceGenerator:
         resources_output = {
             "subscription_id": self.subscription_id,
             "subscription_name": self.subscription_name,
-            "virtual_resources": True,
             "resources": [
                 self._resource_to_dict(r) for r in resources_list
             ]
@@ -154,7 +154,6 @@ class TerraformResourceGenerator:
         edges_output = {
             "subscription_id": self.subscription_id,
             "subscription_name": self.subscription_name,
-            "virtual_resources": True,
             "edges": filtered_edges
         }
         
@@ -334,7 +333,9 @@ class TerraformResourceGenerator:
             
             # Generate resource ID
             resource_id = self._generate_resource_id(
-                azure_type, tf_resource.name
+                azure_type,
+                tf_resource.name,
+                self._get_resource_group(tf_resource.attributes),
             )
             self.resource_id_map[f"{tf_resource.type}.{tf_resource.name}"] = resource_id
         
@@ -364,11 +365,12 @@ class TerraformResourceGenerator:
                 properties=self._extract_properties(tf_resource.type, attrs),
                 sku=self._get_sku(tf_resource.type, attrs),
                 zones=self._get_zones(attrs),
+                virtual=True,
             )
             
             self.generated_resources[resource_id] = resource
     
-    def _generate_resource_id(self, resource_type: str, name: str) -> str:
+    def _generate_resource_id(self, resource_type: str, name: str, resource_group: Optional[str] = None) -> str:
         """
         Generate a resource ID matching Azure REST API format.
         
@@ -394,9 +396,11 @@ class TerraformResourceGenerator:
             res_type = resource_type
         
         # Build ID
+        rg = (resource_group or "terraform-rg").strip() or "terraform-rg"
+
         resource_id = (
             f"/subscriptions/{self.subscription_id}"
-            f"/resourceGroups/terraform-rg"
+            f"/resourceGroups/{rg}"
             f"/providers/{namespace}/{res_type}/{name}"
         )
         
@@ -1001,6 +1005,7 @@ class TerraformResourceGenerator:
             "properties": resource.properties or {},
             "sku": resource.sku,
             "zones": resource.zones,
+            "virtual": bool(resource.virtual),
         }
 
 

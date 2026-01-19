@@ -776,7 +776,7 @@ class APRLEvaluator:
                 )
             elif kql_query:
                 # Only use KQL if we have non-virtual resources to evaluate
-                non_virtual_resources = [r for r in resources if not r.get("virtual_resources", False)]
+                non_virtual_resources = [r for r in resources if not bool(r.get("virtual", False))]
                 if non_virtual_resources:
                     non_virtual_ids = [r.get("id") for r in non_virtual_resources if r.get("id")]
                     non_virtual_ids_lower = [rid.lower() for rid in non_virtual_ids]

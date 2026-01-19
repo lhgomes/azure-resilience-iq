@@ -54,6 +54,16 @@ def get_resilience_evaluations_path(subscription_id: str) -> Path:
     return get_subscription_dir(subscription_id) / "resilience_evaluations.json"
 
 
+def get_workloads_dir() -> Path:
+    """Get the base directory for saved workload views."""
+    return DATA_DIR / "workload"
+
+
+def get_workload_path(workload_id: str) -> Path:
+    """Get the workload json path for a saved workload view."""
+    return get_workloads_dir() / f"{workload_id}.json"
+
+
 # Legacy: for backward compatibility during migration
 COLLECTOR_DIR = DATA_DIR / "collector"
 COLLECTOR_RESOURCES_PATH = COLLECTOR_DIR / "resources.json"
