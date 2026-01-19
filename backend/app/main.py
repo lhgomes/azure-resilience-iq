@@ -1,6 +1,7 @@
 import logging
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -467,7 +468,13 @@ def refresh_subscription(subscription_id: str):
             try:
                 current = json.loads(status_file.read_text())
                 if current.get("status") == "running":
-                    return {"status": "running"}
+                    return JSONResponse(
+                        status_code=202,
+                        content={"status": "running"},
+                        headers={
+                            "Location": f"/api/subscriptions/{subscription_id}/refresh/status"
+                        },
+                    )
             except Exception:
                 pass
 
@@ -503,7 +510,13 @@ def refresh_subscription(subscription_id: str):
                 })
 
         threading.Thread(target=monitor, daemon=True).start()
-        return {"status": "running", "pid": proc.pid}
+        return JSONResponse(
+            status_code=202,
+            content={"status": "running", "pid": proc.pid},
+            headers={
+                "Location": f"/api/subscriptions/{subscription_id}/refresh/status"
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -514,7 +527,10 @@ def refresh_status(subscription_id: str):
     try:
         status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
         if not status_file.exists():
-            return {"status": "idle"}
-        return json.loads(status_file.read_text())
+            return JSONResponse(status_code=200, content={"status": "idle"})
+        payload = json.loads(status_file.read_text())
+        if payload.get("status") == "running":
+            return Response(status_code=304)
+        return JSONResponse(status_code=200, content=payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
