@@ -13,6 +13,7 @@ from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
 from app.intent.manual_edge import ManualEdge
+from app.intent.workload import CreateWorkloadRequest, UpdateWorkloadRequest
 from app.intent.node_override import NodeOverride
 import subprocess
 import sys
@@ -38,6 +39,13 @@ from app.storage.groups_store import (
     remove_node_from_group,
     get_group,
     NodeGroup,
+)
+from app.storage.workload_store import (
+    list_workloads as list_saved_workloads,
+    get_workload as get_saved_workload,
+    create_workload as create_saved_workload,
+    update_workload as update_saved_workload,
+    delete_workload as delete_saved_workload,
 )
 from app.relationships.utils import norm_id
 
@@ -442,6 +450,61 @@ def get_graph(subscription_id: str):
 @app.get("/api/subscriptions/{subscription_id}/reviews")
 def review_inbox(subscription_id: str):
     return get_review_inbox(subscription_id)
+
+
+@app.get("/api/workloads")
+def list_workloads():
+    """List saved workload views."""
+    return [
+        {
+            "workload_id": w.workload_id,
+            "name": w.name,
+            "created_at": w.created_at,
+            "updated_at": w.updated_at,
+        }
+        for w in list_saved_workloads()
+    ]
+
+
+@app.get("/api/workloads/{workload_id}")
+def get_workload(workload_id: str):
+    """Fetch a saved workload view by id."""
+    workload = get_saved_workload(workload_id)
+    if not workload:
+        raise HTTPException(status_code=404, detail="Workload not found")
+    return workload.model_dump()
+
+
+@app.post("/api/workloads")
+def create_workload(req: CreateWorkloadRequest):
+    """Create a saved workload view."""
+    try:
+        workload = create_saved_workload(req.name, req.view_state)
+        return workload.model_dump()
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.patch("/api/workloads/{workload_id}")
+def update_workload(workload_id: str, req: UpdateWorkloadRequest):
+    """Update a saved workload view (name and/or view_state)."""
+    try:
+        updated = update_saved_workload(workload_id, name=req.name, view_state=req.view_state)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Workload not found")
+    return updated.model_dump()
+
+
+@app.delete("/api/workloads/{workload_id}")
+def delete_workload(workload_id: str):
+    """Delete a saved workload view."""
+    deleted = delete_saved_workload(workload_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Workload not found")
+    return {"status": "deleted", "workload_id": workload_id}
 
 
 @app.post("/api/subscriptions/{subscription_id}/refresh")
