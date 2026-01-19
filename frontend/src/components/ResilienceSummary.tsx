@@ -35,8 +35,10 @@ interface ResilienceSummaryProps {
   evaluations: Record<string, ResilienceEvaluation>;
   workloadScore?: number;  // Overall resilience score (0.0-1.0)
   subscriptionId?: string;  // Needed for saving overrides
+  subscriptionOptions?: Array<{ id: string; name: string }>;
   graphData?: {
     nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
+    node_overrides?: Record<string, Record<string, unknown>>;
     llm_annotations?: {
       nodes?: Array<{
         node_id: string;
@@ -210,12 +212,13 @@ const DonutChart: React.FC<{
   );
 };
 
-type SortColumn = "resource" | "recommendation" | "category" | "impact" | "status" | "benefit" | "weight" | "validated_by";
+type SortColumn = "subscription" | "resource" | "recommendation" | "category" | "impact" | "status" | "benefit" | "weight" | "validated_by";
 
 const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   evaluations,
   workloadScore,
   subscriptionId,
+  subscriptionOptions,
   graphData,
   overrides,
   viewLevel,
@@ -226,12 +229,13 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
 }) => {
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail" | "pending">("fail");
-  const [breakdownView, setBreakdownView] = useState<"category" | "impact" | "service">("category");
+  const [breakdownView, setBreakdownView] = useState<"category" | "impact" | "service" | "subscription">("category");
   const [sortColumn, setSortColumn] = useState<SortColumn>("weight");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [filterCategory, setFilterCategory] = useState<string | null>(null);
   const [filterImpact, setFilterImpact] = useState<string | null>(null);
   const [filterValidationSource, setFilterValidationSource] = useState<string | null>(null);
+  const [filterSubscription, setFilterSubscription] = useState<string | null>(null);
   const [resourceFilter, setResourceFilter] = useState("");
   const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }>>({});
   const [visibleTooltip, setVisibleTooltip] = useState<string | null>(null);
@@ -318,6 +322,38 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     }
     return map;
   }, [graphData]);
+
+  const userOverrideNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+
+    if (graphData?.node_overrides) {
+      Object.entries(graphData.node_overrides).forEach(([nodeId, override]) => {
+        const overrideName = (override as any)?.name as string | undefined;
+        if (!overrideName) return;
+        const key = String(nodeId).toLowerCase();
+        if (!key) return;
+        map.set(key, overrideName);
+      });
+    }
+
+    (graphData?.nodes ?? []).forEach(node => {
+      const overrideName = (node?.metadata as any)?.user_override?.name as string | undefined;
+      if (!overrideName) return;
+      const key = String(node.id).toLowerCase();
+      if (!key) return;
+      map.set(key, overrideName);
+    });
+    return map;
+  }, [graphData?.node_overrides, graphData?.nodes]);
+
+  const getEffectiveResourceName = useCallback((resourceId: string, fallbackName: string) => {
+    const key = String(resourceId).toLowerCase();
+    return (
+      userOverrideNameMap.get(key) ||
+      annotationMap.get(resourceId)?.display_name ||
+      fallbackName
+    );
+  }, [annotationMap, userOverrideNameMap]);
 
   // Helper function to get element weight from graph annotations
   const getElementWeight = useCallback((resourceId: string): number => {
@@ -460,6 +496,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     }
   };
 
+  const subscriptionNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    (subscriptionOptions || []).forEach(sub => {
+      if (sub?.id) map.set(sub.id, sub.name || sub.id);
+    });
+    return map;
+  }, [subscriptionOptions]);
+
+  const extractSubscriptionId = (resourceId: string): string | null => {
+    const parts = resourceId.split("/").filter(p => p);
+    if (parts.length < 2) return null;
+    if (parts[0].toLowerCase() !== "subscriptions") return null;
+    return parts[1] || null;
+  };
+
   // Apply user overrides to filtered evaluations (used for all display)
   const evaluationsWithOverrides = useMemo(() => {
     return Object.fromEntries(
@@ -565,8 +616,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const resourceFilterOptions = useMemo(() => {
     const seen = new Set<string>();
     stats.resourceList.forEach(resource => {
-      const annotationName = annotationMap.get(resource.resourceId)?.display_name || resource.resource_name || "";
-      const displayName = getResourceDisplayName(resource.resourceId, annotationName);
+      const effectiveName = getEffectiveResourceName(resource.resourceId, resource.resource_name || "");
+      const displayName = getResourceDisplayName(resource.resourceId, effectiveName);
       if (displayName) seen.add(displayName);
     });
     return Array.from(seen).sort((a, b) => a.localeCompare(b));
@@ -700,6 +751,70 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       .sort((a, b) => b.totalWeight - a.totalWeight);
   }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
 
+  const subscriptionBreakdown = useMemo(() => {
+    const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
+
+    Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
+      const subId = extractSubscriptionId(resourceId) ?? "Unknown";
+      const elementWeight = getElementWeight(resourceId);
+      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+
+      checksOrFindings.forEach((finding: any) => {
+        const category = finding.category || "Other";
+        const impactWeight = impactWeights[finding.impact] || 0.1;
+        const categoryWeight = categoryWeights[category] || 0.05;
+        const rawWeight = elementWeight * categoryWeight * impactWeight;
+
+        const existing = breakdown.get(subId) || { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 };
+        existing.total += 1;
+        existing.totalWeight += rawWeight;
+        if (finding.status === "pass") {
+          existing.passed += 1;
+          existing.passedWeight += rawWeight;
+        } else {
+          existing.failed += 1;
+        }
+        breakdown.set(subId, existing);
+      });
+    });
+
+    return Array.from(breakdown.entries())
+      .map(([subscriptionKey, stats]) => ({
+        id: subscriptionKey,
+        name: subscriptionNameMap.get(subscriptionKey) || subscriptionKey,
+        ...stats,
+        passPercentage: stats.total > 0 ? stats.passed / stats.total : 0,
+        resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
+      }))
+      .sort((a, b) => b.totalWeight - a.totalWeight || a.name.localeCompare(b.name));
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight, subscriptionNameMap]);
+
+  const showSubscriptionColumn = subscriptionBreakdown.length > 1;
+
+  const subscriptionFilterOptions = useMemo(() => {
+    return subscriptionBreakdown.map(item => ({ id: item.id, name: item.name }));
+  }, [subscriptionBreakdown]);
+
+  useEffect(() => {
+    if (!showSubscriptionColumn && filterSubscription) {
+      setFilterSubscription(null);
+    }
+  }, [showSubscriptionColumn, filterSubscription]);
+
+  const defaultBreakdownAppliedRef = useRef(false);
+
+  useEffect(() => {
+    if (!defaultBreakdownAppliedRef.current && subscriptionBreakdown.length > 1) {
+      setBreakdownView("subscription");
+      defaultBreakdownAppliedRef.current = true;
+      return;
+    }
+
+    if (subscriptionBreakdown.length <= 1 && breakdownView === "subscription") {
+      setBreakdownView("category");
+    }
+  }, [breakdownView, subscriptionBreakdown.length]);
+
   // Failed counts for impact levels (High/Medium/Low) for tooltip and donut
   const failedImpactCounts = useMemo(() => {
     const getFailed = (name: string) => impactBreakdown.find(i => i.name === name)?.failed || 0;
@@ -808,6 +923,11 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           };
         })
         .filter((f: any) => filterStatus === "all" || (filterStatus === "pending" ? f.status === "pending" : f.status === filterStatus))
+        .filter((f: any) => {
+          if (!showSubscriptionColumn || !filterSubscription) return true;
+          const subId = extractSubscriptionId(f.resourceId) || "Unknown";
+          return subId === filterSubscription;
+        })
         .filter((f: any) => !filterCategory || f.category === filterCategory)
         .filter((f: any) => !filterImpact || f.impact === filterImpact)
         .filter((f: any) => !filterValidationSource || f.validation_source.includes(filterValidationSource));
@@ -815,8 +935,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
 
     if (normalizedResourceFilter) {
       findings = findings.filter(finding => {
-        const annotationName = annotationMap.get(finding.resourceId)?.display_name || finding.resourceName || "";
-        const resourceLabel = getResourceDisplayName(finding.resourceId, annotationName);
+        const effectiveName = getEffectiveResourceName(finding.resourceId, finding.resourceName || "");
+        const resourceLabel = getResourceDisplayName(finding.resourceId, effectiveName);
         return resourceLabel.toLowerCase().includes(normalizedResourceFilter);
       });
     }
@@ -827,9 +947,13 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       let bVal: any = "";
 
       switch (sortColumn) {
+        case "subscription":
+          aVal = subscriptionNameMap.get(extractSubscriptionId(a.resourceId) || "") || extractSubscriptionId(a.resourceId) || "";
+          bVal = subscriptionNameMap.get(extractSubscriptionId(b.resourceId) || "") || extractSubscriptionId(b.resourceId) || "";
+          break;
         case "resource":
-          aVal = annotationMap.get(a.resourceId)?.display_name || a.resourceName;
-          bVal = annotationMap.get(b.resourceId)?.display_name || b.resourceName;
+          aVal = getEffectiveResourceName(a.resourceId, a.resourceName || "");
+          bVal = getEffectiveResourceName(b.resourceId, b.resourceName || "");
           break;
         case "recommendation":
           aVal = a.description;
@@ -884,7 +1008,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return findings;
-  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights]);
+  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, filterSubscription, showSubscriptionColumn, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights, subscriptionNameMap]);
 
   // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
   // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
@@ -938,8 +1062,9 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     resilienceCheckId: string,
     currentStatus: string
   ) => {
-    if (!subscriptionId) {
-      console.error("Cannot save override: subscription ID not provided");
+    const targetSubscriptionId = subscriptionId ?? extractSubscriptionId(resourceId);
+    if (!targetSubscriptionId) {
+      console.error("Cannot save override: subscription ID not available");
       return;
     }
 
@@ -962,7 +1087,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     // Save to backend
     try {
       const saved = await saveOverride(
-        subscriptionId,
+        targetSubscriptionId,
         resourceId,
         recommendationId,
         newStatus,
@@ -988,8 +1113,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         };
         
         // Save to localStorage
-        if (subscriptionId) {
-          const storageKey = `resilience_${subscriptionId}`;
+        if (targetSubscriptionId) {
+          const storageKey = `resilience_${targetSubscriptionId}`;
           const stored = localStorage.getItem(storageKey) || '{}';
           const data = JSON.parse(stored);
           data.overrides = data.overrides || {};
@@ -1031,7 +1156,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     recommendationId: string,
     resilienceCheckId: string
   ) => {
-    if (!subscriptionId) return;
+    const targetSubscriptionId = subscriptionId ?? extractSubscriptionId(resourceId);
+    if (!targetSubscriptionId) return;
     
     try {
       if (!resilienceCheckId) {
@@ -1039,7 +1165,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         return;
       }
 
-      await deleteOverride(subscriptionId, resilienceCheckId);
+      await deleteOverride(targetSubscriptionId, resilienceCheckId);
       
       // Update local state immediately by removing the override
       setUserOverrides(prev => {
@@ -1049,8 +1175,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
       });
       
       // Update localStorage after state update
-      if (subscriptionId) {
-        const storageKey = `resilience_${subscriptionId}`;
+      if (targetSubscriptionId) {
+        const storageKey = `resilience_${targetSubscriptionId}`;
         const stored = localStorage.getItem(storageKey) || '{}';
         const data = JSON.parse(stored);
         if (data.overrides && resilienceCheckId in data.overrides) {
@@ -1304,6 +1430,25 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             gap: "0",
           }}
         >
+          {subscriptionBreakdown.length > 1 && (
+            <button
+              onClick={() => setBreakdownView("subscription")}
+              style={{
+                padding: "12px 20px",
+                border: "none",
+                background: breakdownView === "subscription" ? "#fff" : "transparent",
+                color: breakdownView === "subscription" ? "#0078d4" : "#6b7280",
+                cursor: "pointer",
+                fontSize: "13px",
+                fontWeight: breakdownView === "subscription" ? 600 : 500,
+                borderBottom: breakdownView === "subscription" ? "3px solid #0078d4" : "none",
+                marginBottom: "-2px",
+                transition: "all 0.2s ease",
+              }}
+            >
+              By Subscription
+            </button>
+          )}
           <button
             onClick={() => setBreakdownView("category")}
             style={{
@@ -1355,6 +1500,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           >
             By Azure Service
           </button>
+          
         </div>
 
         {/* Breakdown Grid */}
@@ -1538,6 +1684,72 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                 </div>
               </div>
             ))}
+
+          {breakdownView === "subscription" &&
+            subscriptionBreakdown.map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  background: "#fff",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  boxShadow: "0 1px 2px rgba(0,0,0,0.08)",
+                  border: "1px solid #e5e7eb",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: "#1f2937",
+                    marginBottom: "10px",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {item.name}
+                </div>
+
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <ScoreDonut score={item.resilienceScore} size={80} />
+                </div>
+
+                <div style={{ marginTop: "8px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      height: "6px",
+                      borderRadius: "999px",
+                      overflow: "hidden",
+                      background: "#e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${item.total ? (item.passed / item.total) * 100 : 0}%`,
+                        background: "#10b981",
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: `${item.total ? (item.failed / item.total) * 100 : 0}%`,
+                        background: "#ef4444",
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
+                    <span style={{ color: "#6b7280" }}>Checks</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
         </div>
       </div>
 
@@ -1625,6 +1837,23 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           </div>
         </label>
 
+          {showSubscriptionColumn && (
+            <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
+              Subscription
+              <select
+                value={filterSubscription ?? ""}
+                onChange={(e) => setFilterSubscription(e.target.value || null)}
+                style={{ padding: "6px 8px", borderRadius: "4px", border: "1px solid #d1d5db", fontSize: "12px", minWidth: "180px" }}
+              >
+                <option value="">All</option>
+                {subscriptionFilterOptions.map(sub => (
+                  <option key={sub.id} value={sub.id}>
+                    {sub.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label style={{ fontSize: "12px", fontWeight: 600, color: "#1f2937", minWidth: "220px", display: "flex", flexDirection: "column", gap: "8px", marginLeft: "10px" }}>
             Resource
             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
@@ -1768,6 +1997,37 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   borderBottom: "2px solid #e5e7eb",
                 }}
               >
+                {showSubscriptionColumn && (
+                  <th
+                    style={{
+                      padding: "12px",
+                      textAlign: "left",
+                      fontWeight: 600,
+                      color: "#374151",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleSort("subscription")}
+                      style={{
+                        width: "100%",
+                        border: "none",
+                        background: "transparent",
+                        padding: 0,
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        fontWeight: 600,
+                        fontSize: "12px",
+                        color: "inherit",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span>Subscription</span>
+                      <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("subscription")}</span>
+                    </button>
+                  </th>
+                )}
                 <th
                   style={{
                     padding: "12px",
@@ -2015,9 +2275,19 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                     background: idx % 2 === 0 ? "#fff" : "#f9fafb",
                   }}
                 >
+                  {showSubscriptionColumn && (
+                    <td style={{ padding: "12px", color: "#374151", fontWeight: 600 }}>
+                      {subscriptionNameMap.get(extractSubscriptionId(finding.resourceId) || "")
+                        || extractSubscriptionId(finding.resourceId)
+                        || "Unknown"}
+                    </td>
+                  )}
                   <td style={{ padding: "12px", color: "#374151" }}>
                     <div style={{ fontWeight: 600 }}>
-                      {getResourceDisplayName(finding.resourceId, annotationMap.get(finding.resourceId)?.display_name || finding.resourceName)}
+                      {getResourceDisplayName(
+                        finding.resourceId,
+                        getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
+                      )}
                     </div>
                     <div
                       style={{
