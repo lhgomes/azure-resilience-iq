@@ -442,18 +442,27 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const resourceMatchesFilters = (resourceId: string, evaluation?: any): boolean => {
     // Check resource group filter
     if (effectiveResourceGroupFilter.size > 0) {
-      // Extract resource group from Azure resource ID
-      // Format: /subscriptions/sub-id/resourceGroups/group-name/providers/...
-      const parts = resourceId.split("/").filter(p => p);
-      const partsLower = parts.map(p => p.toLowerCase());
-      const rgIndex = partsLower.indexOf("resourcegroups");
-      const resourceGroup =
-        rgIndex !== -1 && rgIndex + 1 < parts.length
-          ? String(parts[rgIndex + 1]).toLowerCase()
-          : null;
+      // Prefer resource group from evaluation payload if present
+      const evalRg = (evaluation?.resource_group || evaluation?.resource_group_name || evaluation?.resourceGroup || "")
+        .toString()
+        .toLowerCase();
 
-      if (resourceGroup && !effectiveResourceGroupFilter.has(resourceGroup)) {
-        return false;
+      if (evalRg) {
+        if (!effectiveResourceGroupFilter.has(evalRg)) return false;
+      } else {
+        // Fallback: extract from Azure resource ID
+        // Format: /subscriptions/sub-id/resourceGroups/group-name/providers/...
+        const parts = resourceId.split("/").filter(p => p);
+        const partsLower = parts.map(p => p.toLowerCase());
+        const rgIndex = partsLower.indexOf("resourcegroups");
+        const resourceGroup =
+          rgIndex !== -1 && rgIndex + 1 < parts.length
+            ? String(parts[rgIndex + 1]).toLowerCase()
+            : null;
+
+        if (resourceGroup && !effectiveResourceGroupFilter.has(resourceGroup)) {
+          return false;
+        }
       }
     }
 
@@ -754,6 +763,11 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   const subscriptionBreakdown = useMemo(() => {
     const breakdown = new Map<string, { total: number; passed: number; failed: number; totalWeight: number; passedWeight: number }>();
 
+    // Initialize with all selected subscriptions (even if no evaluations yet)
+    (subscriptionOptions ?? []).forEach(subOption => {
+      breakdown.set(subOption.id, { total: 0, passed: 0, failed: 0, totalWeight: 0, passedWeight: 0 });
+    });
+
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const subId = extractSubscriptionId(resourceId) ?? "Unknown";
       const elementWeight = getElementWeight(resourceId);
@@ -787,7 +801,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
         resilienceScore: stats.totalWeight > 0 ? stats.passedWeight / stats.totalWeight : 0,
       }))
       .sort((a, b) => b.totalWeight - a.totalWeight || a.name.localeCompare(b.name));
-  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight, subscriptionNameMap]);
+  }, [evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight, subscriptionNameMap, subscriptionOptions]);
 
   const showSubscriptionColumn = subscriptionBreakdown.length > 1;
 
@@ -802,18 +816,34 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   }, [showSubscriptionColumn, filterSubscription]);
 
   const defaultBreakdownAppliedRef = useRef(false);
+  const lastSubscriptionIdRef = useRef<string | undefined | null>(null);
+  const lastSubscriptionCountRef = useRef(0);
 
+  // Reset the default breakdown flag when workload (subscriptionId) changes
   useEffect(() => {
-    if (!defaultBreakdownAppliedRef.current && subscriptionBreakdown.length > 1) {
-      setBreakdownView("subscription");
-      defaultBreakdownAppliedRef.current = true;
-      return;
+    if (lastSubscriptionIdRef.current !== subscriptionId) {
+      lastSubscriptionIdRef.current = subscriptionId;
+      defaultBreakdownAppliedRef.current = false;
     }
+  }, [subscriptionId]);
 
-    if (subscriptionBreakdown.length <= 1 && breakdownView === "subscription") {
-      setBreakdownView("category");
+  // Apply subscription breakdown when subscriptionOptions count changes
+  useEffect(() => {
+    const currentCount = (subscriptionOptions ?? []).length;
+    
+    // Only run if the COUNT changes, not if the object reference changes
+    if (lastSubscriptionCountRef.current !== currentCount) {
+      lastSubscriptionCountRef.current = currentCount;
+      
+      if (currentCount > 1) {
+        // Multiple subscriptions: use subscription view if not already
+        setBreakdownView(prev => prev !== "subscription" ? "subscription" : prev);
+      } else {
+        // Single subscription: use category view if not already
+        setBreakdownView(prev => prev === "subscription" ? "category" : prev);
+      }
     }
-  }, [breakdownView, subscriptionBreakdown.length]);
+  }, [subscriptionOptions?.length]);
 
   // Failed counts for impact levels (High/Medium/Low) for tooltip and donut
   const failedImpactCounts = useMemo(() => {
