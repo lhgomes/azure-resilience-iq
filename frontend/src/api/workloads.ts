@@ -214,6 +214,7 @@ export async function patchNode(
     color?: string | null;
     icon?: string | null;
     criticality_score?: number | null;
+    hidden?: boolean | null;
   }
 ): Promise<void> {
   // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
