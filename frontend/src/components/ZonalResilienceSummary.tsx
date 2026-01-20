@@ -133,8 +133,9 @@ const MetricCard: React.FC<{
   title: string;
   value: number;
   total: number;
+  background: string;
   color: string;
-}> = ({ title, value, total, color }) => {
+}> = ({ title, value, total, background, color }) => {
   const percentage = total > 0 ? (value / total) * 100 : 0;
 
   return (
@@ -142,10 +143,10 @@ const MetricCard: React.FC<{
       style={{
         padding: "16px",
         borderRadius: "8px",
-        backgroundColor: color + "10",
         borderLeft: `4px solid ${color}`,
         flex: 1,
         minWidth: "150px",
+        backgroundColor: background,
       }}
     >
       <div style={{ fontSize: "12px", fontWeight: 600, color: "#6b7280", marginBottom: "8px" }}>
@@ -507,33 +508,38 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "10px", marginTop: "12px" }}>
                 <MetricCard
-                    title="Zone Redundant"
-                    value={summary.zone_redundant_resources}
-                    total={summary.total_resources}
-                    color="#10b981"
-                />
-                <MetricCard
                     title="Multi-Zone"
                     value={summary.multi_zone_resources}
                     total={summary.total_resources}
-                    color="#3b82f6"
+                    background="#dee7f3"
+                    color="#448eef"
+                />
+                <MetricCard
+                    title="Zone Redundant"
+                    value={summary.zone_redundant_resources}
+                    total={summary.total_resources}
+                    background="#d0fbe7"
+                    color="#10b981"
                 />
                 <MetricCard
                     title="Single Zone"
                     value={summary.single_zone_resources}
                     total={summary.total_resources}
+                    background="#ffe7c6"
                     color="#f59e0b"
                 />
                 <MetricCard
                     title="Unknown Configuration"
                     value={summary.unknown_zone_resources}
                     total={summary.total_resources}
+                    background="#e6d5fc"
                     color="#8b5cf6"
                 />
                 <MetricCard
                     title="Not Applicable"
                     value={summary.not_applicable_resources}
                     total={summary.total_resources}
+                    background="#d9d9d9"
                     color="#aeb1b4"
                 />
                 </div>

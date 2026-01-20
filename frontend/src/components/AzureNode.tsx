@@ -33,12 +33,14 @@ interface AzureNodeProps {
     element_weight?: number;
     color?: string;
     azure_service_category?: string;
+    azure_service_name?: string;
     ai_annotation?: boolean;
     user_customized?: boolean;
     ai_tooltip?: AiTooltip;
     user_tooltip?: AiTooltip;
     groupId?: string;
     onRemoveFromGroup?: () => void;
+    onRemoveFromGraph?: () => void;
     metadata?: Record<string, unknown>;
   };
   isConnectable: boolean;
@@ -143,7 +145,11 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   };
 
   const getCategoryLabel = () => {
-    // Use azure_service_category from AI annotations if available
+    // Prefer azure_service_name, fallback to azure_service_category
+    if (data.azure_service_name) {
+      return data.azure_service_name;
+    }
+    
     if (data.azure_service_category) {
       return data.azure_service_category;
     }
@@ -183,11 +189,15 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
 
   return (
     <>
-      {data.groupId && data.onRemoveFromGroup && (
+      {(data.groupId && data.onRemoveFromGroup) || data.onRemoveFromGraph ? (
         <div
           onClick={(e) => {
             e.stopPropagation();
-            data.onRemoveFromGroup?.();
+            if (data.groupId && data.onRemoveFromGroup) {
+              data.onRemoveFromGroup();
+            } else if (data.onRemoveFromGraph) {
+              data.onRemoveFromGraph();
+            }
           }}
           style={{
             position: "absolute",
@@ -204,11 +214,11 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
             userSelect: "none",
             zIndex: 10
           }}
-          title="Click to remove from group"
+          title={data.groupId ? "Click to remove from group" : "Click to remove from workload"}
         >
           ✕
         </div>
-      )}
+      ) : null}
 
       <div
         ref={nodeRef}

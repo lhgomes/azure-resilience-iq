@@ -87,6 +87,7 @@ class UpdateNodeRequest(BaseModel):
     color: str | None = None
     icon: str | None = None
     criticality_score: int | None = None
+    hidden: bool | None = None
 
 
 class UpdateCriticalityRequest(BaseModel):
@@ -206,6 +207,7 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
     layer = payload.layer if "layer" in payload.model_fields_set else (existing.layer if existing else None)
     color = payload.color if "color" in payload.model_fields_set else (existing.color if existing else None)
     icon = payload.icon if "icon" in payload.model_fields_set else (existing.icon if existing else None)
+    hidden = payload.hidden if "hidden" in payload.model_fields_set else (existing.hidden if existing else None)
 
     group_id = payload.group_id if "group_id" in payload.model_fields_set else (existing.group_id if existing else None)
     if group_id is not None and group_id.strip() == "":
@@ -242,6 +244,7 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
         group_id=group_id,
         group_label=group_label,
         criticality_score=criticality_score,
+        hidden=hidden,
     )
 
     if (
@@ -252,6 +255,7 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
         and override.group_id is None
         and override.group_label is None
         and override.criticality_score is None
+        and override.hidden is None
     ):
         # Nothing left to override; remove record if it exists.
         deleted = delete_node_override(subscription_id, node_id_norm)

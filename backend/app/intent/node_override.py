@@ -11,4 +11,5 @@ class NodeOverride(BaseModel):
     group_id: Optional[str] = None
     group_label: Optional[str] = None
     criticality_score: Optional[int] = None
+    hidden: Optional[bool] = None
     created_by: str = "user"
