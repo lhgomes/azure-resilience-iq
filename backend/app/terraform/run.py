@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
+from app.resource_filters import (
+    filter_edges_by_ids,
+    filter_resources_by_type,
+    load_monitored_resource_types,
+)
 from app.terraform.parser import TerraformParser
 from app.terraform.generator import TerraformResourceGenerator
 
@@ -144,6 +149,8 @@ Examples:
         if user_variables:
             print(f"📝 Using {len(user_variables)} user-provided variable(s)")
     
+    allowed_types = load_monitored_resource_types()
+
     try:
         # Parse Terraform
         tf_parser = TerraformParser()
@@ -178,6 +185,11 @@ Examples:
         )
         generator.add_resources(tf_resources)
         resources_output, edges_output = generator.generate()
+
+        resources_output["resources"], kept_ids = filter_resources_by_type(
+            resources_output["resources"], allowed_types
+        )
+        edges_output["edges"] = filter_edges_by_ids(edges_output["edges"], kept_ids)
         
         # Create subscription directory
         sub_dir = get_subscription_dir(args.subscription_id)
