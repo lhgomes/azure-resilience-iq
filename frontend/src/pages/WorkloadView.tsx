@@ -52,6 +52,7 @@ import {
 import { calculateResilienceScore, getElementWeight, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
 import { getZonalResilience, type ZonalResilienceResponse } from "../api/resilience";
 import { mergeGraphSnapshots, mergeResilienceEvaluations, mergeZonalResilienceData } from "../utils/multiSubscriptionMerge";
+import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular } from "@fluentui/react-icons";
 
 // Subscription-aware view: user selects one or more subscriptions
 
@@ -1715,7 +1716,7 @@ const WorkloadView: React.FC = () => {
         style={{
           width: sidebarOpen ? sidebarWidth : 0,
           minWidth: sidebarOpen ? sidebarWidth : 0,
-          background: "#0f0f0f",
+          background: "#f5f5f5",
           borderRight: sidebarOpen ? "1px solid #222" : "none",
           transition: isResizing ? "none" : "width 0.3s ease, min-width 0.3s ease",
           overflow: "hidden",
@@ -1751,10 +1752,6 @@ const WorkloadView: React.FC = () => {
             workloadNewDirty={isNewWorkloadDirty}
             viewLevel={viewLevel}
             onViewLevelChange={setViewLevel}
-            aiLayerEnabled={aiLayerEnabled}
-            onAiLayerEnabledChange={setAiLayerEnabled}
-            userLayerEnabled={userLayerEnabled}
-            onUserLayerEnabledChange={setUserLayerEnabled}
             resourceGroupOptions={resourceGroupOptions}
             resourceGroupFilter={resourceGroupFilter}
             onResourceGroupFilterChange={setResourceGroupFilter}
@@ -1779,30 +1776,33 @@ const WorkloadView: React.FC = () => {
               <div
                 style={{
                   padding: "10px 12px 12px 12px",
-                  background: "#0f0f0f",
-                  borderTop: "1px solid #222",
-                  borderBottom: "1px solid #222",
+                  background: "#fff",
+                  borderTop: "1px solid #e0e0e0",
+                  borderBottom: "1px solid #e0e0e0",
                   display: "flex",
                   flexDirection: "column",
                   gap: 8,
-                  color: "#eee",
+                  color: "#323130",
                   flexShrink: 0,
                 }}
               >
-                <div style={{ fontSize: 12, color: "#9AA0A6" }}>Group</div>
+                <div style={{ fontSize: 12, color: "#605e5c", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Group</div>
 
                 <input
                   value={groupToolbarName}
                   onChange={e => setGroupToolbarName(e.target.value)}
                   placeholder={hasMultiSelect ? "Enter group name" : "Group name"}
                   style={{
-                    padding: "8px 10px",
-                    background: "#181818",
-                    color: "#fff",
-                    border: "1px solid #333",
-                    borderRadius: 4,
+                    padding: "5px 8px",
+                    background: "#fff",
+                    color: "#323130",
+                    border: "1px solid #8a8886",
+                    borderRadius: 2,
                     fontSize: 13,
+                    outline: "none",
                   }}
+                  onFocus={e => e.target.style.borderColor = "#0078d4"}
+                  onBlur={e => e.target.style.borderColor = "#8a8886"}
                 />
 
                 <div style={{ display: "flex", gap: 8 }}>
@@ -1824,14 +1824,21 @@ const WorkloadView: React.FC = () => {
                     }}
                     style={{
                       flex: 1,
-                      padding: "8px 10px",
-                      background: isSaveDisabled ? "#2a2a2a" : "#1f2937",
-                      color: isSaveDisabled ? "#777" : "#fff",
-                      border: "1px solid #333",
-                      borderRadius: 4,
+                      padding: "6px 12px",
+                      background: isSaveDisabled ? "#f3f2f1" : "#0078d4",
+                      color: isSaveDisabled ? "#a19f9d" : "#fff",
+                      border: isSaveDisabled ? "1px solid #c8c6c4" : "1px solid #0078d4",
+                      borderRadius: 2,
                       cursor: isSaveDisabled ? "not-allowed" : "pointer",
                       fontSize: 13,
-                      fontWeight: 600,
+                      fontWeight: 400,
+                      transition: "all 0.1s ease-in-out",
+                    }}
+                    onMouseEnter={e => {
+                      if (!isSaveDisabled) e.currentTarget.style.background = "#106ebe";
+                    }}
+                    onMouseLeave={e => {
+                      if (!isSaveDisabled) e.currentTarget.style.background = "#0078d4";
                     }}
                   >
                     Save
@@ -1847,14 +1854,23 @@ const WorkloadView: React.FC = () => {
                       }}
                       style={{
                         flex: 1,
-                        padding: "8px 10px",
-                        background: "#1f2937",
-                        color: "#fff",
-                        border: "1px solid #333",
-                        borderRadius: 4,
+                        padding: "6px 12px",
+                        background: "transparent",
+                        color: "#0078d4",
+                        border: "1px solid #8a8886",
+                        borderRadius: 2,
                         cursor: "pointer",
                         fontSize: 13,
-                        fontWeight: 600,
+                        fontWeight: 400,
+                        transition: "all 0.1s ease-in-out",
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = "rgba(0, 120, 212, 0.05)";
+                        e.currentTarget.style.borderColor = "#0078d4";
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.borderColor = "#8a8886";
                       }}
                     >
                       Ungroup
@@ -1872,14 +1888,23 @@ const WorkloadView: React.FC = () => {
                     }}
                     style={{
                       width: "100%",
-                      padding: "8px 10px",
-                      background: "#7c3aed",
-                      color: "#fff",
-                      border: "1px solid #6d28d9",
-                      borderRadius: 4,
+                      padding: "6px 12px",
+                      background: "transparent",
+                      color: "#a4262c",
+                      border: "1px solid #8a8886",
+                      borderRadius: 2,
                       cursor: "pointer",
                       fontSize: 13,
-                      fontWeight: 600,
+                      fontWeight: 400,
+                      transition: "all 0.1s ease-in-out",
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = "rgba(164, 38, 44, 0.05)";
+                      e.currentTarget.style.borderColor = "#a4262c";
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.borderColor = "#8a8886";
                     }}
                     title={`Hide ${groupToolbarSelection.selectedNodeIds.length} selected resource${groupToolbarSelection.selectedNodeIds.length > 1 ? "s" : ""}`}
                   >
@@ -1894,9 +1919,7 @@ const WorkloadView: React.FC = () => {
           {hiddenResourcesCount > 0 && (
             <div
               style={{
-                padding: "10px 12px",
-                background: "#0f0f0f",
-                borderTop: "1px solid #222",
+                padding: "2px 12px",
                 flexShrink: 0,
               }}
             >
@@ -1904,18 +1927,27 @@ const WorkloadView: React.FC = () => {
                 onClick={handleRestoreAllHiddenResources}
                 style={{
                   width: "100%",
-                  padding: "8px 10px",
-                  background: "#1f2937",
-                  color: "#93c5fd",
-                  border: "1px solid #374151",
-                  borderRadius: 4,
+                  padding: "6px 12px",
+                  background: "transparent",
+                  color: "#0078d4",
+                  border: "1px solid #8a8886",
+                  borderRadius: 2,
                   cursor: "pointer",
                   fontSize: 13,
-                  fontWeight: 600,
+                  fontWeight: 400,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   gap: 6,
+                  transition: "all 0.1s ease-in-out",
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = "rgba(0, 120, 212, 0.05)";
+                  e.currentTarget.style.borderColor = "#0078d4";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "#8a8886";
                 }}
               >
                 <span>↺</span>
@@ -1957,37 +1989,43 @@ const WorkloadView: React.FC = () => {
         <div
           style={{
             padding: "10px 14px",
-            background: "#0f0f0f",
-            borderBottom: "1px solid #222",
+            background: "#f5f5f5",
+            borderBottom: "1px solid #e0e0e0",
             display: "flex",
             gap: 12,
             alignItems: "center",
-            color: "#eee"
+            color: "#323130"
           }}
         >
           <button
             onClick={() => setSidebarOpen(prev => !prev)}
             style={{
-              padding: "6px 12px",
-              background: "#1f2937",
-              color: "#fff",
-              border: "1px solid #333",
-              borderRadius: 4,
+              border: "0px",
               cursor: "pointer",
-              fontSize: 13
+              fontSize: 13,
+              transition: "all 0.1s ease-in-out",
+              background: "transparent",
             }}
             title="Toggle sidebar"
+            onMouseEnter={e => {
+              e.currentTarget.style.background = "#ebf4fc";
+              e.currentTarget.style.borderColor = "#0078d4";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.borderColor = "#8a8886";
+            }}
           >
-            {sidebarOpen ? "◀ Hide" : "▶ Show"} Menu
+            {sidebarOpen ? <ArrowCollapseAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} /> : <ArrowExpandAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} />}
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Azure Resilience IQ</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resilience IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <div
               style={{
                 padding: "6px 10px",
-                background: "#181818",
-                color: "#9AA0A6",
-                border: "1px solid #333",
+                background: "#fff",
+                color: "#605e5c",
+                border: "1px solid #8a8886",
                 borderRadius: 999,
                 fontSize: 12,
                 minWidth: 180,
@@ -2005,14 +2043,27 @@ const WorkloadView: React.FC = () => {
               disabled={selectedSubscriptionIds.length === 0}
               style={{
                 padding: "6px 12px",
-                background: selectedSubscriptionIds.length > 0 ? "#1f2937" : "#2a2a2a",
-                color: selectedSubscriptionIds.length > 0 ? "#fff" : "#777",
-                border: "1px solid #333",
+                background: selectedSubscriptionIds.length > 0 ? "#fff" : "#f3f2f1",
+                color: selectedSubscriptionIds.length > 0 ? "#0078d4" : "#a0a09f",
+                border: selectedSubscriptionIds.length > 0 ? "1px solid #8a8886" : "1px solid #d0d0d0",
                 borderRadius: 4,
                 cursor: selectedSubscriptionIds.length > 0 ? "pointer" : "not-allowed",
-                fontSize: 12
+                fontSize: 12,
+                transition: "all 0.1s ease-in-out",
               }}
               title="Reload graph and zonal resilience data from server"
+              onMouseEnter={e => {
+                if (selectedSubscriptionIds.length > 0) {
+                  e.currentTarget.style.background = "#f3f2f1";
+                  e.currentTarget.style.borderColor = "#0078d4";
+                }
+              }}
+              onMouseLeave={e => {
+                if (selectedSubscriptionIds.length > 0) {
+                  e.currentTarget.style.background = "#fff";
+                  e.currentTarget.style.borderColor = "#8a8886";
+                }
+              }}
             >
               Reload
             </button>
@@ -2091,6 +2142,9 @@ const WorkloadView: React.FC = () => {
                         onGraphViewApplied={() => setPendingGraphView(null)}
                         selectedEdgeId={selectedEdge?.id ?? null}
                         userLayerEnabled={userLayerEnabled}
+                        aiLayerEnabled={aiLayerEnabled}
+                        onAiLayerEnabledChange={setAiLayerEnabled}
+                        onUserLayerEnabledChange={setUserLayerEnabled}
                         maxImportance={maxImportance}
                         onNodeSelected={handleNodeSelected}
                         onEdgeCreate={handleCreateManualLink}

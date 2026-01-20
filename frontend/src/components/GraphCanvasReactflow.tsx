@@ -71,6 +71,9 @@ interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
   userLayerEnabled: boolean;
+  aiLayerEnabled: boolean;
+  onAiLayerEnabledChange?: (enabled: boolean) => void;
+  onUserLayerEnabledChange?: (enabled: boolean) => void;
   graphViewState?: {
     viewport?: { x: number; y: number; zoom: number };
     node_positions?: Record<string, { x: number; y: number }>;
@@ -103,6 +106,7 @@ const nodeTypesWithGroups: NodeTypes = { ...nodeTypes, azureGroup: AzureGroupNod
 
 export interface GraphCanvasHandle {
   fitView: () => void;
+  resetLayout: () => void;
   getViewState: () => {
     viewport: { x: number; y: number; zoom: number };
     node_positions: Record<string, { x: number; y: number }>;
@@ -587,6 +591,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     fitView: () => {
       setTimeout(() => fitView(), 100);
     },
+    resetLayout: () => {
+      setSavedPositions({});
+      setTimeout(() => fitView(), 150);
+    },
     getViewState: () => {
       try {
         const viewport = getViewport();
@@ -1038,7 +1046,89 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       defaultEdgeOptions={{ zIndex: 10 }}
       style={{ width: "100%", height: "100%" }}
     >
-      <Controls />
+      <Controls>
+        <div
+          style={{
+            marginTop: 4,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <button
+            onClick={() => {
+              setSavedPositions({});
+              setTimeout(() => fitView(), 150);
+            }}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="Auto layout - Reset node positions"
+          >
+            <span style={{ 
+              fontSize: 18, 
+              fontWeight: 400, 
+            }}>
+              ↻
+            </span>
+          </button>
+          <button
+            onClick={() => props.onAiLayerEnabledChange?.(!props.aiLayerEnabled)}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="AI layer"
+          >
+            <span style={{ 
+              fontSize: 8, 
+              fontWeight: 400, 
+              padding: "2px 6px", 
+              background: props.aiLayerEnabled ? "#fdb913" : "transparent", 
+              borderRadius: 12,
+              color: "#000",
+              border: "2px solid #000",
+              transition: "background 0.2s ease",
+            }}>
+              AI
+            </span>
+          </button>
+          <button
+            onClick={() => props.onUserLayerEnabledChange?.(!props.userLayerEnabled)}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="User overrides"
+          >
+            <span style={{ 
+              fontSize: 8, 
+              fontWeight: 400, 
+              padding: "2px 6px", 
+              background: props.userLayerEnabled ? "#7fba00" : "transparent", 
+              borderRadius: 12,
+              color: "#000",
+              border: "2px solid #000",
+              transition: "background 0.2s ease",
+            }}>
+              Ui
+            </span>
+          </button>
+        </div>
+      </Controls>
     </ReactFlow>
   );
 });
