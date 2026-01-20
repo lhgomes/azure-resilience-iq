@@ -10,6 +10,7 @@ from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
 from app.relationships.utils import norm_id
 from app.graph.builder import edge_id
+from app.resource_filters import load_monitored_resource_types, filter_resources_by_type
 
 def normalize_resource_groups(resource_groups):
     return [rg.lower() for rg in resource_groups]
@@ -45,10 +46,13 @@ def main():
     if args.tag:
         tags = dict(t.split("=", 1) for t in args.tag)
 
+    allowed_types = load_monitored_resource_types()
+
     resources = query_resources(
         subscription_id=args.subscription_id,
         resource_groups=normalize_resource_groups(args.resource_group) if args.resource_group else None,
         tags=tags,
+        allowed_types=sorted(allowed_types) if allowed_types else None,
     )
 
     # Normalize all resource IDs at the source
@@ -59,6 +63,11 @@ def main():
         # Explicitly mark collected Azure resources as non-virtual
         resource_dict['virtual'] = False
         normalized_resources.append(resource_dict)
+
+    # Defensive post-filter in case upstream query filtering is adjusted
+    normalized_resources, _ = filter_resources_by_type(normalized_resources, allowed_types)
+    if allowed_types:
+        print(f"ℹ️ Filtered to {len(normalized_resources)} HA/DR resource-type resources (from {len(resources)})")
     
     output = normalized_resources
     # Build lookup by normalized ID
