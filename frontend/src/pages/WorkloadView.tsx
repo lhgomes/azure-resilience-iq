@@ -1064,7 +1064,10 @@ const WorkloadView: React.FC = () => {
           ...g,
           nodes: Array.isArray(g.nodes) ? g.nodes.filter(id => id !== nodeId) : [],
         }));
-        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups };
+        // Update node_overrides to track that this node is hidden
+        const updatedOverrides = { ...prev.node_overrides };
+        updatedOverrides[nodeId] = { ...updatedOverrides[nodeId], hidden: true };
+        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups, node_overrides: updatedOverrides };
       });
 
       setResilienceEvaluations(prev => {
@@ -1099,19 +1102,58 @@ const WorkloadView: React.FC = () => {
     if (hiddenNodeIds.length === 0) return;
 
     try {
-      // Remove hidden flag from all hidden nodes
-      for (const nodeId of hiddenNodeIds) {
-        const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
-        if (nodeSubscriptionId) {
-          await patchNode(nodeSubscriptionId, nodeId, { hidden: false });
-          markSubscriptionDirty(nodeSubscriptionId);
+      // Helper to extract subscription ID from resource ID
+      const extractSubscriptionId = (resourceId: string): string | null => {
+        const match = resourceId.match(/\/subscriptions\/([^/]+)/);
+        return match ? match[1] : null;
+      };
+
+      // Collect all patch operations
+      const patchOperations: Array<{nodeId: string; subscriptionId: string}> = [];
+      const dirtySubscriptions = new Set<string>();
+
+      hiddenNodeIds.forEach(nodeId => {
+        // Try to get subscription ID in order of preference:
+        // 1. From node metadata in graph
+        const node = graph?.nodes?.find(n => n.id === nodeId);
+        let subscriptionId = (node as any)?.subscription_id ?? (node?.metadata as any)?.subscription_id;
+        
+        // 2. Extract from resource ID itself
+        if (!subscriptionId) {
+          subscriptionId = extractSubscriptionId(nodeId);
         }
-      }
+        
+        // 3. Use single subscription if available
+        if (!subscriptionId && singleSubscriptionId) {
+          subscriptionId = singleSubscriptionId;
+        }
+        
+        // 4. Try all selected subscriptions (for edge cases)
+        if (!subscriptionId && selectedSubscriptionIds.length > 0) {
+          subscriptionId = selectedSubscriptionIds[0];
+        }
+        
+        if (subscriptionId) {
+          patchOperations.push({ nodeId, subscriptionId });
+          dirtySubscriptions.add(subscriptionId);
+        }
+      });
+
+      // Execute all patch operations in parallel
+      const patchPromises = patchOperations.map(({ nodeId, subscriptionId }) =>
+        patchNode(subscriptionId, nodeId, { hidden: false })
+      );
+
+      await Promise.all(patchPromises);
+
+      // Mark all affected subscriptions dirty
+      dirtySubscriptions.forEach(subId => markSubscriptionDirty(subId));
 
       // Trigger full refresh to reload graph with restored nodes
       await fetchGraph();
     } catch (err) {
       console.error("Failed to restore hidden resources", err);
+      // Silently continue - the refresh might still work
     }
   };
 
