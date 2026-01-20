@@ -255,6 +255,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           element_weight: typeof n.element_weight === "number" ? n.element_weight : undefined,
           color: typeof meta["color"] === "string" ? (meta["color"] as string) : undefined,
           azure_service_category: typeof meta["azure_service_category"] === "string" ? (meta["azure_service_category"] as string) : undefined,
+          azure_service_name: typeof meta["azure_service_name"] === "string" ? (meta["azure_service_name"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
           user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],

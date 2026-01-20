@@ -33,6 +33,7 @@ interface AzureNodeProps {
     element_weight?: number;
     color?: string;
     azure_service_category?: string;
+    azure_service_name?: string;
     ai_annotation?: boolean;
     user_customized?: boolean;
     ai_tooltip?: AiTooltip;
@@ -143,7 +144,11 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   };
 
   const getCategoryLabel = () => {
-    // Use azure_service_category from AI annotations if available
+    // Prefer azure_service_name, fallback to azure_service_category
+    if (data.azure_service_name) {
+      return data.azure_service_name;
+    }
+    
     if (data.azure_service_category) {
       return data.azure_service_category;
     }
