@@ -103,6 +103,16 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   if (!node) return null;
 
   const rawMeta = (node.raw as any)?.metadata ?? {};
+  const isVirtual = Boolean(rawMeta?.virtual);
+  const resourceId = typeof (node.raw as any)?.id === "string" ? ((node.raw as any).id as string) : node.id;
+  const tenantId =
+    (rawMeta.tenant_id as string | undefined) ??
+    (rawMeta.tenantId as string | undefined) ??
+    (rawMeta.tenant as string | undefined);
+  const portalUrl =
+    !isVirtual && typeof resourceId === "string" && resourceId.toLowerCase().startsWith("/subscriptions/")
+      ? `https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${resourceId}/overview`
+      : null;
 
   const userOverride = (rawMeta.user_override as Record<string, unknown> | undefined) ?? {};
 
@@ -285,6 +295,33 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
           </span>
         )}
       </h3>
+
+      {portalUrl && (
+        <div style={{ marginBottom: 12 }}>
+          <a
+            href={portalUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 10px",
+              background: "#1f2937",
+              color: "#93c5fd",
+              border: "1px solid #374151",
+              borderRadius: 6,
+              textDecoration: "none",
+              fontWeight: 600
+            }}
+          >
+            Open in Azure portal
+          </a>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#9AA0A6", wordBreak: "break-all" }}>
+            {resourceId}
+          </div>
+        </div>
+      )}
 
       <div style={{ marginBottom: 14 }}>
         <div style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>

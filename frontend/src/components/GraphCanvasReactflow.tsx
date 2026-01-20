@@ -71,6 +71,9 @@ interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
   userLayerEnabled: boolean;
+  aiLayerEnabled: boolean;
+  onAiLayerEnabledChange?: (enabled: boolean) => void;
+  onUserLayerEnabledChange?: (enabled: boolean) => void;
   graphViewState?: {
     viewport?: { x: number; y: number; zoom: number };
     node_positions?: Record<string, { x: number; y: number }>;
@@ -82,6 +85,7 @@ interface Props {
   maxImportance?: number;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
   onNodeRename?: (nodeId: string) => void;
+  onNodeHide?: (nodeId: string) => void;
 
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
@@ -102,6 +106,7 @@ const nodeTypesWithGroups: NodeTypes = { ...nodeTypes, azureGroup: AzureGroupNod
 
 export interface GraphCanvasHandle {
   fitView: () => void;
+  resetLayout: () => void;
   getViewState: () => {
     viewport: { x: number; y: number; zoom: number };
     node_positions: Record<string, { x: number; y: number }>;
@@ -124,6 +129,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     maxImportance = 1,
     onEdgeCreate,
     onNodeRename,
+      onNodeHide,
     onGroupCreate,
     groupCreateRequest,
     onMoveNodeToGroup,
@@ -255,11 +261,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           element_weight: typeof n.element_weight === "number" ? n.element_weight : undefined,
           color: typeof meta["color"] === "string" ? (meta["color"] as string) : undefined,
           azure_service_category: typeof meta["azure_service_category"] === "string" ? (meta["azure_service_category"] as string) : undefined,
+          azure_service_name: typeof meta["azure_service_name"] === "string" ? (meta["azure_service_name"] as string) : undefined,
           ai_annotation: !!meta["ai_annotation"],
           user_customized: isUserCustomized,
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
           metadata: meta,
+          onRemoveFromGraph: onNodeHide ? () => onNodeHide(n.id) : undefined,
         };
       })(),
       type: "azure",
@@ -582,6 +590,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   useImperativeHandle(ref, () => ({
     fitView: () => {
       setTimeout(() => fitView(), 100);
+    },
+    resetLayout: () => {
+      setSavedPositions({});
+      setTimeout(() => fitView(), 150);
     },
     getViewState: () => {
       try {
@@ -1034,7 +1046,89 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       defaultEdgeOptions={{ zIndex: 10 }}
       style={{ width: "100%", height: "100%" }}
     >
-      <Controls />
+      <Controls>
+        <div
+          style={{
+            marginTop: 4,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <button
+            onClick={() => {
+              setSavedPositions({});
+              setTimeout(() => fitView(), 150);
+            }}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="Auto layout - Reset node positions"
+          >
+            <span style={{ 
+              fontSize: 18, 
+              fontWeight: 400, 
+            }}>
+              ↻
+            </span>
+          </button>
+          <button
+            onClick={() => props.onAiLayerEnabledChange?.(!props.aiLayerEnabled)}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="AI layer"
+          >
+            <span style={{ 
+              fontSize: 8, 
+              fontWeight: 400, 
+              padding: "2px 6px", 
+              background: props.aiLayerEnabled ? "#fdb913" : "transparent", 
+              borderRadius: 12,
+              color: "#000",
+              border: "2px solid #000",
+              transition: "background 0.2s ease",
+            }}>
+              AI
+            </span>
+          </button>
+          <button
+            onClick={() => props.onUserLayerEnabledChange?.(!props.userLayerEnabled)}
+            style={{
+              cursor: "pointer",
+              border: "none",
+              background: "#fefefe",
+              padding: 0,
+              display: "flex",
+              justifyContent: "center",
+            }}
+            title="User overrides"
+          >
+            <span style={{ 
+              fontSize: 8, 
+              fontWeight: 400, 
+              padding: "2px 6px", 
+              background: props.userLayerEnabled ? "#7fba00" : "transparent", 
+              borderRadius: 12,
+              color: "#000",
+              border: "2px solid #000",
+              transition: "background 0.2s ease",
+            }}>
+              Ui
+            </span>
+          </button>
+        </div>
+      </Controls>
     </ReactFlow>
   );
 });

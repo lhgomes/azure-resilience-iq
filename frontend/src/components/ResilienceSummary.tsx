@@ -2314,10 +2314,47 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
                   )}
                   <td style={{ padding: "12px", color: "#374151" }}>
                     <div style={{ fontWeight: 600 }}>
-                      {getResourceDisplayName(
-                        finding.resourceId,
-                        getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
-                      )}
+                      {(() => {
+                        const node = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === finding.resourceId.toLowerCase());
+                        const isValidAzureResource = finding.resourceId.startsWith("/subscriptions/");
+                        
+                        // Default: no link for virtual resources
+                        let showLink = false;
+                        
+                        if (node && isValidAzureResource) {
+                          // Check metadata in different possible locations
+                          const meta1 = (node as any)?.metadata;
+                          const meta2 = (node as any)?.raw?.metadata;
+                          const isVirtual = meta1?.virtual || meta2?.virtual;
+                          
+                          // Only show link if we found the node AND confirmed it's NOT virtual
+                          showLink = isVirtual !== true;
+                        }
+                        
+                        if (showLink) {
+                          const node2 = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === finding.resourceId.toLowerCase());
+                          const tenantId = ((node2 as any)?.metadata?.tenant_id ?? (node2 as any)?.metadata?.tenantId ?? (node2 as any)?.metadata?.tenant) || ((node2 as any)?.raw?.metadata?.tenant_id ?? (node2 as any)?.raw?.metadata?.tenantId ?? (node2 as any)?.raw?.metadata?.tenant);
+                          return (
+                            <a
+                              href={`https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${finding.resourceId}/overview`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
+                              title={finding.resourceId}
+                            >
+                              {getResourceDisplayName(
+                                finding.resourceId,
+                                getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
+                              )}
+                            </a>
+                          );
+                        }
+                        
+                        return getResourceDisplayName(
+                          finding.resourceId,
+                          getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
+                        );
+                      })()}
                     </div>
                     <div
                       style={{

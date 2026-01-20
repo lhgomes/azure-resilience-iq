@@ -52,6 +52,7 @@ import {
 import { calculateResilienceScore, getElementWeight, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
 import { getZonalResilience, type ZonalResilienceResponse } from "../api/resilience";
 import { mergeGraphSnapshots, mergeResilienceEvaluations, mergeZonalResilienceData } from "../utils/multiSubscriptionMerge";
+import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular } from "@fluentui/react-icons";
 
 // Subscription-aware view: user selects one or more subscriptions
 
@@ -94,6 +95,10 @@ const WorkloadView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [viewLevel, setViewLevel] = useState<ViewLevel>("overview");
   const [showLegend, setShowLegend] = useState(false);
+  const hiddenResourcesCount = useMemo(() => {
+    if (!graph?.node_overrides) return 0;
+    return Object.values(graph.node_overrides).filter((override: any) => override?.hidden === true).length;
+  }, [graph]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
@@ -1043,6 +1048,115 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const handleHideNode = async (nodeId: string) => {
+    const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
+    if (!nodeSubscriptionId) return;
+
+    try {
+      await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
+
+      // Optimistic local updates: drop node, associated edges, group membership, and resilience data
+      updateGraph(prev => {
+        if (!prev) return prev;
+        const remainingNodes = (prev.nodes || []).filter(n => n.id !== nodeId);
+        const remainingEdges = (prev.edges || []).filter(e => e.source !== nodeId && e.target !== nodeId);
+        const remainingGroups = (prev.groups || []).map(g => ({
+          ...g,
+          nodes: Array.isArray(g.nodes) ? g.nodes.filter(id => id !== nodeId) : [],
+        }));
+        // Update node_overrides to track that this node is hidden
+        const updatedOverrides = { ...prev.node_overrides };
+        updatedOverrides[nodeId] = { ...updatedOverrides[nodeId], hidden: true };
+        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups, node_overrides: updatedOverrides };
+      });
+
+      setResilienceEvaluations(prev => {
+        if (!prev) return prev;
+        const next = { ...prev } as Record<string, any>;
+        delete next[nodeId];
+        return next;
+      });
+
+      setResilienceData((prev: any) => {
+        if (!prev?.evaluations) return prev;
+        const nextEvals = { ...prev.evaluations } as Record<string, any>;
+        delete nextEvals[nodeId];
+        return { ...prev, evaluations: nextEvals };
+      });
+
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      markSubscriptionDirty(nodeSubscriptionId);
+    } catch (err) {
+      console.error("Failed to hide node", err);
+    }
+  };
+
+  const handleRestoreAllHiddenResources = async () => {
+    if (!graph?.node_overrides || selectedSubscriptionIds.length === 0) return;
+
+    const hiddenNodeIds = Object.entries(graph.node_overrides)
+      .filter(([_, override]: [string, any]) => override?.hidden === true)
+      .map(([nodeId]) => nodeId);
+
+    if (hiddenNodeIds.length === 0) return;
+
+    try {
+      // Helper to extract subscription ID from resource ID
+      const extractSubscriptionId = (resourceId: string): string | null => {
+        const match = resourceId.match(/\/subscriptions\/([^/]+)/);
+        return match ? match[1] : null;
+      };
+
+      // Collect all patch operations
+      const patchOperations: Array<{nodeId: string; subscriptionId: string}> = [];
+      const dirtySubscriptions = new Set<string>();
+
+      hiddenNodeIds.forEach(nodeId => {
+        // Try to get subscription ID in order of preference:
+        // 1. From node metadata in graph
+        const node = graph?.nodes?.find(n => n.id === nodeId);
+        let subscriptionId = (node as any)?.subscription_id ?? (node?.metadata as any)?.subscription_id;
+        
+        // 2. Extract from resource ID itself
+        if (!subscriptionId) {
+          subscriptionId = extractSubscriptionId(nodeId);
+        }
+        
+        // 3. Use single subscription if available
+        if (!subscriptionId && singleSubscriptionId) {
+          subscriptionId = singleSubscriptionId;
+        }
+        
+        // 4. Try all selected subscriptions (for edge cases)
+        if (!subscriptionId && selectedSubscriptionIds.length > 0) {
+          subscriptionId = selectedSubscriptionIds[0];
+        }
+        
+        if (subscriptionId) {
+          patchOperations.push({ nodeId, subscriptionId });
+          dirtySubscriptions.add(subscriptionId);
+        }
+      });
+
+      // Execute all patch operations in parallel
+      const patchPromises = patchOperations.map(({ nodeId, subscriptionId }) =>
+        patchNode(subscriptionId, nodeId, { hidden: false })
+      );
+
+      await Promise.all(patchPromises);
+
+      // Mark all affected subscriptions dirty
+      dirtySubscriptions.forEach(subId => markSubscriptionDirty(subId));
+
+      // Trigger full refresh to reload graph with restored nodes
+      await fetchGraph();
+    } catch (err) {
+      console.error("Failed to restore hidden resources", err);
+      // Silently continue - the refresh might still work
+    }
+  };
+
   const handleRenameNode = async (nodeId: string) => {
     const node = viewGraph?.nodes.find(n => n.id === nodeId);
     if (!node) return;
@@ -1644,7 +1758,7 @@ const WorkloadView: React.FC = () => {
         style={{
           width: sidebarOpen ? sidebarWidth : 0,
           minWidth: sidebarOpen ? sidebarWidth : 0,
-          background: "#0f0f0f",
+          background: "#f5f5f5",
           borderRight: sidebarOpen ? "1px solid #222" : "none",
           transition: isResizing ? "none" : "width 0.3s ease, min-width 0.3s ease",
           overflow: "hidden",
@@ -1680,10 +1794,6 @@ const WorkloadView: React.FC = () => {
             workloadNewDirty={isNewWorkloadDirty}
             viewLevel={viewLevel}
             onViewLevelChange={setViewLevel}
-            aiLayerEnabled={aiLayerEnabled}
-            onAiLayerEnabledChange={setAiLayerEnabled}
-            userLayerEnabled={userLayerEnabled}
-            onUserLayerEnabledChange={setUserLayerEnabled}
             resourceGroupOptions={resourceGroupOptions}
             resourceGroupFilter={resourceGroupFilter}
             onResourceGroupFilterChange={setResourceGroupFilter}
@@ -1708,30 +1818,33 @@ const WorkloadView: React.FC = () => {
               <div
                 style={{
                   padding: "10px 12px 12px 12px",
-                  background: "#0f0f0f",
-                  borderTop: "1px solid #222",
-                  borderBottom: "1px solid #222",
+                  background: "#fff",
+                  borderTop: "1px solid #e0e0e0",
+                  borderBottom: "1px solid #e0e0e0",
                   display: "flex",
                   flexDirection: "column",
                   gap: 8,
-                  color: "#eee",
+                  color: "#323130",
                   flexShrink: 0,
                 }}
               >
-                <div style={{ fontSize: 12, color: "#9AA0A6" }}>Group</div>
+                <div style={{ fontSize: 12, color: "#605e5c", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Group</div>
 
                 <input
                   value={groupToolbarName}
                   onChange={e => setGroupToolbarName(e.target.value)}
                   placeholder={hasMultiSelect ? "Enter group name" : "Group name"}
                   style={{
-                    padding: "8px 10px",
-                    background: "#181818",
-                    color: "#fff",
-                    border: "1px solid #333",
-                    borderRadius: 4,
+                    padding: "5px 8px",
+                    background: "#fff",
+                    color: "#323130",
+                    border: "1px solid #8a8886",
+                    borderRadius: 2,
                     fontSize: 13,
+                    outline: "none",
                   }}
+                  onFocus={e => e.target.style.borderColor = "#0078d4"}
+                  onBlur={e => e.target.style.borderColor = "#8a8886"}
                 />
 
                 <div style={{ display: "flex", gap: 8 }}>
@@ -1753,14 +1866,21 @@ const WorkloadView: React.FC = () => {
                     }}
                     style={{
                       flex: 1,
-                      padding: "8px 10px",
-                      background: isSaveDisabled ? "#2a2a2a" : "#1f2937",
-                      color: isSaveDisabled ? "#777" : "#fff",
-                      border: "1px solid #333",
-                      borderRadius: 4,
+                      padding: "6px 12px",
+                      background: isSaveDisabled ? "#f3f2f1" : "#0078d4",
+                      color: isSaveDisabled ? "#a19f9d" : "#fff",
+                      border: isSaveDisabled ? "1px solid #c8c6c4" : "1px solid #0078d4",
+                      borderRadius: 2,
                       cursor: isSaveDisabled ? "not-allowed" : "pointer",
                       fontSize: 13,
-                      fontWeight: 600,
+                      fontWeight: 400,
+                      transition: "all 0.1s ease-in-out",
+                    }}
+                    onMouseEnter={e => {
+                      if (!isSaveDisabled) e.currentTarget.style.background = "#106ebe";
+                    }}
+                    onMouseLeave={e => {
+                      if (!isSaveDisabled) e.currentTarget.style.background = "#0078d4";
                     }}
                   >
                     Save
@@ -1776,23 +1896,107 @@ const WorkloadView: React.FC = () => {
                       }}
                       style={{
                         flex: 1,
-                        padding: "8px 10px",
-                        background: "#1f2937",
-                        color: "#fff",
-                        border: "1px solid #333",
-                        borderRadius: 4,
+                        padding: "6px 12px",
+                        background: "transparent",
+                        color: "#0078d4",
+                        border: "1px solid #8a8886",
+                        borderRadius: 2,
                         cursor: "pointer",
                         fontSize: 13,
-                        fontWeight: 600,
+                        fontWeight: 400,
+                        transition: "all 0.1s ease-in-out",
+                      }}
+                      onMouseEnter={e => {
+                        e.currentTarget.style.background = "rgba(0, 120, 212, 0.05)";
+                        e.currentTarget.style.borderColor = "#0078d4";
+                      }}
+                      onMouseLeave={e => {
+                        e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.borderColor = "#8a8886";
                       }}
                     >
                       Ungroup
                     </button>
                   )}
                 </div>
+
+                {hasMultiSelect && (
+                  <button
+                    onClick={async () => {
+                      const nodeIds = groupToolbarSelection.selectedNodeIds;
+                      for (const nodeId of nodeIds) {
+                        await handleHideNode(nodeId);
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px 12px",
+                      background: "transparent",
+                      color: "#a4262c",
+                      border: "1px solid #8a8886",
+                      borderRadius: 2,
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 400,
+                      transition: "all 0.1s ease-in-out",
+                    }}
+                    onMouseEnter={e => {
+                      e.currentTarget.style.background = "rgba(164, 38, 44, 0.05)";
+                      e.currentTarget.style.borderColor = "#a4262c";
+                    }}
+                    onMouseLeave={e => {
+                      e.currentTarget.style.background = "transparent";
+                      e.currentTarget.style.borderColor = "#8a8886";
+                    }}
+                    title={`Hide ${groupToolbarSelection.selectedNodeIds.length} selected resource${groupToolbarSelection.selectedNodeIds.length > 1 ? "s" : ""}`}
+                  >
+                    ✕ Hide All ({groupToolbarSelection.selectedNodeIds.length})
+                  </button>
+                )}
               </div>
             );
           })()}
+
+          {/* Restore hidden resources */}
+          {hiddenResourcesCount > 0 && (
+            <div
+              style={{
+                padding: "2px 12px",
+                flexShrink: 0,
+              }}
+            >
+              <button
+                onClick={handleRestoreAllHiddenResources}
+                style={{
+                  width: "100%",
+                  padding: "6px 12px",
+                  background: "transparent",
+                  color: "#0078d4",
+                  border: "1px solid #8a8886",
+                  borderRadius: 2,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 400,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  transition: "all 0.1s ease-in-out",
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = "rgba(0, 120, 212, 0.05)";
+                  e.currentTarget.style.borderColor = "#0078d4";
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.borderColor = "#8a8886";
+                }}
+              >
+                <span>↺</span>
+                <span>Restore {hiddenResourcesCount} hidden resource{hiddenResourcesCount > 1 ? "s" : ""}</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Resize handle */}
@@ -1827,37 +2031,43 @@ const WorkloadView: React.FC = () => {
         <div
           style={{
             padding: "10px 14px",
-            background: "#0f0f0f",
-            borderBottom: "1px solid #222",
+            background: "#f5f5f5",
+            borderBottom: "1px solid #e0e0e0",
             display: "flex",
             gap: 12,
             alignItems: "center",
-            color: "#eee"
+            color: "#323130"
           }}
         >
           <button
             onClick={() => setSidebarOpen(prev => !prev)}
             style={{
-              padding: "6px 12px",
-              background: "#1f2937",
-              color: "#fff",
-              border: "1px solid #333",
-              borderRadius: 4,
+              border: "0px",
               cursor: "pointer",
-              fontSize: 13
+              fontSize: 13,
+              transition: "all 0.1s ease-in-out",
+              background: "transparent",
             }}
             title="Toggle sidebar"
+            onMouseEnter={e => {
+              e.currentTarget.style.background = "#ebf4fc";
+              e.currentTarget.style.borderColor = "#0078d4";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.borderColor = "#8a8886";
+            }}
           >
-            {sidebarOpen ? "◀ Hide" : "▶ Show"} Menu
+            {sidebarOpen ? <ArrowCollapseAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} /> : <ArrowExpandAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} />}
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#eee", flex: 1 }}>Azure Resilience IQ</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resilience IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <div
               style={{
                 padding: "6px 10px",
-                background: "#181818",
-                color: "#9AA0A6",
-                border: "1px solid #333",
+                background: "#fff",
+                color: "#605e5c",
+                border: "1px solid #8a8886",
                 borderRadius: 999,
                 fontSize: 12,
                 minWidth: 180,
@@ -1875,14 +2085,27 @@ const WorkloadView: React.FC = () => {
               disabled={selectedSubscriptionIds.length === 0}
               style={{
                 padding: "6px 12px",
-                background: selectedSubscriptionIds.length > 0 ? "#1f2937" : "#2a2a2a",
-                color: selectedSubscriptionIds.length > 0 ? "#fff" : "#777",
-                border: "1px solid #333",
+                background: selectedSubscriptionIds.length > 0 ? "#fff" : "#f3f2f1",
+                color: selectedSubscriptionIds.length > 0 ? "#0078d4" : "#a0a09f",
+                border: selectedSubscriptionIds.length > 0 ? "1px solid #8a8886" : "1px solid #d0d0d0",
                 borderRadius: 4,
                 cursor: selectedSubscriptionIds.length > 0 ? "pointer" : "not-allowed",
-                fontSize: 12
+                fontSize: 12,
+                transition: "all 0.1s ease-in-out",
               }}
               title="Reload graph and zonal resilience data from server"
+              onMouseEnter={e => {
+                if (selectedSubscriptionIds.length > 0) {
+                  e.currentTarget.style.background = "#f3f2f1";
+                  e.currentTarget.style.borderColor = "#0078d4";
+                }
+              }}
+              onMouseLeave={e => {
+                if (selectedSubscriptionIds.length > 0) {
+                  e.currentTarget.style.background = "#fff";
+                  e.currentTarget.style.borderColor = "#8a8886";
+                }
+              }}
             >
               Reload
             </button>
@@ -1961,10 +2184,14 @@ const WorkloadView: React.FC = () => {
                         onGraphViewApplied={() => setPendingGraphView(null)}
                         selectedEdgeId={selectedEdge?.id ?? null}
                         userLayerEnabled={userLayerEnabled}
+                        aiLayerEnabled={aiLayerEnabled}
+                        onAiLayerEnabledChange={setAiLayerEnabled}
+                        onUserLayerEnabledChange={setUserLayerEnabled}
                         maxImportance={maxImportance}
                         onNodeSelected={handleNodeSelected}
                         onEdgeCreate={handleCreateManualLink}
                         onNodeRename={handleRenameNode}
+                        onNodeHide={handleHideNode}
                         onGroupCreate={applyGroupToNodes}
                         groupCreateRequest={groupCreateRequest}
                         onSelectionStateChange={state => {

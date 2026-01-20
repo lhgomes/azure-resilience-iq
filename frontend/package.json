@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fluentui/font-icons-mdl2": "^8.5.70",
+    "@fluentui/react-icons": "^2.0.316",
     "dagre": "^0.8.5",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

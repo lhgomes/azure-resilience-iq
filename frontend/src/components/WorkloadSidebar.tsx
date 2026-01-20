@@ -1,5 +1,6 @@
 import React from "react";
 import type { ViewLevel } from "../domain/graphView";
+import { AddRegular, DeleteRegular, EditRegular, Save16Regular } from "@fluentui/react-icons";
 
 export interface SubscriptionOption {
   id: string;
@@ -37,12 +38,6 @@ interface Props {
   viewLevel: ViewLevel;
   onViewLevelChange: (next: ViewLevel) => void;
 
-  aiLayerEnabled: boolean;
-  onAiLayerEnabledChange: (next: boolean) => void;
-
-  userLayerEnabled: boolean;
-  onUserLayerEnabledChange: (next: boolean) => void;
-
   resourceGroupOptions: ResourceGroupOption[];
   resourceGroupFilter: Set<string>;
   onResourceGroupFilterChange: (next: Set<string>) => void;
@@ -62,136 +57,237 @@ const WorkloadSidebar: React.FC<Props> = props => {
   const showResourceGroupFilter = props.resourceGroupOptions.length >= 2;
   const hasSelection = props.selectedSubscriptions.size > 0;
 
+  // Shared button base styles
+  const buttonBase: React.CSSProperties = {
+    padding: "4px 12px",
+    fontSize: 13,
+    fontWeight: 400,
+    borderRadius: 2,
+    cursor: "pointer",
+    border: "1px solid",
+    transition: "all 0.1s ease-in-out",
+    outline: "none",
+    lineHeight: "20px",
+  };
+
+  const iconButton: React.CSSProperties = {
+    padding: "6px 8px",
+    fontSize: 16,
+    fontWeight: 400,
+    borderRadius: 2,
+    cursor: "pointer",
+    border: "1px solid transparent",
+    background: "transparent",
+    transition: "all 0.1s ease-in-out",
+    outline: "none",
+    minWidth: 32,
+    height: 32,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
+  const primaryButton: React.CSSProperties = {
+    ...buttonBase,
+    background: "#0078d4",
+    color: "#fff",
+    borderColor: "#0078d4",
+  };
+
+  const secondaryButton: React.CSSProperties = {
+    ...buttonBase,
+    background: "transparent",
+    color: "#0078d4",
+    borderColor: "#8a8886",
+  };
+
+  const dangerButton: React.CSSProperties = {
+    ...buttonBase,
+    background: "transparent",
+    color: "#a4262c",
+    borderColor: "#8a8886",
+  };
+
+  const disabledButton: React.CSSProperties = {
+    ...buttonBase,
+    background: "#f3f2f1",
+    color: "#a19f9d",
+    borderColor: "#c8c6c4",
+    cursor: "not-allowed",
+  };
+
   return (
     <div
       style={{
-        padding: 16,
+        padding: "16px 12px",
         overflowY: "auto",
         overflowX: "hidden",
+        color: "#323130",
+        fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
       }}
     >
-      <h3 style={{ margin: "0 0 20px 0", color: "#eee", fontSize: 16 }}>Controls</h3>
-
-      {/* Workload Views */}
+      {/* Workload Section */}
       <div style={{ marginBottom: 20 }}>
-        <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
+        <h3 style={{ 
+          margin: "0 0 8px 0", 
+          fontSize: 13, 
+          fontWeight: 600,
+          color: "#323130",
+          textTransform: "uppercase",
+          letterSpacing: "0.5px"
+        }}>
           Workload
-        </label>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <select
-            value={props.activeWorkloadId ?? ""}
-            onChange={e => props.onWorkloadSelect(e.target.value || null)}
+        </h3>
+        
+        <select
+          value={props.activeWorkloadId ?? ""}
+          onChange={e => props.onWorkloadSelect(e.target.value || null)}
+          style={{
+            width: "100%",
+            background: "#fff",
+            color: "#323130",
+            border: "1px solid #8a8886",
+            padding: "5px 8px",
+            borderRadius: 2,
+            fontSize: 14,
+            marginBottom: 8,
+            cursor: "pointer",
+            outline: "none",
+          }}
+          onFocus={e => e.target.style.borderColor = "#0078d4"}
+          onBlur={e => e.target.style.borderColor = "#8a8886"}
+        >
+          <option value="">Select workload</option>
+          {props.workloads.map(workload => (
+            <option key={workload.workload_id} value={workload.workload_id}>
+              {workload.name}
+            </option>
+          ))}
+        </select>
+
+        <input
+          type="text"
+          value={props.workloadName}
+          onChange={e => props.onWorkloadNameChange(e.target.value)}
+          placeholder="Workload name"
+          style={{
+            width: "100%",
+            background: "#fff",
+            color: "#323130",
+            border: "1px solid #8a8886",
+            padding: "5px 8px",
+            borderRadius: 2,
+            fontSize: 14,
+            marginBottom: 8,
+            boxSizing: "border-box",
+            outline: "none",
+          }}
+          onFocus={e => e.target.style.borderColor = "#0078d4"}
+          onBlur={e => e.target.style.borderColor = "#8a8886"}
+        />
+
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={props.onWorkloadCreate}
+            disabled={!props.workloadName.trim()}
+            title="Save as new workload"
             style={{
-              width: "100%",
-              background: "#181818",
-              color: "#fff",
-              border: "1px solid #333",
-              padding: "8px",
-              borderRadius: 4,
+              ...iconButton,
+              color: props.workloadName.trim() ? (!props.activeWorkloadId && props.workloadNewDirty ? "#fff" : "#0078d4") : "#c8c6c4",
+              background: props.workloadName.trim() && !props.activeWorkloadId && props.workloadNewDirty ? "#0078d4" : "transparent",
+              cursor: props.workloadName.trim() ? "pointer" : "not-allowed",
+            }}
+            onMouseEnter={e => {
+              if (props.workloadName.trim()) {
+                e.currentTarget.style.background = props.workloadNewDirty && !props.activeWorkloadId ? "#106ebe" : "#f3f2f1";
+              }
+            }}
+            onMouseLeave={e => {
+              if (props.workloadName.trim()) {
+                e.currentTarget.style.background = props.workloadNewDirty && !props.activeWorkloadId ? "#0078d4" : "transparent";
+              }
             }}
           >
-            <option value="">Select workload</option>
-            {props.workloads.map(workload => (
-              <option key={workload.workload_id} value={workload.workload_id}>
-                {workload.name}
-              </option>
-            ))}
-          </select>
-
-          <input
-            type="text"
-            value={props.workloadName}
-            onChange={e => props.onWorkloadNameChange(e.target.value)}
-            placeholder="Workload name"
+            <AddRegular style={{ fontSize: 16 }} />
+          </button>
+          <button
+            onClick={props.onWorkloadSave}
+            disabled={!props.activeWorkloadId}
+            title="Save workload"
             style={{
-              width: "100%",
-              background: "#181818",
-              color: "#fff",
-              border: "1px solid #333",
-              padding: "8px",
-              borderRadius: 4,
+              ...iconButton,
+              color: props.activeWorkloadId ? (props.workloadDirty ? "#fff" : "#0078d4") : "#c8c6c4",
+              background: props.activeWorkloadId && props.workloadDirty ? "#107c10" : "transparent",
+              cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
             }}
-          />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <button
-              onClick={props.onWorkloadCreate}
-              disabled={!props.workloadName.trim()}
-              style={{
-                padding: "8px",
-                background: props.workloadName.trim()
-                  ? (!props.activeWorkloadId && props.workloadNewDirty ? "#2563eb" : "#1f3a5f")
-                  : "#222",
-                color: props.workloadName.trim() ? "#fff" : "#666",
-                border: !props.activeWorkloadId && props.workloadNewDirty ? "1px solid #60a5fa" : "1px solid #333",
-                borderRadius: 4,
-                cursor: props.workloadName.trim() ? "pointer" : "not-allowed",
-                fontSize: 12,
-                boxShadow: !props.activeWorkloadId && props.workloadNewDirty ? "0 0 0 1px rgba(96,165,250,0.4)" : "none",
-              }}
-            >
-              Save New
-            </button>
-            <button
-              onClick={props.onWorkloadSave}
-              disabled={!props.activeWorkloadId}
-              style={{
-                padding: "8px",
-                background: props.activeWorkloadId
-                  ? (props.workloadDirty ? "#16a34a" : "#0f3d2e")
-                  : "#222",
-                color: props.activeWorkloadId ? "#fff" : "#666",
-                border: props.workloadDirty ? "1px solid #4ade80" : "1px solid #333",
-                borderRadius: 4,
-                cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
-                fontSize: 12,
-                boxShadow: props.workloadDirty ? "0 0 0 1px rgba(74,222,128,0.35)" : "none",
-              }}
-            >
-              Save Changes
-            </button>
-            <button
-              onClick={props.onWorkloadRename}
-              disabled={!props.activeWorkloadId || !props.workloadName.trim()}
-              style={{
-                padding: "8px",
-                background: props.activeWorkloadId && props.workloadName.trim() ? "#3b2b1a" : "#222",
-                color: props.activeWorkloadId && props.workloadName.trim() ? "#fff" : "#666",
-                border: "1px solid #333",
-                borderRadius: 4,
-                cursor: props.activeWorkloadId && props.workloadName.trim() ? "pointer" : "not-allowed",
-                fontSize: 12,
-              }}
-            >
-              Rename
-            </button>
-            <button
-              onClick={props.onWorkloadDelete}
-              disabled={!props.activeWorkloadId}
-              style={{
-                padding: "8px",
-                background: props.activeWorkloadId ? "#4a1c1c" : "#222",
-                color: props.activeWorkloadId ? "#fff" : "#666",
-                border: "1px solid #333",
-                borderRadius: 4,
-                cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
-                fontSize: 12,
-              }}
-            >
-              Delete
-            </button>
-          </div>
-
-          {props.workloadError && (
-            <div style={{ fontSize: 11, color: "#f87171" }}>{props.workloadError}</div>
-          )}
+            onMouseEnter={e => {
+              if (props.activeWorkloadId) {
+                e.currentTarget.style.background = props.workloadDirty ? "#0e6b0e" : "#f3f2f1";
+              }
+            }}
+            onMouseLeave={e => {
+              if (props.activeWorkloadId) {
+                e.currentTarget.style.background = props.workloadDirty ? "#107c10" : "transparent";
+              }
+            }}
+          >
+            <Save16Regular style={{ fontSize: 16 }} />
+          </button>
+          <button
+            onClick={props.onWorkloadRename}
+            disabled={!props.activeWorkloadId || !props.workloadName.trim()}
+            title="Rename workload"
+            style={{
+              ...iconButton,
+              color: (props.activeWorkloadId && props.workloadName.trim()) ? "#605e5c" : "#c8c6c4",
+              cursor: (props.activeWorkloadId && props.workloadName.trim()) ? "pointer" : "not-allowed",
+            }}
+            onMouseEnter={e => {
+              if (props.activeWorkloadId && props.workloadName.trim()) {
+                e.currentTarget.style.background = "#f3f2f1";
+              }
+            }}
+            onMouseLeave={e => {
+              if (props.activeWorkloadId && props.workloadName.trim()) {
+                e.currentTarget.style.background = "transparent";
+              }
+            }}
+          >
+            <EditRegular style={{ fontSize: 16 }} />
+          </button>
+          <button
+            onClick={props.onWorkloadDelete}
+            disabled={!props.activeWorkloadId}
+            title="Delete workload"
+            style={{
+              ...iconButton,
+              color: props.activeWorkloadId ? "#a4262c" : "#c8c6c4",
+              cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
+            }}
+            onMouseEnter={e => {
+              if (props.activeWorkloadId) {
+                e.currentTarget.style.background = "#fde7e9";
+              }
+            }}
+            onMouseLeave={e => {
+              if (props.activeWorkloadId) {
+                e.currentTarget.style.background = "transparent";
+              }
+            }}
+          >
+            <DeleteRegular style={{ fontSize: 16 }} />
+          </button>
         </div>
+
+        {props.workloadError && (
+          <div style={{ fontSize: 12, color: "#d13438", marginTop: 6 }}>{props.workloadError}</div>
+        )}
       </div>
 
       {/* Subscription Selector */}
       <div style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <label style={{ fontSize: 12, color: "#9AA0A6" }}>Subscriptions</label>
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Subscriptions</h3>
           <button
             onClick={() => {
               const allSubscriptions = props.subscriptions.map(s => s.id);
@@ -200,11 +296,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
             style={{
               background: "transparent",
               border: "none",
-              color: "#85a2c6ff",
+              color: "#0078d4",
               cursor: "pointer",
-              fontSize: 11,
+              fontSize: 12,
+              padding: "2px 0",
               textDecoration: "underline",
             }}
+            onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+            onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
           >
             Select All
           </button>
@@ -213,14 +312,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
           style={{
             maxHeight: 180,
             overflowY: "auto",
-            border: "1px solid #333",
-            borderRadius: 4,
-            padding: 8,
-            background: "#181818",
+            border: "1px solid #8a8886",
+            borderRadius: 2,
+            padding: "4px 8px",
+            background: "#fff",
           }}
         >
           {props.subscriptions.length === 0 ? (
-            <div style={{ fontSize: 12, color: "#666", padding: "8px 0" }}>
+            <div style={{ fontSize: 13, color: "#605e5c", padding: "8px 0" }}>
               No subscriptions available
             </div>
           ) : (
@@ -231,11 +330,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
                   display: "flex",
                   alignItems: "flex-start",
                   gap: 8,
-                  padding: "6px 0",
+                  padding: "6px 4px",
                   cursor: "pointer",
-                  fontSize: 12,
-                  color: "#ddd",
+                  fontSize: 14,
+                  color: "#323130",
+                  borderRadius: 2,
                 }}
+                onMouseEnter={e => e.currentTarget.style.background = "#f3f2f1"}
+                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
               >
                 <input
                   type="checkbox"
@@ -246,11 +348,11 @@ const WorkloadSidebar: React.FC<Props> = props => {
                     else next.delete(sub.id);
                     props.onSelectedSubscriptionsChange(next);
                   }}
-                  style={{ marginTop: 2, flexShrink: 0 }}
+                  style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }}
                 />
                 <div style={{ flex: 1, wordBreak: "break-word" }}>
-                  <div style={{ fontWeight: 500 }}>{sub.name}</div>
-                  <div style={{ fontSize: 11, color: "#666" }}>{sub.id}</div>
+                  <div style={{ fontWeight: 400 }}>{sub.name}</div>
+                  <div style={{ fontSize: 12, color: "#605e5c", marginTop: 2 }}>{sub.id}</div>
                 </div>
               </label>
             ))
@@ -260,74 +362,54 @@ const WorkloadSidebar: React.FC<Props> = props => {
 
       {hasSelection && (
         <>
+          {/* View Level */}
           <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
-              View Level
-            </label>
-            <select
-              value={props.viewLevel}
-              onChange={e => props.onViewLevelChange(e.target.value as ViewLevel)}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ 
+                margin: 0, 
+                fontSize: 13, 
+                fontWeight: 600, 
+                color: "#323130",
+                textTransform: "uppercase",
+                letterSpacing: "0.5px"
+              }}>
+                View Level
+              </h3>
+              <span style={{ fontSize: 12, color: "#605e5c", fontWeight: 600 }}>
+                {props.viewLevel === "overview" ? "L1" : props.viewLevel === "network" ? "L2" : "L3"}
+              </span>
+            </div>
+            
+            <input
+              type="range"
+              min="0"
+              max="2"
+              value={props.viewLevel === "overview" ? 0 : props.viewLevel === "network" ? 1 : 2}
+              onChange={e => {
+                const levels: Array<"overview" | "network" | "full"> = ["overview", "network", "full"];
+                props.onViewLevelChange(levels[parseInt(e.target.value)]);
+              }}
               style={{
                 width: "100%",
-                background: "#181818",
-                color: "#fff",
-                border: "1px solid #333",
-                padding: "8px",
-                borderRadius: 4,
-              }}
-            >
-              <option value="overview">Overview (L1)</option>
-              <option value="network">Network (L2)</option>
-              <option value="full">Full (L3)</option>
-            </select>
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={{ display: "block", fontSize: 12, color: "#9AA0A6", marginBottom: 8 }}>
-              Detail View
-            </label>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                color: "#eee",
-                fontSize: 13,
-                marginBottom: 8,
                 cursor: "pointer",
+                height: 4,
+                outline: "none",
+                background: "#e0e0e0",
+                borderRadius: 2,
               }}
-            >
-              <input
-                type="checkbox"
-                checked={props.aiLayerEnabled}
-                onChange={e => props.onAiLayerEnabledChange(e.target.checked)}
-              />
-              AI layer
-            </label>
-
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                color: "#eee",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={props.userLayerEnabled}
-                onChange={e => props.onUserLayerEnabledChange(e.target.checked)}
-              />
-              User overrides
-            </label>
+            />
+            
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 12, color: "#605e5c" }}>
+              <span>Overview</span>
+              <span></span>
+              <span>Full</span>
+            </div>
           </div>
 
           {showResourceGroupFilter && (
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <label style={{ fontSize: 12, color: "#9AA0A6" }}>Resource Groups</label>
+                <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Resource Groups</h3>
                 <button
                   onClick={() => {
                     const allGroups = props.resourceGroupOptions.map(rg => rg.key);
@@ -336,11 +418,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
                   style={{
                     background: "transparent",
                     border: "none",
-                    color: "#85a2c6ff",
+                    color: "#0078d4",
                     cursor: "pointer",
-                    fontSize: 11,
+                    fontSize: 12,
+                    padding: "2px 0",
                     textDecoration: "underline",
                   }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
                 >
                   Select All
                 </button>
@@ -349,10 +434,10 @@ const WorkloadSidebar: React.FC<Props> = props => {
                 style={{
                   maxHeight: 200,
                   overflowY: "auto",
-                  border: "1px solid #333",
-                  borderRadius: 4,
-                  padding: 8,
-                  background: "#181818",
+                  border: "1px solid #8a8886",
+                  borderRadius: 2,
+                  padding: "4px 8px",
+                  background: "#fff",
                 }}
               >
                 {props.resourceGroupOptions.map(rg => (
@@ -362,11 +447,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
                       display: "flex",
                       alignItems: "center",
                       gap: 8,
-                      padding: "4px 0",
+                      padding: "6px 4px",
                       cursor: "pointer",
-                      fontSize: 12,
-                      color: "#ddd",
+                      fontSize: 14,
+                      color: "#323130",
+                      borderRadius: 2,
                     }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#f3f2f1"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
                     <input
                       type="checkbox"
@@ -377,6 +465,7 @@ const WorkloadSidebar: React.FC<Props> = props => {
                         else next.delete(rg.key);
                         props.onResourceGroupFilterChange(next);
                       }}
+                      style={{ cursor: "pointer" }}
                     />
                     {rg.label}
                   </label>
@@ -385,9 +474,10 @@ const WorkloadSidebar: React.FC<Props> = props => {
             </div>
           )}
 
+          {/* Services */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <label style={{ fontSize: 12, color: "#9AA0A6" }}>Services</label>
+              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Services</h3>
               <button
                 onClick={() => {
                   const allServices = props.serviceOptions.flatMap(cat => cat.services.map(s => s.key));
@@ -396,11 +486,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
                 style={{
                   background: "transparent",
                   border: "none",
-                  color: "#85a2c6ff",
+                  color: "#0078d4",
                   cursor: "pointer",
-                  fontSize: 11,
+                  fontSize: 12,
+                  padding: "2px 0",
                   textDecoration: "underline",
                 }}
+                onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+                onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
               >
                 Select All
               </button>
@@ -409,10 +502,10 @@ const WorkloadSidebar: React.FC<Props> = props => {
               style={{
                 maxHeight: 400,
                 overflowY: "auto",
-                border: "1px solid #333",
-                borderRadius: 4,
-                padding: 8,
-                background: "#181818",
+                border: "1px solid #8a8886",
+                borderRadius: 2,
+                padding: "4px 8px",
+                background: "#fff",
               }}
             >
               {props.serviceOptions.map(category => {
@@ -423,31 +516,36 @@ const WorkloadSidebar: React.FC<Props> = props => {
                 const someSelected = selectedServicesInCategory.length > 0 && !allSelected;
 
                 return (
-                  <div key={category.category} style={{ marginBottom: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <button
-                        onClick={() => {
-                          const next = new Set(props.expandedCategories);
-                          if (isExpanded) next.delete(category.category);
-                          else next.add(category.category);
-                          props.onExpandedCategoriesChange(next);
-                        }}
+                  <div key={category.category} style={{ marginBottom: 2 }}>
+                    <div 
+                      style={{ 
+                        display: "flex", 
+                        alignItems: "center", 
+                        gap: 8, 
+                        padding: "6px 8px",
+                        borderRadius: 2,
+                        cursor: "pointer",
+                      }}
+                      onClick={() => {
+                        const next = new Set(props.expandedCategories);
+                        if (isExpanded) next.delete(category.category);
+                        else next.add(category.category);
+                        props.onExpandedCategoriesChange(next);
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#f3f2f1"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    >
+                      <span
                         style={{
-                          background: "transparent",
-                          border: "none",
-                          color: "#9AA0A6",
-                          cursor: "pointer",
-                          fontSize: 14,
-                          padding: 0,
-                          width: 16,
-                          height: 16,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
+                          color: "#605e5c",
+                          fontSize: 10,
+                          width: 12,
+                          display: "inline-block",
+                          textAlign: "center",
                         }}
                       >
                         {isExpanded ? "▼" : "▶"}
-                      </button>
+                      </span>
 
                       <input
                         type="checkbox"
@@ -456,29 +554,27 @@ const WorkloadSidebar: React.FC<Props> = props => {
                           if (el) el.indeterminate = someSelected;
                         }}
                         onChange={e => {
+                          e.stopPropagation();
                           const newFilter = new Set(props.serviceFilter);
                           if (e.target.checked) allServicesInCategory.forEach(key => newFilter.add(key));
                           else allServicesInCategory.forEach(key => newFilter.delete(key));
                           props.onServiceFilterChange(newFilter);
                         }}
-                        style={{ cursor: "pointer" }}
+                        onClick={e => e.stopPropagation()}
+                        style={{ cursor: "pointer", margin: 0 }}
                       />
 
-                      <span
-                        style={{ fontSize: 13, fontWeight: 600, color: "#eee", cursor: "pointer" }}
-                        onClick={() => {
-                          const next = new Set(props.expandedCategories);
-                          if (isExpanded) next.delete(category.category);
-                          else next.add(category.category);
-                          props.onExpandedCategoriesChange(next);
-                        }}
-                      >
-                        {category.category} ({category.services.length})
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "#323130", flex: 1 }}>
+                        {category.category}
+                      </span>
+                      
+                      <span style={{ fontSize: 12, color: "#605e5c" }}>
+                        {category.services.length}
                       </span>
                     </div>
 
                     {isExpanded && (
-                      <div style={{ marginLeft: 24 }}>
+                      <div style={{ paddingLeft: 20 }}>
                         {category.services.map(service => (
                           <label
                             key={service.key}
@@ -486,11 +582,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
                               display: "flex",
                               alignItems: "center",
                               gap: 8,
-                              padding: "4px 0",
+                              padding: "6px 8px",
                               cursor: "pointer",
-                              fontSize: 12,
-                              color: "#ddd",
+                              fontSize: 14,
+                              color: "#323130",
+                              borderRadius: 2,
                             }}
+                            onMouseEnter={e => e.currentTarget.style.background = "#f3f2f1"}
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                           >
                             <input
                               type="checkbox"
@@ -501,6 +600,7 @@ const WorkloadSidebar: React.FC<Props> = props => {
                                 else next.delete(service.key);
                                 props.onServiceFilterChange(next);
                               }}
+                              style={{ cursor: "pointer", margin: 0 }}
                             />
                             {service.label}
                           </label>
@@ -517,18 +617,25 @@ const WorkloadSidebar: React.FC<Props> = props => {
             onClick={props.onToggleLegend}
             title="Show/hide visual legend"
             style={{
+              ...secondaryButton,
               width: "100%",
-              padding: "8px 12px",
-              background: props.showLegend ? "#1a1a2e" : "#161616",
-              color: props.showLegend ? "#f59e0b" : "#9AA0A6",
-              border: props.showLegend ? "1px solid #f59e0b" : "1px solid #333",
-              borderRadius: 4,
-              cursor: "pointer",
-              fontSize: 13,
-              marginBottom: 20,
+              background: props.showLegend ? "rgba(0, 120, 212, 0.1)" : "transparent",
+              borderColor: props.showLegend ? "#0078d4" : "#8a8886",
+            }}
+            onMouseEnter={e => {
+              if (!props.showLegend) {
+                e.currentTarget.style.background = "rgba(0, 120, 212, 0.05)";
+                e.currentTarget.style.borderColor = "#0078d4";
+              }
+            }}
+            onMouseLeave={e => {
+              if (!props.showLegend) {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.borderColor = "#8a8886";
+              }
             }}
           >
-            {props.showLegend ? "Hide Legend" : "Show Legend"}
+            {props.showLegend ? "Hide" : "Show"} Legend
           </button>
         </>
       )}
