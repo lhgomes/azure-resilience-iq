@@ -103,13 +103,14 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, o
   if (!node) return null;
 
   const rawMeta = (node.raw as any)?.metadata ?? {};
+  const isVirtual = Boolean(rawMeta?.virtual);
   const resourceId = typeof (node.raw as any)?.id === "string" ? ((node.raw as any).id as string) : node.id;
   const tenantId =
     (rawMeta.tenant_id as string | undefined) ??
     (rawMeta.tenantId as string | undefined) ??
     (rawMeta.tenant as string | undefined);
   const portalUrl =
-    typeof resourceId === "string" && resourceId.toLowerCase().startsWith("/subscriptions/")
+    !isVirtual && typeof resourceId === "string" && resourceId.toLowerCase().startsWith("/subscriptions/")
       ? `https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${resourceId}/overview`
       : null;
 

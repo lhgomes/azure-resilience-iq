@@ -110,6 +110,44 @@ def get_workload_graph(subscription_id: str) -> dict:
             nodes_list.append(n.model_dump() if hasattr(n, 'model_dump') else n.__dict__)
     
     nodes_by_id = {n.get("id"): n for n in nodes_list if n.get("id")}
+
+    # Apply user overrides that hide resources entirely
+    hidden_ids = {node_id for node_id, override in node_overrides.items() if getattr(override, "hidden", False)}
+    if hidden_ids:
+        nodes_by_id = {node_id: node for node_id, node in nodes_by_id.items() if node_id not in hidden_ids}
+        def _edge_source_target(edge):
+            if isinstance(edge, dict):
+                return edge.get("source"), edge.get("target")
+            return getattr(edge, "source", None), getattr(edge, "target", None)
+
+        snapshot["edges"] = [
+            e
+            for e in snapshot.get("edges", [])
+            if (_edge_source_target(e)[0] not in hidden_ids and _edge_source_target(e)[1] not in hidden_ids)
+        ]
+        if snapshot.get("groups"):
+            cleaned_groups = []
+            for g in snapshot["groups"]:
+                if isinstance(g, dict):
+                    nodes = g.get("nodes", [])
+                    cleaned_groups.append({**g, "nodes": [nid for nid in nodes if nid not in hidden_ids]})
+                else:
+                    # Pydantic model: extract nodes, filter, and rebuild
+                    nodes = getattr(g, "nodes", [])
+                    filtered_nodes = [nid for nid in nodes if nid not in hidden_ids]
+                    if hasattr(g, "model_dump"):
+                        group_dict = g.model_dump()
+                        group_dict["nodes"] = filtered_nodes
+                        cleaned_groups.append(group_dict)
+                    else:
+                        cleaned_groups.append(g)
+            snapshot["groups"] = cleaned_groups
+        if resilience_data:
+            resilience_data = {rid: data for rid, data in resilience_data.items() if rid not in hidden_ids}
+        if resilience_results and "evaluations" in resilience_results:
+            resilience_results["evaluations"] = {
+                rid: data for rid, data in resilience_results.get("evaluations", {}).items() if rid not in hidden_ids
+            }
     
     for llm_node in annotations.nodes:
         node_id = llm_node.node_id

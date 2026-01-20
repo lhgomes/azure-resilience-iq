@@ -104,7 +104,6 @@ const WorkloadSidebar: React.FC<Props> = props => {
             onChange={e => props.onWorkloadNameChange(e.target.value)}
             placeholder="Workload name"
             style={{
-              width: "100%",
               background: "#181818",
               color: "#fff",
               border: "1px solid #333",

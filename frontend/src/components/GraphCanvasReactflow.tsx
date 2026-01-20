@@ -82,6 +82,7 @@ interface Props {
   maxImportance?: number;
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
   onNodeRename?: (nodeId: string) => void;
+  onNodeHide?: (nodeId: string) => void;
 
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
@@ -124,6 +125,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     maxImportance = 1,
     onEdgeCreate,
     onNodeRename,
+      onNodeHide,
     onGroupCreate,
     groupCreateRequest,
     onMoveNodeToGroup,
@@ -261,6 +263,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           ai_tooltip: meta["ai_tooltip"],
           user_tooltip: meta["user_tooltip"],
           metadata: meta,
+          onRemoveFromGraph: onNodeHide ? () => onNodeHide(n.id) : undefined,
         };
       })(),
       type: "azure",

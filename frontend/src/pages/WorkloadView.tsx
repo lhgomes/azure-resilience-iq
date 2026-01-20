@@ -94,6 +94,10 @@ const WorkloadView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [viewLevel, setViewLevel] = useState<ViewLevel>("overview");
   const [showLegend, setShowLegend] = useState(false);
+  const hiddenResourcesCount = useMemo(() => {
+    if (!graph?.node_overrides) return 0;
+    return Object.values(graph.node_overrides).filter((override: any) => override?.hidden === true).length;
+  }, [graph]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
@@ -1043,6 +1047,73 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const handleHideNode = async (nodeId: string) => {
+    const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
+    if (!nodeSubscriptionId) return;
+
+    try {
+      await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
+
+      // Optimistic local updates: drop node, associated edges, group membership, and resilience data
+      updateGraph(prev => {
+        if (!prev) return prev;
+        const remainingNodes = (prev.nodes || []).filter(n => n.id !== nodeId);
+        const remainingEdges = (prev.edges || []).filter(e => e.source !== nodeId && e.target !== nodeId);
+        const remainingGroups = (prev.groups || []).map(g => ({
+          ...g,
+          nodes: Array.isArray(g.nodes) ? g.nodes.filter(id => id !== nodeId) : [],
+        }));
+        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups };
+      });
+
+      setResilienceEvaluations(prev => {
+        if (!prev) return prev;
+        const next = { ...prev } as Record<string, any>;
+        delete next[nodeId];
+        return next;
+      });
+
+      setResilienceData((prev: any) => {
+        if (!prev?.evaluations) return prev;
+        const nextEvals = { ...prev.evaluations } as Record<string, any>;
+        delete nextEvals[nodeId];
+        return { ...prev, evaluations: nextEvals };
+      });
+
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      markSubscriptionDirty(nodeSubscriptionId);
+    } catch (err) {
+      console.error("Failed to hide node", err);
+    }
+  };
+
+  const handleRestoreAllHiddenResources = async () => {
+    if (!graph?.node_overrides || selectedSubscriptionIds.length === 0) return;
+
+    const hiddenNodeIds = Object.entries(graph.node_overrides)
+      .filter(([_, override]: [string, any]) => override?.hidden === true)
+      .map(([nodeId]) => nodeId);
+
+    if (hiddenNodeIds.length === 0) return;
+
+    try {
+      // Remove hidden flag from all hidden nodes
+      for (const nodeId of hiddenNodeIds) {
+        const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
+        if (nodeSubscriptionId) {
+          await patchNode(nodeSubscriptionId, nodeId, { hidden: false });
+          markSubscriptionDirty(nodeSubscriptionId);
+        }
+      }
+
+      // Trigger full refresh to reload graph with restored nodes
+      await fetchGraph();
+    } catch (err) {
+      console.error("Failed to restore hidden resources", err);
+    }
+  };
+
   const handleRenameNode = async (nodeId: string) => {
     const node = viewGraph?.nodes.find(n => n.id === nodeId);
     if (!node) return;
@@ -1790,9 +1861,68 @@ const WorkloadView: React.FC = () => {
                     </button>
                   )}
                 </div>
+
+                {hasMultiSelect && (
+                  <button
+                    onClick={async () => {
+                      const nodeIds = groupToolbarSelection.selectedNodeIds;
+                      for (const nodeId of nodeIds) {
+                        await handleHideNode(nodeId);
+                      }
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      background: "#7c3aed",
+                      color: "#fff",
+                      border: "1px solid #6d28d9",
+                      borderRadius: 4,
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 600,
+                    }}
+                    title={`Hide ${groupToolbarSelection.selectedNodeIds.length} selected resource${groupToolbarSelection.selectedNodeIds.length > 1 ? "s" : ""}`}
+                  >
+                    ✕ Hide All ({groupToolbarSelection.selectedNodeIds.length})
+                  </button>
+                )}
               </div>
             );
           })()}
+
+          {/* Restore hidden resources */}
+          {hiddenResourcesCount > 0 && (
+            <div
+              style={{
+                padding: "10px 12px",
+                background: "#0f0f0f",
+                borderTop: "1px solid #222",
+                flexShrink: 0,
+              }}
+            >
+              <button
+                onClick={handleRestoreAllHiddenResources}
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  background: "#1f2937",
+                  color: "#93c5fd",
+                  border: "1px solid #374151",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                }}
+              >
+                <span>↺</span>
+                <span>Restore {hiddenResourcesCount} hidden resource{hiddenResourcesCount > 1 ? "s" : ""}</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Resize handle */}
@@ -1965,6 +2095,7 @@ const WorkloadView: React.FC = () => {
                         onNodeSelected={handleNodeSelected}
                         onEdgeCreate={handleCreateManualLink}
                         onNodeRename={handleRenameNode}
+                        onNodeHide={handleHideNode}
                         onGroupCreate={applyGroupToNodes}
                         groupCreateRequest={groupCreateRequest}
                         onSelectionStateChange={state => {
