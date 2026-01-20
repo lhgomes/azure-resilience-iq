@@ -2062,21 +2062,6 @@ const WorkloadView: React.FC = () => {
           </button>
           <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resilience IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div
-              style={{
-                padding: "6px 10px",
-                background: "#fff",
-                color: "#605e5c",
-                border: "1px solid #8a8886",
-                borderRadius: 999,
-                fontSize: 12,
-                minWidth: 180,
-                textAlign: "center",
-              }}
-              title={selectedSubscriptionIds.length > 0 ? selectedSubscriptionIds.join(", ") : "No subscriptions selected"}
-            >
-              {selectedSubscriptionIds.length} selected
-            </div>
             <button
               onClick={() => {
                 fetchGraph();
