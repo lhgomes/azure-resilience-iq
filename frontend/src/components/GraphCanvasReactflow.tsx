@@ -1049,7 +1049,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       <Controls>
         <div
           style={{
-            marginTop: 4,
             display: "flex",
             flexDirection: "column",
             gap: 4,
@@ -1067,6 +1066,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
               padding: 0,
               display: "flex",
               justifyContent: "center",
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.background = "#f3f2f1";
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.background = "#fefefe";
             }}
             title="Auto layout - Reset node positions"
           >
@@ -1087,7 +1092,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
               display: "flex",
               justifyContent: "center",
             }}
-            title="AI layer"
+            title="Show AI annotations"
           >
             <span style={{ 
               fontSize: 8, 
@@ -1112,7 +1117,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
               display: "flex",
               justifyContent: "center",
             }}
-            title="User overrides"
+            title="Show user overrides"
           >
             <span style={{ 
               fontSize: 8, 
