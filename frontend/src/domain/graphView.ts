@@ -432,7 +432,8 @@ export function buildViewGraph(args: {
           confidence: s.confidence ?? 0.5,
           status: "proposed" as const,
           origin: s.origin ?? s.source ?? "llm",
-        }))
+          subscription_id: (s as any)?.subscription_id,
+        } as GraphEdge))
         .filter(e => !existingKeys.has(`${e.source}|${e.relationship}|${e.target}`) && visibleIds.has(e.source) && visibleIds.has(e.target))
     : [];
 
