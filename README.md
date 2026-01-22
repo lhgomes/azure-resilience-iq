@@ -40,29 +40,27 @@ Notes:
 - `pip install -e .` is supported (the backend packages only the `app/` module).
 - `data/` contains runtime artifacts (collector output, overrides, annotations) and is intentionally not packaged.
 
-#### Configure Environment Variables
+#### Configure Application Settings
 
-Create a `.env` file in the `backend/` directory with the following content:
+Edit `backend/config/app_config.yaml` to set Azure OpenAI and LLM settings:
 
-```bash
-# Azure OpenAI Configuration (required for LLM annotations)
-# Set USE_REAL_LLM=true to enable LLM-powered annotations
-USE_REAL_LLM=true
+```yaml
+llm:
+  enabled: true
+  batch_threshold: 50
+  max_nodes_per_batch: 30
 
-# Azure OpenAI Endpoint and Deployment
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=your-deployment-name
-
-# Optional: API Version (default: 2024-05-01-preview)
-AZURE_OPENAI_API_VERSION=2024-05-01-preview
-
-# Optional: Timeout and retry settings
-AZURE_OPENAI_TIMEOUT_SECONDS=60
-AZURE_OPENAI_MAX_ATTEMPTS=2
-AZURE_OPENAI_MAX_TOKENS=6000
+azure_openai:
+  endpoint: "https://your-resource.openai.azure.com/"
+  deployment: "your-deployment-name"
+  api_version: "2024-05-01-preview"
+  timeout_seconds: 60
+  max_attempts: 2
+  max_tokens: 6000
+  api_key: ""  # optional; leave empty to use DefaultAzureCredential
 ```
 
-**Note**: If you don't have Azure OpenAI or want to skip LLM annotations, set `USE_REAL_LLM=false` or omit it entirely.
+Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
 
 ### 3. Frontend Setup
 
@@ -126,7 +124,7 @@ Both options create:
 - `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
 - `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
 
-Data is organized by subscription ID. To use a different base directory, set `AZURE__GRAPH_DATA_DIR`.
+Data is organized by subscription ID. To use a different base directory, set `data.dir` in `backend/config/app_config.yaml`.
 
 ### Step 2: Run Resilience Evaluations
 
@@ -148,7 +146,7 @@ Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run LLM Annotations (Optional)
 
-If you configured Azure OpenAI and set `USE_REAL_LLM=true`, run the LLM annotator:
+If you configured Azure OpenAI and have `llm.enabled: true`, run the LLM annotator:
 
 ```bash
 python -m app.llm.run --subscription-id <your-subscription-id>
@@ -607,17 +605,24 @@ To update the graph with new Azure resources:
 
 ## Configuration Reference
 
-### Backend Environment Variables
+### Backend Configuration (app_config.yaml)
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `USE_REAL_LLM` | No | `false` | Enable/disable LLM annotations |
-| `AZURE_OPENAI_ENDPOINT` | Yes (if LLM enabled) | - | Azure OpenAI service endpoint |
-| `AZURE_OPENAI_DEPLOYMENT` | Yes (if LLM enabled) | - | Azure OpenAI deployment name |
-| `AZURE_OPENAI_API_VERSION` | No | `2024-05-01-preview` | Azure OpenAI API version |
-| `AZURE_OPENAI_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
-| `AZURE_OPENAI_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
-| `AZURE_OPENAI_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
+Set these in `backend/config/app_config.yaml`.
+
+| Section/Key | Required | Default | Description |
+|-------------|----------|---------|-------------|
+| `llm.enabled` | No | `false` | Toggle LLM end-to-end (compute and serve annotations) |
+| `llm.batch_threshold` | No | `50` | Node count threshold for batching annotations |
+| `llm.max_nodes_per_batch` | No | `30` | Max nodes per batch when batching |
+| `azure_openai.endpoint` | Yes (if LLM enabled) | - | Azure OpenAI service endpoint |
+| `azure_openai.deployment` | Yes (if LLM enabled) | - | Azure OpenAI deployment name |
+| `azure_openai.api_version` | No | `2024-05-01-preview` | Azure OpenAI API version |
+| `azure_openai.timeout_seconds` | No | `60` | Request timeout in seconds |
+| `azure_openai.max_attempts` | No | `2` | Maximum retry attempts |
+| `azure_openai.max_tokens` | No | `6000` | Maximum tokens for LLM response |
+| `azure_openai.api_key` | No | empty | API key; if empty, uses DefaultAzureCredential |
+| `data.dir` | No | `./data` | Base directory for collected artifacts |
+| `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist for HA/DR resource filtering |
 
 ### Frontend Configuration
 
@@ -702,11 +707,11 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 
 ### LLM Annotation Issues
 
-**Problem**: "AZURE_OPENAI_ENDPOINT not set"
-- **Solution**: Configure `.env` file with Azure OpenAI credentials
+**Problem**: "Azure OpenAI endpoint not set"
+- **Solution**: Set `azure_openai.endpoint` and `azure_openai.deployment` in `backend/config/app_config.yaml`, and ensure `llm.enabled` is `true`.
 
 **Problem**: No annotations generated
-- **Solution**: Ensure `USE_REAL_LLM=true` in `.env` and Azure OpenAI is properly configured
+- **Solution**: Confirm `llm.enabled` is `true`, Azure OpenAI settings are populated, and (if no `api_key`) you are logged in with `az login`.
 
 ### Backend Issues
 

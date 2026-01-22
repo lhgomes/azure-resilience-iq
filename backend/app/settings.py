@@ -7,11 +7,11 @@ Loads application configuration from:
 3. Fallback defaults if file not found
 """
 
-import os
-import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+import yaml
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,16 +34,11 @@ class AppSettings:
     def _get_config_path() -> str:
         """
         Determine config file path.
-        
+
         Priority:
-        1. APP_CONFIG_PATH environment variable
+        1. Explicit parameter passed to load_settings
         2. Default: ./config/app_config.yaml (relative to backend)
         """
-        # Check environment variable first
-        env_path = os.getenv("APP_CONFIG_PATH")
-        if env_path:
-            return env_path
-        
         # Default path relative to backend directory
         return "./config/app_config.yaml"
     
@@ -88,8 +83,22 @@ class AppSettings:
                 "level": "INFO",
             },
             "llm": {
-                "use_real_llm": False,
-                "annotation_enabled": False,
+                "enabled": False,
+                "batch_threshold": 100,
+                "max_nodes_per_batch": 50,
+            },
+            "azure_openai": {
+                "endpoint": None,
+                "deployment": None,
+                "api_version": "2024-05-01-preview",
+                "timeout_seconds": 60,
+                "max_attempts": 2,
+                "max_tokens": 6000,
+                "api_key": None,
+            },
+            "data": {
+                "dir": "./data",
+                "monitored_resource_types_path": "./config/monitored_resource_types.yaml",
             },
             "resilience": {
                 "category_weights": {
@@ -130,14 +139,14 @@ class AppSettings:
         return resilience_config.get("impact_weights", {})
     
     def use_real_llm(self) -> bool:
-        """Check if real LLM should be used."""
+        """Check if LLM should run (merged toggle)."""
         llm_config = self.get_llm_config()
-        return llm_config.get("use_real_llm", False)
-    
+        return llm_config.get("enabled", False)
+
     def is_annotation_enabled(self) -> bool:
-        """Check if LLM annotations are enabled."""
+        """Check if LLM annotations should be included (merged toggle)."""
         llm_config = self.get_llm_config()
-        return llm_config.get("annotation_enabled", False)
+        return llm_config.get("enabled", False)
     
     def get_aprl_root(self) -> str:
         """Get APRL root directory (absolute path)."""
@@ -154,15 +163,40 @@ class AppSettings:
         return str(aprl_path_obj)
     
     def get_log_level(self) -> str:
-        """Get configured log level (can be overridden by LOG_LEVEL env var)."""
-        # Check environment variable first
-        env_level = os.getenv("LOG_LEVEL")
-        if env_level:
-            return env_level.upper()
-        
-        # Fall back to config
+        """Get configured log level."""
         logging_config = self.config.get("logging", {})
         return logging_config.get("level", "INFO").upper()
+
+    def get_azure_openai_config(self) -> Dict[str, Any]:
+        """Get Azure OpenAI configuration values."""
+        aoai = self.config.get("azure_openai", {})
+        return {
+            "endpoint": aoai.get("endpoint"),
+            "deployment": aoai.get("deployment"),
+            "api_version": aoai.get("api_version", "2024-05-01-preview"),
+            "timeout_seconds": int(aoai.get("timeout_seconds", 60)),
+            "max_attempts": int(aoai.get("max_attempts", 2)),
+            "max_tokens": int(aoai.get("max_tokens", 6000)),
+            "api_key": aoai.get("api_key"),
+        }
+
+    def get_llm_batching_config(self) -> Dict[str, int]:
+        """Get LLM batching configuration values."""
+        llm_cfg = self.get_llm_config()
+        return {
+            "batch_threshold": int(llm_cfg.get("batch_threshold", 100)),
+            "max_nodes_per_batch": int(llm_cfg.get("max_nodes_per_batch", 50)),
+        }
+
+    def get_data_dir(self) -> str:
+        """Get base data directory for filesystem artifacts."""
+        data_cfg = self.config.get("data", {})
+        return data_cfg.get("dir", "./data")
+
+    def get_monitored_resource_types_path(self) -> str:
+        """Path to monitored resource types allowlist."""
+        data_cfg = self.config.get("data", {})
+        return data_cfg.get("monitored_resource_types_path", "./config/monitored_resource_types.yaml")
     
     def get_rules_dir(self) -> str:
         """Get resilience rules directory."""
@@ -230,13 +264,7 @@ def configure_logging(settings: Optional[AppSettings] = None) -> None:
     Args:
         settings: Optional AppSettings instance. If not provided, will use default INFO level.
     """
-    log_level_str = "INFO"
-    
-    if settings:
-        log_level_str = settings.get_log_level()
-    else:
-        # Check environment variable
-        log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level_str = settings.get_log_level() if settings else "INFO"
     
     # Convert string to logging level
     log_level = getattr(logging, log_level_str, logging.INFO)
