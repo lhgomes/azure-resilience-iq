@@ -9,7 +9,6 @@ This module provides a unified logging setup that:
 """
 
 import logging
-import os
 from typing import Optional
 
 from app.settings import get_settings
@@ -57,7 +56,7 @@ def setup_logging(log_level: Optional[str] = None) -> logging.Logger:
 
 def _get_effective_log_level(cli_override: Optional[str]) -> str:
     """
-    Determine effective log level from CLI, environment, or config.
+    Determine effective log level from CLI or config.
     
     Args:
         cli_override: Optional CLI parameter value
@@ -68,13 +67,8 @@ def _get_effective_log_level(cli_override: Optional[str]) -> str:
     # 1. CLI parameter has highest priority
     if cli_override:
         return cli_override.upper()
-    
-    # 2. Environment variable second
-    env_level = os.getenv("LOG_LEVEL")
-    if env_level:
-        return env_level.upper()
-    
-    # 3. Config file third
+
+    # 2. Config file
     try:
         settings = get_settings()
         config_level = settings.get_log_level()
@@ -83,7 +77,7 @@ def _get_effective_log_level(cli_override: Optional[str]) -> str:
     except Exception:
         pass  # Fall through to default
     
-    # 4. Default
+    # 3. Default
     return "INFO"
 
 
@@ -91,8 +85,6 @@ def _get_level_source(cli_override: Optional[str]) -> str:
     """Get human-readable source of log level for debug message."""
     if cli_override:
         return "CLI parameter"
-    if os.getenv("LOG_LEVEL"):
-        return "LOG_LEVEL environment variable"
     try:
         settings = get_settings()
         if settings.get_log_level():

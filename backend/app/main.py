@@ -1,5 +1,4 @@
 import logging
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -48,11 +47,6 @@ from app.storage.workload_store import (
     delete_workload as delete_saved_workload,
 )
 from app.relationships.utils import norm_id
-
-# Load environment variables from .env file (if it exists)
-# This allows setting AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, etc.
-# without passing them on the command line every time.
-load_dotenv()
 
 # Load application configuration from app_config.yaml
 app_settings = load_settings()

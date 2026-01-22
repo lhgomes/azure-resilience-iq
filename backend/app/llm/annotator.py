@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 from textwrap import dedent
 from time import sleep
 from typing import Any, Dict
@@ -216,13 +215,16 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
         LOGGER.info("LLM annotations disabled; returning no advisory data")
         return LLMAnnotations(nodes=[], edges=[])
 
+    settings = get_settings()
+    aoai_cfg = settings.get_azure_openai_config()
+
     # Check config before attempting request
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    endpoint = aoai_cfg["endpoint"]
+    deployment = aoai_cfg["deployment"]
     if not endpoint or not deployment:
         LOGGER.warning(
-            "USE_REAL_LLM=true but AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_DEPLOYMENT not set; "
-            "LLM annotation skipped. Set environment variables to enable."
+            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set; "
+            "LLM annotation skipped."
         )
         return LLMAnnotations(nodes=[], edges=[])
 
@@ -231,8 +233,9 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
     # Decide: batch or single call based on graph size
     nodes = summary.get("nodes", [])
     edges = summary.get("edges", [])
-    batch_threshold = int(os.getenv("LLM_BATCH_THRESHOLD", "100"))  # nodes
-    max_nodes_per_batch = int(os.getenv("LLM_MAX_NODES_PER_BATCH", "20"))
+    batch_cfg = settings.get_llm_batching_config()
+    batch_threshold = batch_cfg["batch_threshold"]
+    max_nodes_per_batch = batch_cfg["max_nodes_per_batch"]
 
     if len(nodes) > batch_threshold:
         LOGGER.info("Graph size %d exceeds batch threshold %d; using batched annotation", len(nodes), batch_threshold)
@@ -264,14 +267,8 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
 
 def llm_config_enabled() -> bool:
     """Check if LLM annotations are enabled from app config."""
-    try:
-        settings = get_settings()
-        return settings.is_annotation_enabled()
-    except RuntimeError:
-        # Fallback to environment variable if settings not initialized
-        flag = os.getenv("LLM_ANNOTATION_ENABLED", "true").lower().strip()
-        return flag in {"1", "true", "yes", "on"}
-
+    settings = get_settings()
+    return settings.is_annotation_enabled()
 
 def _annotate_batched(
     summary: Dict[str, Any],
@@ -331,13 +328,8 @@ def _annotate_batched(
 
 def _use_real_llm() -> bool:
     """Check if real LLM should be used from app config."""
-    try:
-        settings = get_settings()
-        return settings.use_real_llm()
-    except RuntimeError:
-        # Fallback to environment variable if settings not initialized
-        flag = os.getenv("USE_REAL_LLM", "false").lower().strip()
-        return flag in {"1", "true", "yes", "on"}
+    settings = get_settings()
+    return settings.use_real_llm()
 
 
 def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotations:
@@ -499,18 +491,20 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
     The graph summary is treated as authoritative input; the LLM is advisory only.
     """
 
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-    timeout_seconds = int(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "60"))
-    max_attempts = int(os.getenv("AZURE_OPENAI_MAX_ATTEMPTS", "2"))
-    max_tokens = int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "6000"))
+    aoai_cfg = get_settings().get_azure_openai_config()
+
+    endpoint = aoai_cfg["endpoint"]
+    deployment = aoai_cfg["deployment"]
+    api_version = aoai_cfg["api_version"]
+    timeout_seconds = aoai_cfg["timeout_seconds"]
+    max_attempts = aoai_cfg["max_attempts"]
+    max_tokens = aoai_cfg["max_tokens"]
 
     if not endpoint or not deployment:
         raise RuntimeError("Azure OpenAI endpoint or deployment not configured")
 
     # Prefer API key if provided; otherwise use AAD.
-    api_key = os.getenv("AZURE_OPENAI_KEY")
+    api_key = aoai_cfg.get("api_key")
     if api_key:
         client = AzureOpenAI(
             azure_endpoint=endpoint,
