@@ -2,33 +2,11 @@ from typing import Any, Dict, List, Set
 
 
 def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Build a condensed, LLM-safe view of the graph without mutating the input.
+    """Build a condensed, LLM-safe view of the graph without mutating the input.
 
-    Input example (abridged):
-    {
-      "nodes": [
-        {"id": "/subs/123/rg/demo/aks", "type": "aks", "name": "demo-aks", "metadata": {"importance": 1}},
-        {"id": "/subs/123/rg/demo/vnet", "type": "vnet", "name": "demo-vnet"}
-      ],
-      "edges": [
-        {"source": "/subs/123/rg/demo/aks", "target": "/subs/123/rg/demo/vnet", "relationship": "connected_to"}
-      ]
-    }
-
-    Output example (sanitized):
-    {
-      "nodes": [
-        {"id": "/subs/123/rg/demo/aks", "type": "aks", "name": "demo-aks", "importance": 1, "connections": ["/subs/123/rg/demo/vnet"]},
-        {"id": "/subs/123/rg/demo/vnet", "type": "vnet", "name": "demo-vnet", "connections": ["/subs/123/rg/demo/aks"]}
-      ],
-      "edges": [
-        {"source": "/subs/123/rg/demo/aks", "target": "/subs/123/rg/demo/vnet", "relationship": "connected_to"}
-      ]
-    }
-
-    Note: subscription IDs and ARM paths remain on the node id for traceability,
-    but noisy metadata (tags, credentials, properties) are omitted.
+    Keeps canonical ARM ids for traceability, but also provides a compact short_id
+    (deterministic UUIDv5); falls back to the canonical id only if short_id is absent.
+    Connections use short_id values to minimize token footprint.
     """
 
     nodes_raw: List[Any] = graph.get("nodes", []) or []
@@ -44,27 +22,29 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         return getattr(item, "__dict__", {})
 
     safe_nodes: List[Dict[str, Any]] = []
-    node_ids: Set[str] = set()
+    id_to_short: Dict[str, str] = {}
 
     for n in nodes_raw:
         nd = as_dict(n)
         node_id = nd.get("id") or ""
-        node_ids.add(node_id)
         meta = nd.get("metadata") or {}
+        short_id = nd.get("short_id") or meta.get("short_id")
+        short_id = short_id or node_id  # fallback only if missing
+        id_to_short[node_id] = short_id
 
         safe_nodes.append(
             {
                 "id": node_id,
+                "short_id": short_id,
                 "type": nd.get("type") or "unknown",
                 "name": nd.get("name") or node_id.split("/")[-1] or "unknown",
                 "importance": meta.get("importance"),
-                # Preserve user criticality overrides so the LLM can honor them.
                 "criticality_override": meta.get("criticality_override"),
                 "connections": [],
             }
         )
 
-    connections: Dict[str, Set[str]] = {n["id"]: set() for n in safe_nodes if n.get("id")}
+    connections: Dict[str, Set[str]] = {n["short_id"]: set() for n in safe_nodes if n.get("short_id")}
     safe_edges: List[Dict[str, Any]] = []
 
     for e in edges_raw:
@@ -85,34 +65,34 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
                     multi_source_info = {
                         "signals": ev.get("signal_types", []),
                         "aggregated_confidence": ev.get("aggregated_confidence"),
-                        "signal_count": len(ev.get("signals", []))
+                        "signal_count": len(ev.get("signals", [])),
                     }
                     break
 
+        source_short = id_to_short.get(source, source)
+        target_short = id_to_short.get(target, target)
+
         edge_data = {
-            "source": source,
-            "target": target,
+            "source": source_short,
+            "target": target_short,
             "relationship": relationship,
-            # Preserve provenance and moderation state so the LLM knows which
-            # relationships were user-authored or previously accepted.
             "source_kind": ed.get("source"),
             "status": ed.get("status"),
             "confidence": ed.get("confidence"),
         }
-        
-        # Add multi-source signal context if available
+
         if multi_source_info:
             edge_data["multi_source_signals"] = multi_source_info
-        
+
         safe_edges.append(edge_data)
 
-        if source in connections:
-            connections[source].add(target)
-        if target in connections:
-            connections[target].add(source)
+        if source_short in connections:
+            connections[source_short].add(target_short)
+        if target_short in connections:
+            connections[target_short].add(source_short)
 
     for n in safe_nodes:
-        nid = n.get("id")
+        nid = n.get("short_id") or n.get("id")
         if not nid:
             continue
         conn_list = sorted(connections.get(nid) or [])

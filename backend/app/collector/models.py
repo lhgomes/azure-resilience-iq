@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List
 
 class AzureResource(BaseModel):
     id: str
+    short_id: Optional[str] = None
     name: str
     type: str
     location: Optional[str]

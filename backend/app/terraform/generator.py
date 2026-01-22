@@ -12,6 +12,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 from app.terraform.parser import TerraformResource, TerraformParser
+from app.relationships.utils import short_id as compute_short_id
 
 
 @dataclass
@@ -20,6 +21,7 @@ class GeneratedResource:
     id: str
     name: str
     type: str
+    short_id: Optional[str] = None
     location: Optional[str] = None
     resource_group: Optional[str] = None
     subscription_id: Optional[str] = None
@@ -356,6 +358,7 @@ class TerraformResourceGenerator:
             # Map to standard format
             resource = GeneratedResource(
                 id=resource_id,
+                short_id=compute_short_id(resource_id),
                 name=self._get_resource_name(tf_resource, attrs),
                 type=azure_type.lower(),
                 location=self._get_location(tf_resource.type, attrs),
@@ -996,6 +999,7 @@ class TerraformResourceGenerator:
         """Convert GeneratedResource to dictionary."""
         return {
             "id": resource.id,
+            "short_id": resource.short_id,
             "name": resource.name,
             "type": resource.type,
             "location": resource.location,

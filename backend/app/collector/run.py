@@ -8,7 +8,7 @@ from .arg import query_resources
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
-from app.relationships.utils import norm_id
+from app.relationships.utils import norm_id, short_id
 from app.graph.builder import edge_id
 from app.resource_filters import load_monitored_resource_types, filter_resources_by_type
 
@@ -60,6 +60,7 @@ def main():
     for r in resources:
         resource_dict = r.model_dump()
         resource_dict['id'] = norm_id(resource_dict['id'])
+        resource_dict['short_id'] = short_id(resource_dict['id'])
         # Explicitly mark collected Azure resources as non-virtual
         resource_dict['virtual'] = False
         normalized_resources.append(resource_dict)
