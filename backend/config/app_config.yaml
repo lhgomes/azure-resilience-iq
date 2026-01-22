@@ -4,16 +4,31 @@
 # Logging Configuration
 logging:
   # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  # Can be overridden by LOG_LEVEL environment variable
   level: "INFO"
 
 # LLM Configuration
 llm:
-  # Enable/disable LLM annotation feature (true/false)
-  use_real_llm: true
-  
-  # Enable/disable LLM annotations in API responses (true/false)
-  annotation_enabled: true
+  # Enable/disable LLM end-to-end (compute + serve)
+  enabled: true
+
+  # Batching controls for graph annotation
+  batch_threshold: 50
+  max_nodes_per_batch: 30
+
+# Azure OpenAI Configuration
+azure_openai:
+  endpoint: "https://aoai-workload-graph.openai.azure.com/"
+  deployment: "gpt-4o-mini"
+  api_version: "2024-05-01-preview"
+  timeout_seconds: 60
+  max_attempts: 2
+  max_tokens: 6000
+  api_key: ""  # optional; prefer managed identity if empty
+
+# Data Paths
+data:
+  dir: "./data"
+  monitored_resource_types_path: "./config/monitored_resource_types.yaml"
 
 # Resilience Analysis Configuration
 resilience:

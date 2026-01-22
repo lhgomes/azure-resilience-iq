@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
+from app.settings import load_settings
 
 # Centralized paths for all filesystem-backed artifacts.
 # Data is organized by subscription ID: data/{subscription_id}/{filename}.json
 
-DATA_DIR = Path(os.getenv("AZURE_WORKLOAD_GRAPH_DATA_DIR", "data"))
+DATA_DIR = Path(load_settings().get_data_dir())
 
 
 def get_subscription_dir(subscription_id: str) -> Path:

@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 from textwrap import dedent
 from time import sleep
 from typing import Any, Dict
@@ -11,6 +10,7 @@ from pydantic import ValidationError
 
 from .models import LLMAnnotations
 from .summarizer import summarize_graph_for_llm
+from .batcher import BatchPartitioner, merge_batch_annotations
 from app.graph.builder import edge_id
 from app.settings import get_settings
 
@@ -39,6 +39,12 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         - Avoid creative wording.
         - Use official Azure terminology as shown in the Azure Portal.
         - When unsure, choose the broader, safer classification.
+
+        IDENTIFIERS (READ CAREFULLY)
+        ----------------------------
+        - Each node includes both a canonical Azure id ("id") and a compact identifier ("short_id"), a deterministic UUIDv5 derived from the Azure id.
+        - Use short_id for ALL references in your output: node_id, source, and target. Do not invent ids.
+        - The connections array already uses short_id values.
 
         LAYERING GUIDANCE (apply consistently)
         --------------------------------------
@@ -149,6 +155,8 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
         - Use status "proposed" only.
         - Never assert authoritative relationships.
 
+        IMPORTANT: Use the provided short_id values (not the long Azure id) for node_id, source, and target in your output.
+
         OUTPUT FORMAT (JSON ONLY)
         -------------------------
         {
@@ -191,6 +199,14 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
     try:
         summary = summarize_graph_for_llm(snapshot)
+        id_lookup = {
+            n.get("short_id") or n.get("id"): n.get("id")
+            for n in summary.get("nodes", [])
+            if (n.get("short_id") or n.get("id")) and n.get("id")
+        }
+        # Accept canonical ids directly as a no-op mapping to keep backward compatibility
+        for canonical_id in list(id_lookup.values()):
+            id_lookup.setdefault(canonical_id, canonical_id)
     except Exception:
         LOGGER.exception("Failed to build LLM-safe summary")
         return LLMAnnotations(nodes=[], edges=[])
@@ -199,29 +215,50 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
         LOGGER.info("LLM annotations disabled; returning no advisory data")
         return LLMAnnotations(nodes=[], edges=[])
 
+    settings = get_settings()
+    aoai_cfg = settings.get_azure_openai_config()
+
     # Check config before attempting request
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    endpoint = aoai_cfg["endpoint"]
+    deployment = aoai_cfg["deployment"]
     if not endpoint or not deployment:
         LOGGER.warning(
-            "USE_REAL_LLM=true but AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_DEPLOYMENT not set; "
-            "LLM annotation skipped. Set environment variables to enable."
+            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set; "
+            "LLM annotation skipped."
         )
         return LLMAnnotations(nodes=[], edges=[])
 
     LOGGER.info("Starting Azure OpenAI annotation request")
 
-    try:
-        raw = _call_azure_openai(summary)
-    except Exception:
-        LOGGER.exception("Azure OpenAI annotation request failed; falling back to empty annotations")
-        return LLMAnnotations(nodes=[], edges=[])
+    # Decide: batch or single call based on graph size
+    nodes = summary.get("nodes", [])
+    edges = summary.get("edges", [])
+    batch_cfg = settings.get_llm_batching_config()
+    batch_threshold = batch_cfg["batch_threshold"]
+    max_nodes_per_batch = batch_cfg["max_nodes_per_batch"]
 
+    if len(nodes) > batch_threshold:
+        LOGGER.info("Graph size %d exceeds batch threshold %d; using batched annotation", len(nodes), batch_threshold)
+        annotations = _annotate_batched(summary, id_lookup, max_nodes_per_batch)
+    else:
+        LOGGER.info("Graph size %d within single-call threshold; using direct annotation", len(nodes))
+        try:
+            raw = _call_azure_openai(summary)
+        except Exception:
+            LOGGER.exception("Azure OpenAI annotation request failed; falling back to empty annotations")
+            return LLMAnnotations(nodes=[], edges=[])
+
+        try:
+            annotations = _validate_and_filter_annotations(raw, id_lookup)
+        except Exception:
+            LOGGER.exception("LLM response failed validation; returning empty annotations")
+            return LLMAnnotations(nodes=[], edges=[])
+
+    # Recompute criticality_weight over full merged set
     try:
-        annotations = _validate_and_filter_annotations(raw)
         annotations = _calculate_criticality_weights(annotations)
     except Exception:
-        LOGGER.exception("LLM response failed final validation; returning empty annotations")
+        LOGGER.exception("Failed to calculate criticality weights")
         return LLMAnnotations(nodes=[], edges=[])
 
     LOGGER.info("Azure OpenAI annotation request succeeded; %d nodes, %d edge suggestions", len(annotations.nodes), len(annotations.edges))
@@ -230,24 +267,69 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
 
 def llm_config_enabled() -> bool:
     """Check if LLM annotations are enabled from app config."""
-    try:
-        settings = get_settings()
-        return settings.is_annotation_enabled()
-    except RuntimeError:
-        # Fallback to environment variable if settings not initialized
-        flag = os.getenv("LLM_ANNOTATION_ENABLED", "true").lower().strip()
-        return flag in {"1", "true", "yes", "on"}
+    settings = get_settings()
+    return settings.is_annotation_enabled()
+
+def _annotate_batched(
+    summary: Dict[str, Any],
+    id_lookup: Dict[str, str],
+    max_nodes_per_batch: int,
+) -> LLMAnnotations:
+    """
+    Annotate a large graph by partitioning into independent batches.
+
+    Each batch includes global node features (connection_count, overrides, manual edges)
+    and internal edges. Batch calls are stateless. Results are merged and weights
+    are recomputed over the full set.
+    """
+    nodes = summary.get("nodes", [])
+    edges = summary.get("edges", [])
+
+    # Partition into batches
+    partitioner = BatchPartitioner(nodes, edges, max_nodes_per_batch=max_nodes_per_batch)
+    batches = partitioner.partition()
+    LOGGER.info("Partitioned %d nodes into %d batches", len(nodes), len(batches))
+
+    batch_results = []
+
+    for batch_idx, batch in enumerate(batches, start=1):
+        LOGGER.info("Processing batch %d/%d (%d nodes, %d edges)", batch_idx, len(batches), len(batch["nodes"]), len(batch["edges"]))
+
+        # Build a minimal batch summary with global features
+        batch_summary = {
+            "nodes": batch["nodes"],
+            "edges": batch["edges"],
+            "batch_context": batch["batch_context"],
+        }
+
+        try:
+            raw = _call_azure_openai(batch_summary)
+        except Exception:
+            LOGGER.exception("Batch %d annotation failed; skipping", batch_idx)
+            continue
+
+        try:
+            batch_annotations = _validate_and_filter_annotations(raw, id_lookup)
+            batch_results.append(batch_annotations)
+        except Exception:
+            LOGGER.exception("Batch %d validation failed; skipping", batch_idx)
+            continue
+
+    if not batch_results:
+        LOGGER.warning("All batches failed; returning empty annotations")
+        return LLMAnnotations(nodes=[], edges=[])
+
+    # Merge batch results
+    merged = merge_batch_annotations(batch_results)
+    LOGGER.info("Merged %d batch results; %d nodes, %d edges", len(batch_results), len(merged.nodes), len(merged.edges))
+
+    return merged
 
 
 def _use_real_llm() -> bool:
     """Check if real LLM should be used from app config."""
-    try:
-        settings = get_settings()
-        return settings.use_real_llm()
-    except RuntimeError:
-        # Fallback to environment variable if settings not initialized
-        flag = os.getenv("USE_REAL_LLM", "false").lower().strip()
-        return flag in {"1", "true", "yes", "on"}
+    settings = get_settings()
+    return settings.use_real_llm()
 
 
 def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotations:
@@ -296,13 +378,21 @@ def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotation
     return annotations
 
 
-def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
+def _validate_and_filter_annotations(raw: Dict[str, Any], id_lookup: Dict[str, str]) -> LLMAnnotations:
     """
     Enforce contract on LLM response: validate priority and layer values.
     Drop invalid items with WARN logs instead of failing the whole batch.
     Auto-correct layer values to valid range (0-2).
     Auto-abbreviate long category names (>20 chars).
     """
+    id_lookup = id_lookup or {}
+
+    def resolve_id(maybe_short_id: Any) -> Any:
+        if maybe_short_id is None:
+            return None
+        if not isinstance(maybe_short_id, str):
+            return maybe_short_id
+        return id_lookup.get(maybe_short_id, maybe_short_id)
     allowed_priorities = {"critical", "important", "supporting"}
     allowed_layers = {0, 1, 2}
     
@@ -317,11 +407,16 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
     valid_nodes = []
     for item in raw.get("nodes") or []:
         try:
-            node_id = item.get("node_id")
+            node_id = resolve_id(item.get("node_id"))
             ann = item.get("annotations") or {}
             priority = ann.get("priority")
             layer = ann.get("layer")
             category = ann.get("azure_service_category")
+
+            if not node_id:
+                LOGGER.warning("Dropping node annotation with missing node_id")
+                continue
+            item["node_id"] = node_id
 
             # Validate priority
             if priority and priority not in allowed_priorities:
@@ -371,12 +466,14 @@ def _validate_and_filter_annotations(raw: Dict[str, Any]) -> LLMAnnotations:
     valid_edges = []
     for item in raw.get("edges") or []:
         try:
-            source = item.get("source")
-            target = item.get("target")
+            source = resolve_id(item.get("source"))
+            target = resolve_id(item.get("target"))
             relationship = item.get("relationship")
             if not source or not target:
                 LOGGER.warning("Dropping edge suggestion: missing source or target")
                 continue
+            item["source"] = source
+            item["target"] = target
             # Add computed edge ID if not present
             if "id" not in item:
                 item["id"] = edge_id(source, target, relationship or "")
@@ -394,18 +491,20 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
     The graph summary is treated as authoritative input; the LLM is advisory only.
     """
 
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-    timeout_seconds = int(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "60"))
-    max_attempts = int(os.getenv("AZURE_OPENAI_MAX_ATTEMPTS", "2"))
-    max_tokens = int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "6000"))
+    aoai_cfg = get_settings().get_azure_openai_config()
+
+    endpoint = aoai_cfg["endpoint"]
+    deployment = aoai_cfg["deployment"]
+    api_version = aoai_cfg["api_version"]
+    timeout_seconds = aoai_cfg["timeout_seconds"]
+    max_attempts = aoai_cfg["max_attempts"]
+    max_tokens = aoai_cfg["max_tokens"]
 
     if not endpoint or not deployment:
         raise RuntimeError("Azure OpenAI endpoint or deployment not configured")
 
     # Prefer API key if provided; otherwise use AAD.
-    api_key = os.getenv("AZURE_OPENAI_KEY")
+    api_key = aoai_cfg.get("api_key")
     if api_key:
         client = AzureOpenAI(
             azure_endpoint=endpoint,
@@ -445,6 +544,18 @@ def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
             content = completion.choices[0].message.content
             if not content:
                 raise ValueError("Empty response from LLM")
+
+            # Log token usage for visibility
+            usage = getattr(completion, "usage", None) or {}
+            prompt_tokens = getattr(usage, "prompt_tokens", None) if hasattr(usage, "prompt_tokens") else usage.get("prompt_tokens") if isinstance(usage, dict) else None
+            completion_tokens = getattr(usage, "completion_tokens", None) if hasattr(usage, "completion_tokens") else usage.get("completion_tokens") if isinstance(usage, dict) else None
+            total_tokens = getattr(usage, "total_tokens", None) if hasattr(usage, "total_tokens") else usage.get("total_tokens") if isinstance(usage, dict) else None
+            LOGGER.info(
+                "Azure OpenAI usage: prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            )
 
             # Check if response was truncated
             finish_reason = completion.choices[0].finish_reason

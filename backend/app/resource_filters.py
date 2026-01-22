@@ -1,15 +1,13 @@
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
+from app.settings import load_settings
 
 LOGGER = logging.getLogger(__name__)
 
-# Environment variable override for the monitored resource type allowlist file path
-CONFIG_ENV_VAR = "MONITORED_RESOURCE_TYPES_PATH"
 DEFAULT_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent / "config" / "monitored_resource_types.yaml"
 )
@@ -33,7 +31,11 @@ def load_monitored_resource_types(config_path: Optional[str] = None) -> Set[str]
         Set of lowercase resource type strings. Empty set if the file is missing
         or cannot be parsed.
     """
-    target = Path(config_path or os.getenv(CONFIG_ENV_VAR, DEFAULT_CONFIG_PATH))
+    if config_path:
+        target = Path(config_path)
+    else:
+        settings = load_settings()
+        target = Path(settings.get_monitored_resource_types_path() or DEFAULT_CONFIG_PATH)
 
     try:
         raw = _load_raw_config(target)

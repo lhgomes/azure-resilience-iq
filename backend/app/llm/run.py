@@ -12,18 +12,16 @@ This script:
 
 Requires:
 - collector output file (from app.collector.run)
-- AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT (in .env or environment)
-- USE_REAL_LLM=true (in .env or environment)
-- az login (for DefaultAzureCredential)
+
+- Azure OpenAI and LLM settings configured in config/app_config.yaml
+- az login (for DefaultAzureCredential) if api_key not provided
 
 Paths:
-- Override the base data directory with AZURE_WORKLOAD_GRAPH_DATA_DIR (default: data)
+- Base data directory configured in config/app_config.yaml (data.dir)
 """
 
 import json
 import argparse
-
-from dotenv import load_dotenv
 
 from app.graph.from_azure import build_graph_from_resources
 from app.config import get_resources_path
@@ -33,10 +31,6 @@ from app.settings import load_settings, get_settings
 from app.logger import setup_logging, get_logger
 
 LOGGER = get_logger(__name__)
-
-# Load environment variables from .env file
-load_dotenv()
-
 
 def main():
     parser = argparse.ArgumentParser(
