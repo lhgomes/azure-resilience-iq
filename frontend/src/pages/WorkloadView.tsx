@@ -721,11 +721,22 @@ const WorkloadView: React.FC = () => {
   }, [graphWithScores, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
 
   const resolveSubscriptionIdForEdge = useCallback((edgeId: string): string | null => {
+    // Edges are always stored in the source node's subscription
     const edge = graph?.edges.find(e => e.id === edgeId) ?? viewGraph?.edges.find(e => e.id === edgeId);
-    const edgeSub = (edge as any)?.subscription_id ?? (edge as any)?.metadata?.subscription_id;
-    if (edgeSub) return String(edgeSub);
+    if (!edge) {
+      setError("Edge not found.");
+      return null;
+    }
+    
+    // Use the source node's subscription (where the edge is stored)
+    const sourceNode = graph?.nodes.find(n => n.id === edge.source) ?? viewGraph?.nodes.find(n => n.id === edge.source);
+    const sourceSub = (sourceNode as any)?.subscription_id ?? (sourceNode?.metadata as any)?.subscription_id;
+    if (sourceSub) return String(sourceSub);
+    
+    // Fallback to single subscription only if source node lookup fails
     if (singleSubscriptionId) return singleSubscriptionId;
-    setError("Select a single subscription to modify edges.");
+    
+    setError("Unable to determine subscription for edge source node. Please select a single subscription.");
     return null;
   }, [graph, viewGraph, singleSubscriptionId]);
 

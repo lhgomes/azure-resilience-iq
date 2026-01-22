@@ -61,7 +61,11 @@ export function mergeGraphSnapshots(
         if (!edgeAnn?.source || !edgeAnn?.target || !edgeAnn?.relationship) return;
         const key = `${edgeAnn.source}|${edgeAnn.target}|${edgeAnn.relationship}`;
         if (!mergedLlmEdges.has(key)) {
-          mergedLlmEdges.set(key, edgeAnn);
+          // Add subscription context to LLM edge annotation
+          mergedLlmEdges.set(key, {
+            ...edgeAnn,
+            subscription_id: subscriptionId,
+          } as any);
         }
       });
     }
