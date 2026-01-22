@@ -15,32 +15,23 @@ Requires:
 - APRL catalog available at backend/aprl/
 
 Paths:
-- Override the base data directory with AZURE_WORKLOAD_GRAPH_DATA_DIR (default: data)
+- Base data directory configured in config/app_config.yaml (data.dir)
 """
 
-import json
 import argparse
-import os
+import json
 from collections import defaultdict
-from typing import Dict, Optional, List, Any
 from pathlib import Path
-
-from dotenv import load_dotenv
+from typing import Any, Dict, List, Optional
 
 from app.config import get_resources_path, get_subscription_dir
-from app.settings import get_settings, load_settings
-from app.logger import setup_logging, get_logger
-from app.resilience.aprl_integration import load_aprl_catalog, APRLEvaluator, generate_resilience_check_id
-from app.storage.resilience_evaluations_store import save_resilience_evaluations
-from app.storage.llm_annotations_store import load_llm_annotations
-from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResilienceSummary, ZonalData, DeploymentPattern
+from app.logger import get_logger, setup_logging
+from app.resilience.aprl_integration import APRLEvaluator, generate_resilience_check_id, load_aprl_catalog
 from app.resilience.resilience_correlator import ResourceCorrelator, ResilienceGroupType
-
-# Load environment variables from .env file
-# Look for .env in the backend directory (parent of app/)
-_backend_dir = Path(__file__).parent.parent.parent
-_env_file = _backend_dir / ".env"
-load_dotenv(_env_file)
+from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, ZonalData, ZonalResilienceSummary
+from app.settings import get_settings, load_settings
+from app.storage.llm_annotations_store import load_llm_annotations
+from app.storage.resilience_evaluations_store import save_resilience_evaluations
 
 LOGGER = get_logger(__name__)
 
@@ -53,7 +44,7 @@ def get_aoai_client(use_real_llm: bool) -> Optional[object]:
     This allows running in user login context without storing API keys.
     
     Args:
-        use_real_llm: Whether to enable real LLM (from config)
+        use_real_llm: Whether to enable LLM (from merged toggle)
         
     Returns:
         AzureOpenAI client or None if disabled or credentials missing
@@ -68,21 +59,22 @@ def get_aoai_client(use_real_llm: bool) -> Optional[object]:
         LOGGER.warning("OpenAI or azure-identity package not installed. LLM disabled.")
         return None
     
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    aoai_cfg = get_settings().get_azure_openai_config()
+    endpoint = aoai_cfg["endpoint"]
+    deployment = aoai_cfg["deployment"]
     
     if not endpoint or not deployment:
         LOGGER.warning(
-            "LLM enabled but AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_DEPLOYMENT not set. LLM disabled."
+            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set. LLM disabled."
         )
         return None
     
     try:
-        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-        timeout_seconds = int(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "60"))
+        api_version = aoai_cfg["api_version"]
+        timeout_seconds = aoai_cfg["timeout_seconds"]
         
         # Prefer API key if provided; otherwise use Azure AD (DefaultAzureCredential)
-        api_key = os.getenv("AZURE_OPENAI_KEY")
+        api_key = aoai_cfg.get("api_key")
         if api_key:
             client = AzureOpenAI(
                 azure_endpoint=endpoint,

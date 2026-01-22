@@ -2,26 +2,21 @@
 
 ## Local Development with Azure OpenAI
 
-To enable LLM-based architecture annotation in your local environment:
+To enable LLM-based architecture annotation in your local environment, edit `backend/config/app_config.yaml`:
 
-### 1. Copy the example file
-```bash
-cd backend
-cp .env.example .env
+```yaml
+azure_openai:
+  endpoint: "https://<your-resource>.openai.azure.com/"
+  deployment: "<your-deployment-name>"
+  api_key: ""  # optional; leave empty to use DefaultAzureCredential
+
+llm:
+  enabled: true
 ```
 
-### 2. Fill in your Azure OpenAI credentials
-Edit `backend/.env` and set:
+Get endpoint/deployment from your Azure OpenAI resource in the Azure Portal.
 
-```env
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=<your-deployment-name>
-USE_REAL_LLM=true
-```
-
-Get these values from your Azure OpenAI resource in the Azure Portal.
-
-### 3. Ensure DefaultAzureCredential is configured
+### 2. Ensure DefaultAzureCredential is configured
 The backend uses **DefaultAzureCredential**, which checks (in order):
 1. Environment variables (`AZURE_*`)
 2. Managed Identity (if running in Azure)
@@ -104,12 +99,10 @@ logging:
 
 ```yaml
 llm:
-  use_real_llm: true           # Enable/disable LLM features
-  annotation_enabled: true     # Include LLM annotations in API responses
+  enabled: true                # Enable/disable LLM (compute + serve)
 ```
 
-- **use_real_llm**: Enable/disable the LLM annotation engine. Set to `false` to skip LLM processing entirely (useful for testing without Azure OpenAI).
-- **annotation_enabled**: Control whether LLM annotations appear in API responses even when pre-computed.
+- **enabled**: Toggle LLM end-to-end. Set to `false` to skip processing and serving LLM annotations.
 
 ### Resilience Analysis Configuration
 

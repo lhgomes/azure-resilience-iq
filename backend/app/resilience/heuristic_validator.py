@@ -103,9 +103,11 @@ class HeuristicValidator:
         Args:
             aoai_client: Optional Azure OpenAI client for LLM analysis
         """
+        settings = load_settings()
         self.aoai_client = aoai_client
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
-        self.learn_more_defaults = load_settings().get_learn_more_defaults()
+        self.learn_more_defaults = settings.get_learn_more_defaults()
+        self.aoai_config = settings.get_azure_openai_config()
 
     @staticmethod
     def _extract_keywords(text: str) -> List[str]:
@@ -332,11 +334,9 @@ class HeuristicValidator:
         if not self.aoai_client:
             return None
         
-        # Get deployment name from environment
-        import os
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        deployment = self.aoai_config.get("deployment")
         if not deployment:
-            LOGGER.warning("AZURE_OPENAI_DEPLOYMENT not set, cannot use LLM")
+            LOGGER.warning("azure_openai.deployment not set, cannot use LLM")
             return None
         
         prompt = f"""You are an Azure resilience expert. Given this recommendation, suggest how to validate if an Azure resource complies.
@@ -459,8 +459,7 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
         if not self.aoai_client:
             return False, None
         
-        import os
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        deployment = self.aoai_config.get("deployment")
         if not deployment:
             return False, None
         
@@ -555,8 +554,7 @@ RETURN ONLY VALID JSON."""
         if not self.aoai_client:
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
-        import os
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        deployment = self.aoai_config.get("deployment")
         if not deployment:
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
@@ -622,9 +620,8 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
                 }
                 for item in pending_items
             }
-
-        import os
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        
+        deployment = self.aoai_config.get("deployment")
         if not deployment:
             return {
                 item['id']: {
@@ -912,9 +909,8 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
                 }
                 for item in pending_items
             }
-
-        import os
-        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        
+        deployment = self.aoai_config.get("deployment")
         if not deployment:
             return {
                 item['id']: {

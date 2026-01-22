@@ -1,8 +1,17 @@
 from __future__ import annotations
+import uuid
 from typing import Any, Dict, Iterable, Optional
 
 def norm_id(resource_id: str) -> str:
     return (resource_id or "").strip().lower()
+
+
+def short_id(resource_id: str) -> str:
+    """Deterministic compact ID derived from the canonical ARM ID."""
+    rid = norm_id(resource_id)
+    if not rid:
+        return ""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, rid))
 
 def safe_get(d: Dict[str, Any], path: str) -> Any:
     """

@@ -6,15 +6,13 @@ and available icon files. It should be run once to generate the mapping.
 """
 
 import json
-import os
 from pathlib import Path
 from typing import Dict, List, Set
+
 from azure.identity import DefaultAzureCredential
 from openai import AzureOpenAI
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+from app.settings import load_settings
 
 
 def get_all_icon_files(icons_dir: Path) -> Dict[str, List[str]]:
@@ -178,12 +176,12 @@ def generate_icon_mappings_with_llm(
     resource_types: List[str],
     icon_categories: Dict[str, List[str]],
     client: AzureOpenAI,
+    deployment: str,
     batch_size: int = 100
 ) -> Dict[str, str]:
     """Use LLM to generate mappings from resource types to icon paths in batches."""
     
     all_mappings = {}
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
     
     # Process in batches to avoid token limits
     for i in range(0, len(resource_types), batch_size):
@@ -269,10 +267,11 @@ def main():
     """Generate icon mappings and save to file."""
     
     # Get paths
+    settings = load_settings()
     backend_dir = Path(__file__).parent.parent.parent
     frontend_dir = backend_dir.parent / "frontend"
     icons_dir = frontend_dir / "public" / "Icons"
-    data_dir = backend_dir / "data"
+    data_dir = Path(settings.get_data_dir())
     output_file = data_dir / "iconMappings.json"
     
     print(f"Scanning icons from: {icons_dir}")
@@ -285,9 +284,15 @@ def main():
     print(f"Using {len(resource_types)} Azure resource types from Microsoft ARI documentation")
     
     # Initialize Azure OpenAI client
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-    api_key = os.getenv("AZURE_OPENAI_KEY")
+    aoai_cfg = settings.get_azure_openai_config()
+    endpoint = aoai_cfg["endpoint"]
+    api_version = aoai_cfg["api_version"]
+    deployment = aoai_cfg["deployment"]
+    api_key = aoai_cfg.get("api_key")
+
+    if not endpoint or not deployment:
+        print("Azure OpenAI configuration missing endpoint or deployment; aborting icon generation.")
+        return
     
     if api_key:
         client = AzureOpenAI(
@@ -309,7 +314,8 @@ def main():
     mappings = generate_icon_mappings_with_llm(
         sorted(resource_types),
         icon_categories,
-        client
+        client,
+        deployment,
     )
     
     if not mappings:
