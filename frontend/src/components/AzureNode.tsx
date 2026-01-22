@@ -452,8 +452,22 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
+        id="top-source"
+        type="source"
+        position={Position.Top} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
         id="bottom"
         type="source"
+        position={Position.Bottom} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
+        id="bottom-target"
+        type="target"
         position={Position.Bottom} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
@@ -466,8 +480,22 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
+        id="left-source"
+        type="source"
+        position={Position.Left} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
         id="right"
         type="source"
+        position={Position.Right} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
+        id="right-target"
+        type="target"
         position={Position.Right} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}

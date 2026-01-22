@@ -17,18 +17,17 @@ export function mergeGraphSnapshots(
   graphs: Array<{ subscriptionId: string; graph: GraphSnapshot }>,
 ): GraphSnapshot {
   const mergedNodes: Record<string, GraphNode> = {};
-  const mergedEdges: GraphEdge[] = [];
+  const pendingEdges: GraphEdge[] = [];
   const mergedLlmNodes = new Map<string, LlmNodeAnnotation>();
   const mergedLlmEdges = new Map<string, LlmEdgeSuggestion>();
   const mergedNodeOverrides: Record<string, Record<string, unknown>> = {};
   const mergedEdgeOverrides: Record<string, Record<string, unknown>> = {};
   const mergedGroups = new Map<string, NodeGroup>();
 
+  // First pass: merge nodes (adds subscription context)
   graphs.forEach(({ subscriptionId, graph }) => {
-    // Merge nodes, preserving first occurrence (they should be identical across subscriptions anyway)
     graph.nodes.forEach(node => {
       if (!mergedNodes[node.id]) {
-        // Add subscription context to node if not already present
         const nodeSub = (node as any)?.subscription_id;
         mergedNodes[node.id] = {
           ...node,
@@ -36,11 +35,13 @@ export function mergeGraphSnapshots(
         } as GraphNode;
       }
     });
+  });
 
-    // Merge edges, adjusting IDs if needed to avoid collisions
+  // Second pass: merge edges now that all nodes are known
+  graphs.forEach(({ subscriptionId, graph }) => {
     graph.edges.forEach(edge => {
       const edgeSub = (edge as any)?.subscription_id;
-      mergedEdges.push({
+      pendingEdges.push({
         ...edge,
         subscription_id: edgeSub || subscriptionId,
       } as GraphEdge);
@@ -98,9 +99,13 @@ export function mergeGraphSnapshots(
     }
   });
 
+  // Only keep edges whose endpoints both exist in the merged node set
+  const mergedNodeIds = new Set(Object.keys(mergedNodes));
+  const validEdges = pendingEdges.filter(edge => mergedNodeIds.has(edge.source) && mergedNodeIds.has(edge.target));
+
   return {
     nodes: Object.values(mergedNodes),
-    edges: mergedEdges,
+    edges: validEdges,
     llm_annotations:
       mergedLlmNodes.size || mergedLlmEdges.size
         ? {
