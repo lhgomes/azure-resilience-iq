@@ -471,7 +471,7 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
   const summary = data.summary || calculateSummary(sidebarFiltered, annotationMap);
 
   return (
-    <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
+    <div style={{ padding: "24px", paddingBottom: "64px", background: "#f9fafb", minHeight: "100vh" }}>
       {/* Header Section - Overview Card */}
       <div
         style={{
@@ -583,7 +583,6 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
                   borderRadius: "6px",
                   border: "1px solid #d1d5db",
                   fontSize: "12px",
-                  fontFamily: "inherit",
                 }}
               >
                 <option value="all">All Patterns</option>
@@ -609,7 +608,6 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
                   borderRadius: "6px",
                   border: "1px solid #d1d5db",
                   fontSize: "12px",
-                  fontFamily: "inherit",
                 }}
               >
                 <option value="name">Resource Name</option>

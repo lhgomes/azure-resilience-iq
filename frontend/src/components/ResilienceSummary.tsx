@@ -424,31 +424,21 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     return keys;
   }, [evaluations, resourceIdToServiceKey]);
 
-  // Default to all filters selected if not provided or empty
-  const effectiveResourceGroupFilter = useMemo(() => {
-    if (!resourceGroupFilter || resourceGroupFilter.size === 0) {
-      return allResourceGroups.size > 0 ? allResourceGroups : new Set<string>();
-    }
-    return new Set(Array.from(resourceGroupFilter).map(v => String(v).toLowerCase()));
-  }, [resourceGroupFilter, allResourceGroups]);
-
-  const effectiveServiceFilter = useMemo(() => {
-    if (!serviceFilter || serviceFilter.size === 0) {
-      return allServiceKeys.size > 0 ? allServiceKeys : new Set<string>();
-    }
-    return new Set(Array.from(serviceFilter).map(v => String(v).toLowerCase()));
-  }, [serviceFilter, allServiceKeys]);
-
   const resourceMatchesFilters = (resourceId: string, evaluation?: any): boolean => {
-    // Check resource group filter
-    if (effectiveResourceGroupFilter.size > 0) {
+    // If resourceGroupFilter is defined and empty, exclude everything
+    if (resourceGroupFilter !== undefined && resourceGroupFilter.size === 0) {
+      return false;
+    }
+
+    // Check resource group filter if it has items
+    if (resourceGroupFilter && resourceGroupFilter.size > 0) {
       // Prefer resource group from evaluation payload if present
       const evalRg = (evaluation?.resource_group || evaluation?.resource_group_name || evaluation?.resourceGroup || "")
         .toString()
         .toLowerCase();
 
       if (evalRg) {
-        if (!effectiveResourceGroupFilter.has(evalRg)) return false;
+        if (!resourceGroupFilter.has(evalRg)) return false;
       } else {
         // Fallback: extract from Azure resource ID
         // Format: /subscriptions/sub-id/resourceGroups/group-name/providers/...
@@ -460,18 +450,23 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             ? String(parts[rgIndex + 1]).toLowerCase()
             : null;
 
-        if (resourceGroup && !effectiveResourceGroupFilter.has(resourceGroup)) {
+        if (resourceGroup && !resourceGroupFilter.has(resourceGroup)) {
           return false;
         }
       }
     }
 
-    // Check service filter
-    if (effectiveServiceFilter.size > 0) {
+    // If serviceFilter is defined and empty, exclude everything
+    if (serviceFilter !== undefined && serviceFilter.size === 0) {
+      return false;
+    }
+
+    // Check service filter if it has items
+    if (serviceFilter && serviceFilter.size > 0) {
       const keyFromGraph = resourceIdToServiceKey.get(resourceId.toLowerCase());
       const keyFromEval = normalizeTypeString(evaluation?.resource_type);
       const serviceKey = String((keyFromGraph ?? keyFromEval ?? "") as string).toLowerCase();
-      if (serviceKey && !effectiveServiceFilter.has(serviceKey)) return false;
+      if (serviceKey && !serviceFilter.has(serviceKey)) return false;
     }
 
     return true;
@@ -481,7 +476,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     return Object.entries(evaluations).filter(([resourceId, evaluation]) =>
       resourceMatchesFilters(resourceId, evaluation)
     );
-  }, [evaluations, effectiveResourceGroupFilter, effectiveServiceFilter, resourceIdToServiceKey]);
+  }, [evaluations, resourceGroupFilter, serviceFilter, resourceIdToServiceKey]);
 
   const getResourceDisplayName = (resourceId: string, defaultName: string): string => {
     // Check if this is a subscription-level resource (/subscriptions/{id})
@@ -1300,7 +1295,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   };
 
   return (
-    <div style={{ padding: "24px", paddingBottom: "64px", fontFamily: "Segoe UI, system-ui, sans-serif", background: "#f9fafb", display: "flex", flexDirection: "column" }}>
+    <div style={{ padding: "24px", paddingBottom: "64px", background: "#f9fafb", display: "flex", flexDirection: "column" }}>
       {/* Header Section - Overview Card */}
       <div
         style={{

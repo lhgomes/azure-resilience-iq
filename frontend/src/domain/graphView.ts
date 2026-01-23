@@ -408,9 +408,19 @@ export function buildViewGraph(args: {
       };
     })
     .filter(n => {
-      const typeAllowed = serviceFilter.size === 0 || serviceFilter.has((n as any).type);
+      // If resourceGroupFilter is defined and empty, exclude everything
+      if (resourceGroupFilter.size === 0) {
+        return false;
+      }
+      
+      // If serviceFilter is defined and empty, exclude everything
+      if (serviceFilter.size === 0) {
+        return false;
+      }
+
+      const typeAllowed = serviceFilter.has((n as any).type);
       const rgInfo = extractResourceGroup(n);
-      const groupAllowed = resourceGroupFilter.size === 0 || !rgInfo || resourceGroupFilter.has(rgInfo.key);
+      const groupAllowed = !rgInfo || resourceGroupFilter.has(rgInfo.key);
       return typeAllowed && groupAllowed;
     });
 
