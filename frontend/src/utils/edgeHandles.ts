@@ -31,16 +31,32 @@ export function getEdgeHandles(
   targetPos: { x: number; y: number }
 ): { sourceHandle: string; targetHandle: string } {
   const sourceHandle = getClosestHandle(sourcePos, targetPos);
-  
-  // Target handle is opposite direction
+
+  // Map directions to actual handle IDs on AzureNode
+  const sourceMap: Record<string, string> = {
+    top: "top-source",
+    bottom: "bottom",
+    left: "left-source",
+    right: "right",
+  };
+
+  const targetMap: Record<string, string> = {
+    top: "top",
+    bottom: "bottom-target",
+    left: "left",
+    right: "right-target",
+  };
+
+  const mappedSource = sourceMap[sourceHandle] ?? "bottom";
+
   const opposites: Record<string, string> = {
     top: "bottom",
     bottom: "top",
     left: "right",
     right: "left",
   };
-  
-  const targetHandle = opposites[sourceHandle];
+  const targetDir = opposites[sourceHandle];
+  const mappedTarget = targetMap[targetDir] ?? "top";
 
-  return { sourceHandle, targetHandle };
+  return { sourceHandle: mappedSource, targetHandle: mappedTarget };
 }

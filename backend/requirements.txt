@@ -1,0 +1,18 @@
+# Core application dependencies
+azure-identity
+azure-mgmt-network
+azure-mgmt-resourcegraph
+azure-mgmt-subscription  # required for subscription name lookup
+fastapi
+httpx
+openai
+pydantic
+pyyaml
+python-dotenv
+python-hcl2
+python-multipart
+uvicorn
+
+# Tooling and tests
+pytest
+yamale

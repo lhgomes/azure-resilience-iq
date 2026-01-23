@@ -90,4 +90,59 @@ def extract_private_endpoint_relationships(resources_by_id: Dict[str, Dict[str, 
                     [{"field": "privateDnsZoneConfigs[].properties.privateDnsZoneId", "value": zone_id}],
                 ))
 
+    # Resources with privateEndpointConnections (like KeyVault, Storage, Registry)
+    # Extract DNS zone associations from privateEndpointConnections[].properties.privateDnsZoneConfigs[]
+    for rid, r in resources_by_id.items():
+        rtype = (r.get("type") or "").lower()
+        
+        # KeyVault, Storage, Container Registry, etc. can have private endpoints
+        if rtype not in [
+            "microsoft.keyvault/vaults",
+            "microsoft.storage/storageaccounts",
+            "microsoft.containerregistry/registries",
+            "microsoft.dbforpostgresql/flexibleservers",
+            "microsoft.dbformysql/flexibleservers",
+            "microsoft.sql/servers"
+        ]:
+            continue
+
+        props: Dict[str, Any] = r.get("properties") or {}
+        pe_conns = props.get("privateEndpointConnections") or []
+
+        for pe_conn in pe_conns:
+            conn_props = (pe_conn or {}).get("properties") or {}
+            
+            # Extract private DNS zone configs from the connection
+            dns_zone_configs = conn_props.get("privateDnsZoneConfigs") or []
+            
+            for dns_cfg in dns_zone_configs:
+                zone_id = safe_get(dns_cfg or {}, "properties.privateDnsZoneId")
+                zone_name = safe_get(dns_cfg or {}, "name")
+                
+                if isinstance(zone_id, str) and zone_id.strip():
+                    # Resource → Private DNS Zone via private endpoint
+                    edges.append((
+                        rid,
+                        norm_id(zone_id),
+                        "uses_private_dns_zone",
+                        "arg",
+                        0.85,
+                        [{"field": "privateEndpointConnections[].privateDnsZoneConfigs[].privateDnsZoneId", "value": zone_id}],
+                    ))
+                elif isinstance(zone_name, str) and zone_name.strip():
+                    # Fallback: try to find DNS zone by name if ID not available
+                    # This is useful when the zone ID is not populated but the name is
+                    for resource_id, resource in resources_by_id.items():
+                        if "microsoft.network/privatednszones" in (resource.get("type") or "").lower():
+                            if (resource.get("name") or "").lower() == zone_name.lower():
+                                edges.append((
+                                    rid,
+                                    resource_id,
+                                    "uses_private_dns_zone",
+                                    "heuristic",
+                                    0.8,
+                                    [{"field": "privateEndpointConnections[].privateDnsZoneConfigs[].name", "value": zone_name}],
+                                ))
+                                break
+
     return edges, synthetic

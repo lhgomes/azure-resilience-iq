@@ -228,7 +228,6 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           border: selected ? "3px solid #f59e0b" : "2px solid #b7b8baff",
           width: "180px",
           textAlign: "center",
-          fontFamily: "Segoe UI, system-ui, sans-serif",
           boxShadow: selected 
             ? "0 0 20px rgba(245, 158, 11, 0.6)" 
             : "0 4px 12px rgba(0,0,0,0.15)",
@@ -452,8 +451,22 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
+        id="top-source"
+        type="source"
+        position={Position.Top} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
         id="bottom"
         type="source"
+        position={Position.Bottom} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
+        id="bottom-target"
+        type="target"
         position={Position.Bottom} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
@@ -466,8 +479,22 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
         style={{ background: "#0078d4", width: "8px", height: "8px" }}
       />
       <Handle 
+        id="left-source"
+        type="source"
+        position={Position.Left} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
         id="right"
         type="source"
+        position={Position.Right} 
+        isConnectable={isConnectable}
+        style={{ background: "#0078d4", width: "8px", height: "8px" }}
+      />
+      <Handle 
+        id="right-target"
+        type="target"
         position={Position.Right} 
         isConnectable={isConnectable}
         style={{ background: "#0078d4", width: "8px", height: "8px" }}

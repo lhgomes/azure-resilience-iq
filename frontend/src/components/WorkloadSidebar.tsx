@@ -1,6 +1,6 @@
 import React from "react";
 import type { ViewLevel } from "../domain/graphView";
-import { AddRegular, DeleteRegular, EditRegular, Save16Regular } from "@fluentui/react-icons";
+import { AddRegular, CheckmarkRegular, DeleteRegular, DismissRegular, EditRegular, Save16Regular } from "@fluentui/react-icons";
 
 export interface SubscriptionOption {
   id: string;
@@ -123,7 +123,6 @@ const WorkloadSidebar: React.FC<Props> = props => {
         overflowY: "auto",
         overflowX: "hidden",
         color: "#323130",
-        fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
       }}
     >
       {/* Workload Section */}
@@ -288,25 +287,49 @@ const WorkloadSidebar: React.FC<Props> = props => {
       <div style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Subscriptions</h3>
-          <button
-            onClick={() => {
-              const allSubscriptions = props.subscriptions.map(s => s.id);
-              props.onSelectedSubscriptionsChange(new Set(allSubscriptions));
-            }}
-            style={{
-              background: "transparent",
-              border: "none",
-              color: "#0078d4",
-              cursor: "pointer",
-              fontSize: 12,
-              padding: "2px 0",
-              textDecoration: "underline",
-            }}
-            onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
-            onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
-          >
-            Select All
-          </button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={() => {
+                const allSubscriptions = props.subscriptions.map(s => s.id);
+                props.onSelectedSubscriptionsChange(new Set(allSubscriptions));
+              }}
+              title="Select All"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#0078d4",
+                cursor: "pointer",
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+              onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
+            >
+              <CheckmarkRegular style={{ fontSize: 16 }} />
+            </button>
+            <button
+              onClick={() => {
+                props.onSelectedSubscriptionsChange(new Set());
+              }}
+              title="Uncheck All"
+              style={{
+                background: "transparent",
+                border: "none",
+                color: "#a4262c",
+                cursor: "pointer",
+                padding: "2px 4px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+              onMouseEnter={e => e.currentTarget.style.color = "#750b1c"}
+              onMouseLeave={e => e.currentTarget.style.color = "#a4262c"}
+            >
+              <DismissRegular style={{ fontSize: 16 }} />
+            </button>
+          </div>
         </div>
         <div
           style={{
@@ -410,25 +433,49 @@ const WorkloadSidebar: React.FC<Props> = props => {
             <div style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Resource Groups</h3>
-                <button
-                  onClick={() => {
-                    const allGroups = props.resourceGroupOptions.map(rg => rg.key);
-                    props.onResourceGroupFilterChange(new Set(allGroups));
-                  }}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "#0078d4",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    padding: "2px 0",
-                    textDecoration: "underline",
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
-                  onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
-                >
-                  Select All
-                </button>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    onClick={() => {
+                      const allGroups = props.resourceGroupOptions.map(rg => rg.key);
+                      props.onResourceGroupFilterChange(new Set(allGroups));
+                    }}
+                    title="Select All"
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "#0078d4",
+                      cursor: "pointer",
+                      padding: "2px 4px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+                    onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
+                  >
+                    <CheckmarkRegular style={{ fontSize: 16 }} />
+                  </button>
+                  <button
+                    onClick={() => {
+                      props.onResourceGroupFilterChange(new Set());
+                    }}
+                    title="Uncheck All"
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "#a4262c",
+                      cursor: "pointer",
+                      padding: "2px 4px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.color = "#750b1c"}
+                    onMouseLeave={e => e.currentTarget.style.color = "#a4262c"}
+                  >
+                    <DismissRegular style={{ fontSize: 16 }} />
+                  </button>
+                </div>
               </div>
               <div
                 style={{
@@ -478,25 +525,49 @@ const WorkloadSidebar: React.FC<Props> = props => {
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Services</h3>
-              <button
-                onClick={() => {
-                  const allServices = props.serviceOptions.flatMap(cat => cat.services.map(s => s.key));
-                  props.onServiceFilterChange(new Set(allServices));
-                }}
-                style={{
-                  background: "transparent",
-                  border: "none",
-                  color: "#0078d4",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  padding: "2px 0",
-                  textDecoration: "underline",
-                }}
-                onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
-                onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
-              >
-                Select All
-              </button>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  onClick={() => {
+                    const allServices = props.serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+                    props.onServiceFilterChange(new Set(allServices));
+                  }}
+                  title="Select All"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#0078d4",
+                    cursor: "pointer",
+                    padding: "2px 4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
+                >
+                  <CheckmarkRegular style={{ fontSize: 16 }} />
+                </button>
+                <button
+                  onClick={() => {
+                    props.onServiceFilterChange(new Set());
+                  }}
+                  title="Uncheck All"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#a4262c",
+                    cursor: "pointer",
+                    padding: "2px 4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#750b1c"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#a4262c"}
+                >
+                  <DismissRegular style={{ fontSize: 16 }} />
+                </button>
+              </div>
             </div>
             <div
               style={{

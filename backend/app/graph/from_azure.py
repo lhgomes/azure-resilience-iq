@@ -265,11 +265,8 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
         if me.id in existing_ids:
             continue
 
-        # Allow cross-subscription manual edges by only requiring the source
-        # node to exist in the current subscription graph.
-        if norm_id(me.source) not in gb.nodes:
-            continue
-
+        # Manual edges can be cross-subscription, so don't filter based on node existence.
+        # The frontend will handle filtering edges whose endpoints aren't visible.
         merged_edges.append(Edge(
             id=me.id,
             source=norm_id(me.source),
