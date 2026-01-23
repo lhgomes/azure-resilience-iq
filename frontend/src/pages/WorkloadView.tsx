@@ -593,13 +593,6 @@ const WorkloadView: React.FC = () => {
   }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
   useEffect(() => {
-    if (serviceOptions.length && serviceFilter.size === 0) {
-      const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
-      setServiceFilter(new Set(allServices));
-    }
-  }, [serviceOptions, serviceFilter.size]);
-
-  useEffect(() => {
     if (!serviceOptions.length) {
       if (expandedCategories.size) setExpandedCategories(new Set());
       return;
@@ -629,18 +622,8 @@ const WorkloadView: React.FC = () => {
       return;
     }
 
-    const optionKeys = new Set(resourceGroupOptions.map(opt => opt.key));
-
-    setResourceGroupFilter(prev => {
-      // If nothing selected yet, default to all available groups.
-      if (prev.size === 0) {
-        return new Set(optionKeys);
-      }
-
-      // Keep the user's current selection; avoid shrinking it when the option list changes.
-      // This prevents transient option recalculation from hiding nodes unexpectedly.
-      return prev;
-    });
+    // Keep the user's current selection; avoid shrinking it when the option list changes.
+    // This prevents transient option recalculation from hiding nodes unexpectedly.
   }, [resourceGroupOptions, resourceGroupFilter.size]);
 
   // Build annotation map for element weight lookup
@@ -1761,7 +1744,8 @@ const WorkloadView: React.FC = () => {
         display: "flex",
         height: "100vh",
         width: "100%",
-        overflow: "hidden"
+        overflow: "hidden",
+        fontFamily: "Segoe UI, Tahoma, Geneva, Verdana, sans-serif",
       }}
     >
       {/* Left sidebar */}

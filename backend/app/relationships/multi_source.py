@@ -11,6 +11,7 @@ from .signal_types import SignalType, SignalSource, calculate_aggregated_confide
 from .extract_networking import extract_networking_relationships
 from .extract_aks import extract_aks_relationships
 from .extract_private_endpoints import extract_private_endpoint_relationships
+from .extract_access_rules import extract_database_firewall_relationships, extract_role_assignment_relationships
 from .extract_appinsights import extract_appinsights_signals
 from .extract_connections import extract_connection_string_signals
 from .extract_dns import extract_dns_signals
@@ -38,8 +39,9 @@ class UnifiedEdge:
 class MultiSourceAggregator:
     """Aggregates dependency signals from all detection methods"""
     
-    def __init__(self, resources_by_id: Dict[str, Dict[str, Any]]):
+    def __init__(self, resources_by_id: Dict[str, Dict[str, Any]], role_assignments: List[Dict[str, Any]] = None):
         self.resources_by_id = resources_by_id
+        self.role_assignments = role_assignments or []
         self.edges_by_key: Dict[str, UnifiedEdge] = {}
     
     def extract_all_signals(
@@ -65,6 +67,8 @@ class MultiSourceAggregator:
         self._extract_private_endpoint_signals()
         self._extract_aks_signals()
         self._extract_nsg_udr_signals()
+        self._extract_database_firewall_signals()
+        self._extract_role_assignment_signals()
         
         # Extract from configuration sources
         self._extract_connection_string_signals()
@@ -447,6 +451,49 @@ class MultiSourceAggregator:
             elif priority2 > priority1:
                 edges_to_remove.add(key1)
         
+        # Remove duplicates
+        for key in edges_to_remove:
+            self.edges_by_key.pop(key, None)
+    
+    def _extract_database_firewall_signals(self):
+        """Extract signals from database firewall rules and VNet rules"""
+        edges = extract_database_firewall_relationships(self.resources_by_id)
+        
+        for source, target, relationship, source_type, confidence, evidence in edges:
+            self._add_signal(
+                source=source,
+                target=target,
+                relationship=relationship,
+                signal=SignalSource(
+                    type=SignalType.ARM_DECLARED if source_type == "arg" else SignalType.HEURISTIC,
+                    confidence=confidence,
+                    evidence=evidence,
+                    timestamp=datetime.utcnow().isoformat() + 'Z',
+                    source_resource=source_type
+                )
+            )
+    
+    def _extract_role_assignment_signals(self):
+        """Extract signals from RBAC role assignments"""
+        if not self.role_assignments:
+            return
+        
+        edges = extract_role_assignment_relationships(self.resources_by_id, self.role_assignments)
+        
+        for source, target, relationship, source_type, confidence, evidence in edges:
+            self._add_signal(
+                source=source,
+                target=target,
+                relationship=relationship,
+                signal=SignalSource(
+                    type=SignalType.ARM_DECLARED,  # RBAC is ARM-managed
+                    confidence=confidence,
+                    evidence=evidence,
+                    timestamp=datetime.utcnow().isoformat() + 'Z',
+                    source_resource=source_type
+                )
+            )
+
         # Remove marked edges
         for key in edges_to_remove:
             del self.edges_by_key[key]

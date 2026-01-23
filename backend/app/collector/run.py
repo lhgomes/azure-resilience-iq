@@ -1,9 +1,9 @@
 import json
 import argparse
-from typing import List
+from typing import List, Dict, Any
 
 from azure.identity import AzureCliCredential
-from .arg import query_resources
+from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.relationships.multi_source import MultiSourceAggregator
@@ -55,12 +55,47 @@ def main():
         allowed_types=sorted(allowed_types) if allowed_types else None,
     )
 
+    # Query subresources (Private DNS Zone Groups, Firewall Rules)
+    print("🔍 Querying subresources (DNS zone groups, firewall rules)...")
+    subresources = query_subresources(
+        subscription_id=args.subscription_id,
+        resource_groups=normalize_resource_groups(args.resource_group) if args.resource_group else None,
+    )
+    print(f"✔ Found {len(subresources)} subresources")
+
+    # Query role assignments for permission-based relationships
+    print("🔍 Querying role assignments (ACR pull, Key Vault, Storage)...")
+    role_assignments = query_role_assignments(
+        subscription_id=args.subscription_id,
+        resource_groups=normalize_resource_groups(args.resource_group) if args.resource_group else None,
+    )
+    print(f"✔ Found {len(role_assignments)} relevant role assignments")
+
+    # Combine all resources
+    all_resources = resources + subresources
+
     # Normalize all resource IDs at the source
     normalized_resources = []
-    for r in resources:
+    for r in all_resources:
         resource_dict = r.model_dump()
+        
+        # Normalize all id fields (main id and nested ids in properties)
+        resource_dict = normalize_id_fields(resource_dict)
+        
+        # Ensure main fields are normalized
         resource_dict['id'] = norm_id(resource_dict['id'])
         resource_dict['short_id'] = short_id(resource_dict['id'])
+        
+        # Normalize parent and related id fields
+        if resource_dict.get('parent_resource_id'):
+            resource_dict['parent_resource_id'] = norm_id(resource_dict['parent_resource_id'])
+        if resource_dict.get('backend_pool_ids'):
+            resource_dict['backend_pool_ids'] = [norm_id(bid) for bid in resource_dict['backend_pool_ids']]
+        if resource_dict.get('failover_group_id'):
+            resource_dict['failover_group_id'] = norm_id(resource_dict['failover_group_id'])
+        if resource_dict.get('child_resource_ids'):
+            resource_dict['child_resource_ids'] = [norm_id(cid) for cid in resource_dict['child_resource_ids']]
+        
         # Explicitly mark collected Azure resources as non-virtual
         resource_dict['virtual'] = False
         normalized_resources.append(resource_dict)
@@ -68,7 +103,7 @@ def main():
     # Defensive post-filter in case upstream query filtering is adjusted
     normalized_resources, _ = filter_resources_by_type(normalized_resources, allowed_types)
     if allowed_types:
-        print(f"ℹ️ Filtered to {len(normalized_resources)} HA/DR resource-type resources (from {len(resources)})")
+        print(f"ℹ️ Filtered to {len(normalized_resources)} HA/DR resource-type resources (from {len(all_resources)})")
     
     output = normalized_resources
     # Build lookup by normalized ID
@@ -85,7 +120,8 @@ def main():
     resources_output = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
-        "resources": output
+        "resources": output,
+        "role_assignments": role_assignments  # Include role assignments in output
     }
     
     out_file = get_resources_path(args.subscription_id)
@@ -97,7 +133,7 @@ def main():
     
     # Extract multi-source signals
     print("📊 Extracting multi-source signals...")
-    aggregator = MultiSourceAggregator(resources_by_id)
+    aggregator = MultiSourceAggregator(resources_by_id, role_assignments)
     
     # Prepare optional runtime data (stub for now)
     appinsights_data = None

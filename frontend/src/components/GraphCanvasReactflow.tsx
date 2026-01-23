@@ -547,6 +547,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       const src = mapEndpoint(e.source);
       const tgt = mapEndpoint(e.target);
 
+      // If an endpoint is remapped to a group, clear handles to let React Flow default them
+      const sourceHandle = src !== e.source ? undefined : e.sourceHandle;
+      const targetHandle = tgt !== e.target ? undefined : e.targetHandle;
+
       // Hide internal edges inside a collapsed group.
       if (src === tgt && collapsedGroupIds.has(src)) continue;
 
@@ -562,6 +566,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           id: `agg-${key}`,
           source: src,
           target: tgt,
+          sourceHandle,
+          targetHandle,
           data: { ...data },
         };
         agg.set(key, { base: cloned, count: 1 });
@@ -583,8 +589,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
   }, [edgesWithHandles, groups]);
 
+  // Ensure we never pass an edge whose endpoints are missing from the composed node set.
+  const composedNodeIds = useMemo(() => new Set(composedNodes.map(n => n.id)), [composedNodes]);
+  const safeEdges = useMemo(
+    () => composedEdges.filter(e => composedNodeIds.has(e.source) && composedNodeIds.has(e.target)),
+    [composedEdges, composedNodeIds]
+  );
+
   const [flowNodes, setFlowNodes, onNodesChangeDefault] = useNodesState(composedNodes);
-  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(composedEdges);
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(safeEdges);
 
   // Expose fitView to parent via ref
   useImperativeHandle(ref, () => ({
