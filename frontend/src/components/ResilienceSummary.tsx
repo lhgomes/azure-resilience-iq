@@ -50,6 +50,7 @@ interface ResilienceSummaryProps {
   viewLevel?: ViewLevel;
   resourceGroupFilter?: Set<string>;
   serviceFilter?: Set<string>;
+  validationSourceFilter?: Set<string>;
   onOverrideSaved?: (override: ResilienceOverride) => void;
   onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
 }
@@ -224,6 +225,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   viewLevel,
   resourceGroupFilter,
   serviceFilter,
+  validationSourceFilter,
   onOverrideSaved,
   onOverrideDeleted,
 }) => {
@@ -472,6 +474,34 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     return true;
   };
 
+  const checkMatchesFilters = (check: any): boolean => {
+    // If validationSourceFilter is defined and empty, exclude everything
+    if (validationSourceFilter !== undefined && validationSourceFilter.size === 0) {
+      return false;
+    }
+
+    // Check validation source filter if it has items
+    if (validationSourceFilter && validationSourceFilter.size > 0) {
+      if (check.validation_source) {
+        const sourceList = Array.isArray(check.validation_source)
+          ? check.validation_source
+          : [check.validation_source];
+        
+        // Check if any of the sources match the filter
+        const hasMatchingSource = sourceList.some((source: string) => 
+          validationSourceFilter.has(source)
+        );
+        
+        if (!hasMatchingSource) return false;
+      } else {
+        // If check has no validation_source and filter is active, exclude it
+        return false;
+      }
+    }
+
+    return true;
+  };
+
   const filteredEvaluationEntries = useMemo(() => {
     return Object.entries(evaluations).filter(([resourceId, evaluation]) =>
       resourceMatchesFilters(resourceId, evaluation)
@@ -533,25 +563,28 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
           }
           return finding;
         });
+
+        // Apply validation source filter at the check level
+        const filteredChecks = checksOrFindings.filter(checkMatchesFilters);
         
         // Recalculate passed/failed counts
-        const passed = checksOrFindings.filter((f: any) => f.status === "pass").length;
-        const failed = checksOrFindings.filter((f: any) => f.status === "fail").length;
+        const passed = filteredChecks.filter((f: any) => f.status === "pass").length;
+        const failed = filteredChecks.filter((f: any) => f.status === "fail").length;
         
         return [
           resourceId,
           {
             ...evaluation,
-            findings: evaluation.findings ? checksOrFindings : undefined,
-            checks: evaluation.checks ? checksOrFindings : undefined,
+            findings: evaluation.findings ? filteredChecks : undefined,
+            checks: evaluation.checks ? filteredChecks : undefined,
             passed_checks: passed,
             failed_checks: failed,
-            total_checks: checksOrFindings.length,
+            total_checks: filteredChecks.length,
           }
         ];
       })
     );
-  }, [filteredEvaluationEntries, userOverrides]);
+  }, [filteredEvaluationEntries, userOverrides, validationSourceFilter]);
 
   const stats = useMemo(() => {
     let totalChecks = 0;
@@ -947,6 +980,22 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             resourceName: evaluation.resource_name,
           };
         })
+        // Apply sidebar validation source filter first
+        .filter((f: any) => {
+          if (validationSourceFilter === undefined || validationSourceFilter.size === 0) {
+            return true;
+          }
+          if (validationSourceFilter.size > 0) {
+            const sourceList = Array.isArray(f.validation_source)
+              ? f.validation_source
+              : f.validation_source ? [f.validation_source] : [];
+            const hasMatchingSource = sourceList.some((source: string) => 
+              validationSourceFilter.has(source)
+            );
+            return hasMatchingSource;
+          }
+          return true;
+        })
         .filter((f: any) => filterStatus === "all" || (filterStatus === "pending" ? f.status === "pending" : f.status === filterStatus))
         .filter((f: any) => {
           if (!showSubscriptionColumn || !filterSubscription) return true;
@@ -1033,7 +1082,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return findings;
-  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, filterSubscription, showSubscriptionColumn, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights, subscriptionNameMap]);
+  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, filterSubscription, showSubscriptionColumn, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights, subscriptionNameMap, validationSourceFilter]);
 
   // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
   // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
@@ -1043,7 +1092,10 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     filteredEvaluationEntries.forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
-      checksOrFindings.forEach((finding: any) => {
+      // Respect validation source filter when computing weights
+      const visibleChecks = checksOrFindings.filter(checkMatchesFilters);
+
+      visibleChecks.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
         const categoryWeight = categoryWeights[category] || 0.05;
@@ -1052,7 +1104,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     });
 
     return total;
-  }, [filteredEvaluationEntries, impactWeights, categoryWeights, getElementWeight]);
+  }, [filteredEvaluationEntries, impactWeights, categoryWeights, getElementWeight, validationSourceFilter]);
 
   // Calculate contribution_percent dynamically based on visible filtered checks
   const findingsWithContribution = useMemo(() => {
