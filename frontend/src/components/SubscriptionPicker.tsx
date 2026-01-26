@@ -36,7 +36,7 @@ const SubscriptionPicker: React.FC<SubscriptionPickerProps> = ({
       <div className="subscription-picker-overlay">
         <div className="subscription-picker-container">
           <div className="picker-header">
-            <h1>Azure Resilience IQ</h1>
+            <h1>Azure Resiliency IQ</h1>
             <p>Select a subscription to analyze</p>
           </div>
 

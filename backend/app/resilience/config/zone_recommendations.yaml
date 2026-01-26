@@ -1,4 +1,4 @@
-# Zone Resilience Recommendations Configuration Schema
+# Zone Resiliency Recommendations Configuration Schema
 #
 # This file defines recommendations for Azure resources based on their zone deployment patterns.
 # Each recommendation is mapped to specific deployment patterns (single_zone, multi_zone, etc.)

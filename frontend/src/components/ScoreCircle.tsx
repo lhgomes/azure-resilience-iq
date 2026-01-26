@@ -15,7 +15,7 @@ const ScoreCircle: React.FC<ScoreCircleProps> = ({
   score,
   size = 120,
   showLabel = true,
-  label = 'Resilience Score'
+  label = 'Resiliency Score'
 }) => {
   const radius = (size / 2) - 10;
   const circumference = 2 * Math.PI * radius;

@@ -1,5 +1,5 @@
 """
-APRL Resilience Evaluator CLI runner.
+APRL Resiliency Evaluator CLI runner.
 
 Usage:
   python -m app.resilience.run --subscription-id ebb79bc0-aa86-44a7-8111-cabbe0c43993
@@ -27,8 +27,8 @@ from typing import Any, Dict, List, Optional
 from app.config import get_resources_path, get_subscription_dir
 from app.logger import get_logger, setup_logging
 from app.resilience.aprl_integration import APRLEvaluator, generate_resilience_check_id, load_aprl_catalog
-from app.resilience.resilience_correlator import ResourceCorrelator, ResilienceGroupType
-from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, ZonalData, ZonalResilienceSummary
+from app.resilience.resilience_correlator import ResourceCorrelator, ResiliencyGroupType
+from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, ZonalData, ZonalResiliencySummary
 from app.settings import get_settings, load_settings
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
@@ -411,7 +411,7 @@ def analyze_and_save_zonal_resilience(
         "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
         "resilience_groups": {
             "count": len(resilience_groups),
-            "by_type": {gt.value: len(correlator.get_groups_by_type(gt)) for gt in ResilienceGroupType}
+            "by_type": {gt.value: len(correlator.get_groups_by_type(gt)) for gt in ResiliencyGroupType}
         },
         "resources": zonal_data_list,
     }
@@ -429,8 +429,8 @@ def analyze_and_save_zonal_resilience(
         LOGGER.warning(f"Failed to generate zone recommendation checks: {e}")
     
     LOGGER.info(f"✓ Zonal analysis complete: {output_file}")
-    LOGGER.info(f"  • Resilience groups: {len(resilience_groups)}")
-    for gt in ResilienceGroupType:
+    LOGGER.info(f"  • Resiliency groups: {len(resilience_groups)}")
+    for gt in ResiliencyGroupType:
         count = len(correlator.get_groups_by_type(gt))
         if count > 0:
             LOGGER.info(f"    - {gt.value}: {count}")
@@ -606,7 +606,7 @@ def main():
         # All calculations done client-side
         # ========================================
         # No scoring needed - frontend handles all calculations
-        LOGGER.info("✓ Resilience evaluation complete - all calculations done client-side")
+        LOGGER.info("✓ Resiliency evaluation complete - all calculations done client-side")
 
         # Run zonal resilience analysis with zone findings from evaluations
         try:
@@ -728,7 +728,7 @@ def main():
             total_passed += sum(1 for c in checks if c.get("status") == "pass")
             total_pending += sum(1 for c in checks if c.get("status") == "pending")
         LOGGER.info(
-            "✓ Resilience evaluation complete: %d resources, %d total checks (%d passed, %d failed, %d pending review)",
+            "✓ Resiliency evaluation complete: %d resources, %d total checks (%d passed, %d failed, %d pending review)",
             len(evaluations), total_checks, total_passed, total_failed, total_pending
         )
         return 0

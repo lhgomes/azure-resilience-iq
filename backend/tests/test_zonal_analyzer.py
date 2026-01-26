@@ -8,7 +8,7 @@ and summary statistics calculation.
 import pytest
 from app.resilience.zonal_analyzer import (
     ZonalAnalyzer,
-    ZonalResilienceSummary,
+    ZonalResiliencySummary,
     DeploymentPattern,
     ZonalData,
 )
@@ -177,12 +177,12 @@ class TestZonalAnalyzer:
         assert result.deployment_pattern == DeploymentPattern.SINGLE_ZONE
 
 
-class TestZonalResilienceSummary:
-    """Test suite for ZonalResilienceSummary class."""
+class TestZonalResiliencySummary:
+    """Test suite for ZonalResiliencySummary class."""
     
     def test_empty_resources(self):
         """Test summary with no resources."""
-        summary = ZonalResilienceSummary([])
+        summary = ZonalResiliencySummary([])
         
         assert summary.total_resources == 0
         assert summary.zone_redundant_count == 0
@@ -206,7 +206,7 @@ class TestZonalResilienceSummary:
             for _ in range(5)
         ]
         
-        summary = ZonalResilienceSummary(zonal_data)
+        summary = ZonalResiliencySummary(zonal_data)
         
         assert summary.total_resources == 5
         assert summary.zone_redundant_count == 5
@@ -229,7 +229,7 @@ class TestZonalResilienceSummary:
             ZonalData([], False, 0, False, DeploymentPattern.UNKNOWN, ""),
         ]
         
-        summary = ZonalResilienceSummary(zonal_data)
+        summary = ZonalResiliencySummary(zonal_data)
         
         assert summary.total_resources == 6
         assert summary.zone_redundant_count == 2
@@ -250,7 +250,7 @@ class TestZonalResilienceSummary:
             ZonalData([], True, 0, True, DeploymentPattern.ZONE_REDUNDANT, ""),
         ]
         
-        summary = ZonalResilienceSummary(zonal_data)
+        summary = ZonalResiliencySummary(zonal_data)
         result = summary.to_dict()
         
         assert isinstance(result, dict)
@@ -272,7 +272,7 @@ class TestZonalResilienceSummary:
             ZonalData([], False, 0, False, DeploymentPattern.UNKNOWN, ""),
         ]
         
-        summary = ZonalResilienceSummary(zonal_data)
+        summary = ZonalResiliencySummary(zonal_data)
         result = summary.to_dict()
         
         # 2 out of 4 compliant = 50%

@@ -15,7 +15,7 @@ class AzureResource(BaseModel):
     sku: Optional[Dict[str, Any]] = None  # SKU information for zone redundancy detection
     zones: Optional[List[str]] = None  # Availability zones for zone-aware resources
     
-    # Parent/Related Resource Relationships for Resilience Grouping
+    # Parent/Related Resource Relationships for Resiliency Grouping
     parent_resource_id: Optional[str] = None  # e.g., VM → AvailabilitySet
     parent_resource_type: Optional[str] = None  # Type of parent resource
     child_resource_ids: Optional[List[str]] = None  # e.g., AvailabilitySet → [VMs]

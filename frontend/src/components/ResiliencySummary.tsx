@@ -1,18 +1,18 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 import { canonicalTypeForNode, normalizeTypeString, type ViewLevel } from "../domain/graphView";
-import { saveOverride, getOverrides, deleteOverride, type ResilienceCheck } from "../api/resilience";
-import { calculateResilienceScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
+import { saveOverride, getOverrides, deleteOverride, type ResiliencyCheck } from "../api/resilience";
+import { calculateResiliencyScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 
-interface ResilienceEvaluation {
+interface ResiliencyEvaluation {
   resource_id: string;
   resource_type: string;
   resource_name: string;
-  checks: ResilienceCheck[];
-  findings: ResilienceCheck[];
+  checks: ResiliencyCheck[];
+  findings: ResiliencyCheck[];
 }
 
-interface ResilienceOverride {
+interface ResiliencyOverride {
   resource_id: string;
   recommendation_id: string;
   status: "pass" | "fail" | "pending";
@@ -31,8 +31,8 @@ interface LLMAnnotation {
   hide_by_default?: boolean;
 }
 
-interface ResilienceSummaryProps {
-  evaluations: Record<string, ResilienceEvaluation>;
+interface ResiliencySummaryProps {
+  evaluations: Record<string, ResiliencyEvaluation>;
   workloadScore?: number;  // Overall resilience score (0.0-1.0)
   subscriptionId?: string;  // Needed for saving overrides
   subscriptionOptions?: Array<{ id: string; name: string }>;
@@ -46,16 +46,16 @@ interface ResilienceSummaryProps {
       }>;
     };
   };
-  overrides?: Record<string, ResilienceOverride>;
+  overrides?: Record<string, ResiliencyOverride>;
   viewLevel?: ViewLevel;
   resourceGroupFilter?: Set<string>;
   serviceFilter?: Set<string>;
   validationSourceFilter?: Set<string>;
-  onOverrideSaved?: (override: ResilienceOverride) => void;
+  onOverrideSaved?: (override: ResiliencyOverride) => void;
   onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
 }
 
-const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
+const buildOverrideMap = (overrides?: Record<string, ResiliencyOverride>) => {
   const overrideMap: Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }> = {};
   if (!overrides) return overrideMap;
 
@@ -75,7 +75,7 @@ const buildOverrideMap = (overrides?: Record<string, ResilienceOverride>) => {
   return overrideMap;
 };
 
-// Resilience score donut (0-100% gradient)
+// Resiliency score donut (0-100% gradient)
 const ScoreDonut: React.FC<{
   score: number;  // 0.0-1.0
   size?: number;
@@ -133,7 +133,7 @@ const ScoreDonut: React.FC<{
         >
           {percentage.toFixed(0)}%
         </span>
-        <span style={{ fontSize: "10px", color: "#6b7280" }}>Resilience</span>
+        <span style={{ fontSize: "10px", color: "#6b7280" }}>Resiliency</span>
       </div>
     </div>
   );
@@ -215,7 +215,7 @@ const DonutChart: React.FC<{
 
 type SortColumn = "subscription" | "resource" | "recommendation" | "category" | "impact" | "status" | "benefit" | "weight" | "validated_by";
 
-const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
+const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   evaluations,
   workloadScore,
   subscriptionId,
@@ -367,8 +367,8 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   // Uses shared utility - SINGLE SOURCE OF TRUTH
   const calculateResourceScore = useCallback((resourceId: string, checks: any[]): number => {
     const elementWeight = getElementWeight(resourceId);
-    const weights: ResilienceWeights = { categoryWeights, impactWeights };
-    return calculateResilienceScore(checks, elementWeight, weights);
+    const weights: ResiliencyWeights = { categoryWeights, impactWeights };
+    return calculateResiliencyScore(checks, elementWeight, weights);
   }, [getElementWeight, categoryWeights, impactWeights]);
 
   // Map resourceId -> resilience score for use by graph nodes
@@ -590,7 +590,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
     let totalChecks = 0;
     let passedChecks = 0;
     let failedChecks = 0;
-    const resourceList: Array<ResilienceEvaluation & { resourceId: string }> = [];
+    const resourceList: Array<ResiliencyEvaluation & { resourceId: string }> = [];
 
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       // Calculate counts from checks array
@@ -1368,7 +1368,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             color: "#1f2937",
           }}
         >
-          Resilience Overview
+          Resiliency Overview
         </h1>
 
         <div
@@ -1379,7 +1379,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
             alignItems: "flex-start",
           }}
         >
-          {/* Resilience Score Donut */}
+          {/* Resiliency Score Donut */}
           {adjustedWorkloadScore !== undefined && (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
               <ScoreDonut score={adjustedWorkloadScore} size={140} />
@@ -1541,7 +1541,7 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
               transition: "all 0.2s ease",
             }}
           >
-            By Resilience Category
+            By Resiliency Category
           </button>
           <button
             onClick={() => setBreakdownView("impact")}
@@ -2665,4 +2665,4 @@ const ResilienceSummary: React.FC<ResilienceSummaryProps> = ({
   );
 };
 
-export default ResilienceSummary;
+export default ResiliencySummary;

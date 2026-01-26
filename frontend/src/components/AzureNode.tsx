@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Handle, Position } from "reactflow";
 import { getAzureIcon } from "../utils/azureIcons";
 import type { AiTooltip } from "../domain/graphView";
-import ResilienceCircle from "./ResilienceCircle";
+import ResiliencyCircle from "./ResiliencyCircle";
 
 // Weight icon component - uses Power icon to represent element importance
 const WeightIcon: React.FC<{ size?: number }> = ({ size = 14 }) => (
@@ -51,7 +51,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   const [iconError, setIconError] = useState(false);
   const [showWeightTooltip, setShowWeightTooltip] = useState(false);
   const [weightTooltipPosition, setWeightTooltipPosition] = useState({ x: 0, y: 0 });
-  const [resilience, setResilience] = useState<{ score: number } | null>(null);
+  const [resilience, setResiliency] = useState<{ score: number } | null>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const weightRef = useRef<HTMLDivElement>(null);
   const isVirtual = Boolean((data.metadata as any)?.virtual);
@@ -73,15 +73,15 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
       if (resilience && typeof resilience === 'object') {
         const score = (resilience as any).resilience_score;
         if (score !== undefined && score !== null) {
-          setResilience({ score });
+          setResiliency({ score });
         } else {
-          setResilience(null);
+          setResiliency(null);
         }
       } else {
-        setResilience(null);
+        setResiliency(null);
       }
     } else {
-      setResilience(null);
+      setResiliency(null);
     }
   }, [data.metadata]);
 
@@ -120,11 +120,11 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
   // - Has checks: Color based on criticality (customer has actions to take)
   const getCategoryColor = () => {
     // Check if resilience score exists
-    const hasResilienceScore = data.metadata && 
+    const hasResiliencyScore = data.metadata && 
       (data.metadata as any).resilience?.resilience_score !== undefined;
     
     // No resilience checks available - show gray
-    if (!hasResilienceScore) {
+    if (!hasResiliencyScore) {
       return "#b7b8baff"; // Light Gray - no resilience data
     }
     
@@ -323,7 +323,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           alignItems: "center"
         }}>
           {data.metadata && (data.metadata as any).resilience?.resilience_score !== undefined ? (
-            <ResilienceCircle 
+            <ResiliencyCircle 
               score={resilience?.score ?? 0}
               size={80}
             >
@@ -343,7 +343,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
                   }}
                 />
               )}
-            </ResilienceCircle>
+            </ResiliencyCircle>
           ) : (
             <div style={{
               position: "relative",
