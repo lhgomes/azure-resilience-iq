@@ -283,19 +283,19 @@ export async function removeNodeFromGroup(
   );
 }
 
-export interface ResilienceCheckMetrics {
+export interface ResiliencyCheckMetrics {
   total_checks: number;
   passed_checks: number;
   failed_checks: number;
   pass_percentage: number;
 }
 
-export interface ResilienceSummary {
-  [resourceId: string]: ResilienceCheckMetrics;
+export interface ResiliencySummary {
+  [resourceId: string]: ResiliencyCheckMetrics;
 }
 
-export async function getResilienceSummary(
+export async function getResiliencySummary(
   subscriptionId: string
-): Promise<ResilienceSummary> {
+): Promise<ResiliencySummary> {
   return apiJson(`/api/resilience/evaluate/${subscriptionId}/summary`);
 }

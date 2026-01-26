@@ -1,5 +1,5 @@
 """
-Resilience API endpoints.
+Resiliency API endpoints.
 
 Serves resilience evaluation results and APRL recommendations via FastAPI.
 Results are read from storage (data/{subscription_id}/resilience_evaluations.json)
@@ -66,7 +66,7 @@ def resilience_health():
             "summary": summary,
         }
     except Exception as e:
-        LOGGER.error(f"Resilience health check failed: {e}")
+        LOGGER.error(f"Resiliency health check failed: {e}")
         return {
             "status": "unhealthy",
             "aprl_loaded": False,
@@ -130,7 +130,7 @@ def get_subscription_evaluation(subscription_id: str):
     if not eval_path.exists():
         raise HTTPException(
             status_code=404, 
-            detail=f"Resilience evaluations not found for subscription {subscription_id}. "
+            detail=f"Resiliency evaluations not found for subscription {subscription_id}. "
                    f"Run 'python -m app.resilience.run --subscription-id {subscription_id}' first."
         )
     
@@ -179,7 +179,7 @@ def get_resource_evaluation(subscription_id: str, resource_id: str):
     if not eval_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Resilience evaluations not found for subscription {subscription_id}"
+            detail=f"Resiliency evaluations not found for subscription {subscription_id}"
         )
     
     try:
@@ -268,7 +268,7 @@ def get_subscription_resilience_summary(subscription_id: str):
     if not eval_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Resilience evaluations not found for subscription {subscription_id}. "
+            detail=f"Resiliency evaluations not found for subscription {subscription_id}. "
                    f"Run evaluations first."
         )
     

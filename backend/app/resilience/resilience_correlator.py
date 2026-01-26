@@ -1,11 +1,11 @@
 """
-Resilience Group Identification and Management
+Resiliency Group Identification and Management
 
 This module identifies and manages resilience groups - collections of Azure resources
 that work together to provide resilience (e.g., VMs in an Availability Set, resources
 behind a Load Balancer, database replicas, etc.).
 
-Resilience groups enable:
+Resiliency groups enable:
 1. Context-aware zone analysis (analyzing group resilience, not individual resources)
 2. Automatic graph grouping for visualization
 3. Accurate resilience scoring and recommendations
@@ -19,7 +19,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class ResilienceGroupType(Enum):
+class ResiliencyGroupType(Enum):
     """Types of resilience groups"""
     AVAILABILITY_SET = "availability_set"
     VMSS = "vmss"
@@ -31,11 +31,11 @@ class ResilienceGroupType(Enum):
 
 
 @dataclass
-class ResilienceGroup:
+class ResiliencyGroup:
     """Represents a group of related resilience resources"""
     id: str  # Unique group ID (usually parent resource ID)
     name: str  # Display name
-    type: ResilienceGroupType
+    type: ResiliencyGroupType
     member_ids: List[str]  # Resource IDs in this group
     member_types: List[str]  # Resource types of members
     metadata: Dict[str, Any]  # Group-specific metadata
@@ -44,7 +44,7 @@ class ResilienceGroup:
         return hash(self.id)
     
     def __eq__(self, other):
-        if not isinstance(other, ResilienceGroup):
+        if not isinstance(other, ResiliencyGroup):
             return False
         return self.id == other.id
 
@@ -71,9 +71,9 @@ class ResourceCorrelator:
         self.resource_map: Dict[str, Dict[str, Any]] = {
             r.get('id'): r for r in all_resources if r.get('id')
         }
-        self.groups: List[ResilienceGroup] = []
+        self.groups: List[ResiliencyGroup] = []
     
-    def identify_groups(self) -> List[ResilienceGroup]:
+    def identify_groups(self) -> List[ResiliencyGroup]:
         """
         Identify all resilience groups in the resource collection.
         
@@ -124,10 +124,10 @@ class ResourceCorrelator:
             as_resource = as_info.get(as_id) or self.resource_map.get(as_id)
             as_name = as_resource.get('name', as_id) if as_resource else as_id
             
-            group = ResilienceGroup(
+            group = ResiliencyGroup(
                 id=as_id,
                 name=f"Availability Set: {as_name}",
-                type=ResilienceGroupType.AVAILABILITY_SET,
+                type=ResiliencyGroupType.AVAILABILITY_SET,
                 member_ids=[m.get('id') for m in members if m.get('id')],
                 member_types=[m.get('type', 'Unknown') for m in members],
                 metadata={
@@ -171,10 +171,10 @@ class ResourceCorrelator:
             vmss_resource = vmss_info.get(vmss_id) or self.resource_map.get(vmss_id)
             vmss_name = vmss_resource.get('name', vmss_id) if vmss_resource else vmss_id
             
-            group = ResilienceGroup(
+            group = ResiliencyGroup(
                 id=vmss_id,
                 name=f"VM Scale Set: {vmss_name}",
-                type=ResilienceGroupType.VMSS,
+                type=ResiliencyGroupType.VMSS,
                 member_ids=[m.get('id') for m in members if m.get('id')],
                 member_types=[m.get('type', 'Unknown') for m in members],
                 metadata={
@@ -213,10 +213,10 @@ class ResourceCorrelator:
                     backend_members.append(resource)
             
             if backend_members:
-                group = ResilienceGroup(
+                group = ResiliencyGroup(
                     id=f"{lb_id}:backend",
                     name=f"Load Balancer Backend: {lb_name}",
-                    type=ResilienceGroupType.LOAD_BALANCER_BACKEND,
+                    type=ResiliencyGroupType.LOAD_BALANCER_BACKEND,
                     member_ids=[m.get('id') for m in backend_members if m.get('id')],
                     member_types=[m.get('type', 'Unknown') for m in backend_members],
                     metadata={
@@ -244,10 +244,10 @@ class ResourceCorrelator:
             replica_regions = storage.get('replica_regions')
             if replica_regions and isinstance(replica_regions, dict):
                 # Multi-region replication detected
-                group = ResilienceGroup(
+                group = ResiliencyGroup(
                     id=f"{storage.get('id')}:replication",
                     name=f"Storage Geo-Replication: {storage.get('name')}",
-                    type=ResilienceGroupType.REPLICATED_RESOURCE,
+                    type=ResiliencyGroupType.REPLICATED_RESOURCE,
                     member_ids=[storage.get('id')] + list(replica_regions.values()),
                     member_types=['Storage'] * (1 + len(replica_regions)),
                     metadata={
@@ -277,10 +277,10 @@ class ResourceCorrelator:
             ]
             
             if member_databases:
-                group = ResilienceGroup(
+                group = ResiliencyGroup(
                     id=failover_id,
                     name=f"SQL Failover Group: {failover_name}",
-                    type=ResilienceGroupType.DATABASE_FAILOVER,
+                    type=ResiliencyGroupType.DATABASE_FAILOVER,
                     member_ids=[m.get('id') for m in member_databases if m.get('id')],
                     member_types=[m.get('type', 'Unknown') for m in member_databases],
                     metadata={
@@ -305,10 +305,10 @@ class ResourceCorrelator:
             
             if len(locations) > 1:
                 # Multi-region Cosmos DB
-                group = ResilienceGroup(
+                group = ResiliencyGroup(
                     id=f"{cosmos.get('id')}:replication",
                     name=f"Cosmos DB Multi-Region: {cosmos.get('name')}",
-                    type=ResilienceGroupType.COSMOS_REPLICATED,
+                    type=ResiliencyGroupType.COSMOS_REPLICATED,
                     member_ids=[cosmos.get('id')],  # Cosmos itself represents the group
                     member_types=['Microsoft.DocumentDB/databaseAccounts'],
                     metadata={
@@ -321,7 +321,7 @@ class ResourceCorrelator:
                 self.groups.append(group)
                 logger.debug(f"Found Cosmos multi-region: {cosmos.get('name')} with {len(locations)} regions")
     
-    def get_group_for_resource(self, resource_id: str) -> Optional[ResilienceGroup]:
+    def get_group_for_resource(self, resource_id: str) -> Optional[ResiliencyGroup]:
         """Get the resilience group a resource belongs to"""
         for group in self.groups:
             if resource_id in group.member_ids:
@@ -340,6 +340,6 @@ class ResourceCorrelator:
             if rid in self.resource_map
         ]
     
-    def get_groups_by_type(self, group_type: ResilienceGroupType) -> List[ResilienceGroup]:
+    def get_groups_by_type(self, group_type: ResiliencyGroupType) -> List[ResiliencyGroup]:
         """Get all groups of a specific type"""
         return [g for g in self.groups if g.type == group_type]

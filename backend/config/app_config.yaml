@@ -30,7 +30,7 @@ data:
   dir: "./data"
   monitored_resource_types_path: "./config/monitored_resource_types.yaml"
 
-# Resilience Analysis Configuration
+# Resiliency Analysis Configuration
 resilience:
   # Category weights for resilience scoring
   # Must sum to 1.0 (normalized automatically if not)

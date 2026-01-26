@@ -94,7 +94,7 @@ def get_workload_graph(subscription_id: str) -> dict:
             for resource_id, eval_data in resilience_evals.items()
         }
     except Exception:
-        # Resilience data is optional
+        # Resiliency data is optional
         pass
 
     # Merge LLM annotations into node metadata

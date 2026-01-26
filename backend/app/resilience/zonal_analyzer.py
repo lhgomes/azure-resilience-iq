@@ -1,5 +1,5 @@
 """
-Zonal Resilience Analysis Module
+Zonal Resiliency Analysis Module
 
 Analyzes Azure resources for Availability Zone configuration and compliance
 with Azure's 3-AZ (Availability Zone) best practices.
@@ -15,10 +15,10 @@ Configuration:
 - To update the list of zone-aware services, edit that file
 
 Usage:
-    from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResilienceSummary
+    from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResiliencySummary
     
     zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
-    summary = ZonalResilienceSummary(all_zonal_data)
+    summary = ZonalResiliencySummary(all_zonal_data)
 """
 
 from dataclasses import dataclass
@@ -373,7 +373,7 @@ class ZonalAnalyzer:
     
     @staticmethod
     def _analyze_group_resilience(
-        group: 'ResilienceGroup',
+        group: 'ResiliencyGroup',
         correlator: 'ResourceCorrelator',
         resource: Dict[str, Any]
     ) -> ZonalData:
@@ -382,7 +382,7 @@ class ZonalAnalyzer:
         
         Collects zones from all group members to determine effective resilience.
         """
-        from app.resilience.resilience_correlator import ResilienceGroupType
+        from app.resilience.resilience_correlator import ResiliencyGroupType
         
         # Get all members of the group
         members = correlator.get_group_members(group.id)
@@ -442,7 +442,7 @@ class ZonalAnalyzer:
     
     @staticmethod
     def _analyze_lb_protected_resource(
-        group: 'ResilienceGroup',
+        group: 'ResiliencyGroup',
         resource: Dict[str, Any],
         correlator: 'ResourceCorrelator'
     ) -> ZonalData:
@@ -486,7 +486,7 @@ class ZonalAnalyzer:
     
     @staticmethod
     def _analyze_replicated_resource(
-        group: 'ResilienceGroup',
+        group: 'ResiliencyGroup',
         resource: Dict[str, Any],
         correlator: 'ResourceCorrelator'
     ) -> ZonalData:
@@ -613,7 +613,7 @@ class ZonalAnalyzer:
         return False
 
 
-class ZonalResilienceSummary:
+class ZonalResiliencySummary:
     """
     Summary statistics for zone configuration across multiple resources.
     
@@ -621,12 +621,12 @@ class ZonalResilienceSummary:
     - Total resources analyzed
     - Count by deployment pattern
     - Overall 3-AZ compliance
-    - Resilience score
+    - Resiliency score
     - Regional distribution analysis
     
     Usage:
         all_zonal = [ZonalAnalyzer.extract_zonal_data(r) for r in resources]
-        summary = ZonalResilienceSummary(all_zonal, resources)
+        summary = ZonalResiliencySummary(all_zonal, resources)
         print(f"3-AZ Compliant: {summary.is_3az_compliant}")
     """
     

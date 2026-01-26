@@ -1,5 +1,5 @@
 /**
- * Resilience API Service
+ * Resiliency API Service
  * 
  * Provides access to resilience scoring and evaluation data from the backend.
  */
@@ -30,7 +30,7 @@ export interface CategoryScore {
   passed_count: number;
 }
 
-export interface ResilienceCheck {
+export interface ResiliencyCheck {
   recommendation_id: string;
   resilience_check_id: string;  // Unique ID based on resource_id + recommendation_id
   description: string;
@@ -58,7 +58,7 @@ export interface ResourceEvaluation {
   component_score: number;  // 0.0-1.0
   component_weight: number;
   categories: CategoryScore[];
-  checks: ResilienceCheck[];
+  checks: ResiliencyCheck[];
   total_checks: number;
   passed_checks: number;
   failed_checks: number;
@@ -95,15 +95,15 @@ export interface SubscriptionEvaluationResponse {
   scoring_timestamp?: string;
 }
 
-export interface ResilienceCheckMetrics {
+export interface ResiliencyCheckMetrics {
   total_checks: number;
   passed_checks: number;
   failed_checks: number;
   pass_percentage: number;
 }
 
-export interface ResilienceSummary {
-  [resourceId: string]: ResilienceCheckMetrics;
+export interface ResiliencySummary {
+  [resourceId: string]: ResiliencyCheckMetrics;
 }
 
 /**
@@ -131,9 +131,9 @@ export async function getResourceEvaluation(
 /**
  * Get resilience summary (quick metrics for all resources)
  */
-export async function getResilienceSummary(
+export async function getResiliencySummary(
   subscriptionId: string
-): Promise<ResilienceSummary> {
+): Promise<ResiliencySummary> {
   return apiJson(`/api/resilience/evaluate/${encodeURIComponent(subscriptionId)}/summary`);
 }
 
@@ -244,7 +244,7 @@ export async function getCheckOverride(
 }
 
 /**
- * Zonal Resilience Types and APIs
+ * Zonal Resiliency Types and APIs
  */
 
 export type DeploymentPattern = 'zone_redundant' | 'multi_zone' | 'single_zone' | 'not_applicable' | 'unknown';
@@ -266,7 +266,7 @@ export interface ResourceZonalAnalysis {
   zonal_data: ZonalData;
 }
 
-export interface ZonalResilienceSummary {
+export interface ZonalResiliencySummary {
   total_resources: number;
   zone_redundant_resources: number;
   multi_zone_resources: number;
@@ -289,19 +289,19 @@ export interface ZonalResilienceSummary {
   };
 }
 
-export interface ZonalResilienceResponse {
+export interface ZonalResiliencyResponse {
   subscription_id: string;
   analysis_timestamp: string;
-  summary?: ZonalResilienceSummary;  // Optional - will be calculated frontend-side from resources
+  summary?: ZonalResiliencySummary;  // Optional - will be calculated frontend-side from resources
   resources: ResourceZonalAnalysis[];
 }
 
 /**
  * Get zonal resilience analysis for a subscription
  */
-export async function getZonalResilience(
+export async function getZonalResiliency(
   subscriptionId: string
-): Promise<ZonalResilienceResponse> {
+): Promise<ZonalResiliencyResponse> {
   return apiJson(
     `/api/subscriptions/${encodeURIComponent(subscriptionId)}/zonal-resilience`
   );

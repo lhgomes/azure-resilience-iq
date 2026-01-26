@@ -47,7 +47,7 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
 
       <div style={{ fontSize: 12, lineHeight: 1.6 }}>
         <div style={{ marginBottom: 12 }}>
-          <strong>Resilience Score Colors:</strong>
+          <strong>Resiliency Score Colors:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6" }}>
             <div style={{ marginBottom: 3 }}>
               <span style={{ color: "#22c55e" }}>⬤ Green: 0.90-1.00 (Excellent)</span>
@@ -130,7 +130,7 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <strong>Resilience Scoring:</strong>
+          <strong>Resiliency Scoring:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
             <div style={{ marginBottom: 4 }}>
               Score = Passed Checks Weight / Total Checks Weight
@@ -145,7 +145,7 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
         </div>
 
         <div style={{ marginBottom: 12 }}>
-          <strong>Resilience Groups:</strong>
+          <strong>Resiliency Groups:</strong>
           <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
             Auto-detected groups: Availability Sets, VMSS, Load Balancer backends, Storage geo-redundancy, SQL failover groups, Cosmos replication, and custom groups. Resources evaluated in group context.
           </div>

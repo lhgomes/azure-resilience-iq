@@ -7,14 +7,14 @@ import {
 import ScoreCircle from '../components/ScoreCircle';
 import CategoryBreakdownView from '../components/CategoryBreakdownView';
 
-interface ResilienceScoreDashboardProps {
+interface ResiliencyScoreDashboardProps {
   subscriptionId: string;
 }
 
 /**
  * Dashboard displaying workload resilience scoring and category breakdowns
  */
-const ResilienceScoreDashboard: React.FC<ResilienceScoreDashboardProps> = ({
+const ResiliencyScoreDashboard: React.FC<ResiliencyScoreDashboardProps> = ({
   subscriptionId
 }) => {
   const [loading, setLoading] = useState(true);
@@ -97,7 +97,7 @@ const ResilienceScoreDashboard: React.FC<ResilienceScoreDashboardProps> = ({
       }}>
         <div>
           <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', color: '#111827' }}>
-            Workload Resilience Score
+            Workload Resiliency Score
           </h2>
           <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#6b7280' }}>
             {summary.total_resources_evaluated} resources evaluated • {summary.total_checks} checks
@@ -185,4 +185,4 @@ const StatCard: React.FC<StatCardProps> = ({ label, value, color }) => (
   </div>
 );
 
-export default ResilienceScoreDashboard;
+export default ResiliencyScoreDashboard;

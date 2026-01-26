@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
-  ZonalResilienceResponse,
+  ZonalResiliencyResponse,
   ResourceZonalAnalysis,
   DeploymentPattern,
   getDeploymentPatternLabel,
@@ -14,7 +14,7 @@ interface LLMAnnotation {
   azure_service_category?: string;
 }
 
-interface ResilienceCheck {
+interface ResiliencyCheck {
   recommendation_id: string;
   description: string;
   category: string;
@@ -25,15 +25,15 @@ interface ResilienceCheck {
 
 interface ResourceEvaluation {
   resource_id: string;
-  checks: ResilienceCheck[];
+  checks: ResiliencyCheck[];
 }
 
-interface ResilienceEvaluations {
+interface ResiliencyEvaluations {
   [resourceId: string]: ResourceEvaluation;
 }
 
-interface ZonalResilienceSummaryProps {
-  data: ZonalResilienceResponse;
+interface ZonalResiliencySummaryProps {
+  data: ZonalResiliencyResponse;
   graphData?: {
     nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
     llm_annotations?: {
@@ -47,7 +47,7 @@ interface ZonalResilienceSummaryProps {
   serviceFilter?: Set<string>;
 }
 
-// Score donut visualization - matches ResilienceSummary style
+// Score donut visualization - matches ResiliencySummary style
 const ScoreDonut: React.FC<{
   score: number; // 0.0-1.0
   size?: number;
@@ -103,7 +103,7 @@ const ScoreDonut: React.FC<{
   );
 };
 
-// Pattern badge - matches ResilienceSummary style
+// Pattern badge - matches ResiliencySummary style
 const PatternBadge: React.FC<{ pattern: DeploymentPattern }> = ({ pattern }) => {
   const bgColor = getDeploymentPatternColor(pattern);
 
@@ -128,7 +128,7 @@ const PatternBadge: React.FC<{ pattern: DeploymentPattern }> = ({ pattern }) => 
   );
 };
 
-// Metric card - matches ResilienceSummary style
+// Metric card - matches ResiliencySummary style
 const MetricCard: React.FC<{
   title: string;
   value: number;
@@ -167,7 +167,7 @@ const ResourceRow: React.FC<{
   resource: ResourceZonalAnalysis;
   index: number;
   annotationMap?: Map<string, LLMAnnotation>;
-  evaluations?: ResilienceEvaluations;
+  evaluations?: ResiliencyEvaluations;
 }> = ({ resource, index, annotationMap, evaluations }) => {
   const { zonal_data } = resource;
   
@@ -276,10 +276,10 @@ const ResourceRow: React.FC<{
 };
 
 // Main Component
-const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter }) => {
+const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter }) => {
   const [sortBy, setSortBy] = useState<"name" | "pattern" | "compliance">("name");
   const [filterPattern, setFilterPattern] = useState<DeploymentPattern | "all">("all");
-  const [evaluations, setEvaluations] = useState<ResilienceEvaluations>({});
+  const [evaluations, setEvaluations] = useState<ResiliencyEvaluations>({});
   const [loadingEvals, setLoadingEvals] = useState(false);
 
   // Load resilience evaluations on component mount
@@ -491,7 +491,7 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
             color: "#1f2937",
           }}
         >
-          Zonal Resilience Analysis
+          Zonal Resiliency Analysis
         </h1>
 
         <div
@@ -737,4 +737,4 @@ const ZonalResilienceSummary: React.FC<ZonalResilienceSummaryProps> = ({ data, g
   );
 };
 
-export default ZonalResilienceSummary;
+export default ZonalResiliencySummary;
