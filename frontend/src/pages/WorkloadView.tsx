@@ -18,6 +18,7 @@ import LegendPanel from "../components/LegendPanel";
 import {
   acceptEdge,
   createManualEdge,
+  clearBridgeEdges,
   deleteEdge,
   reverseEdgeDirection,
   fetchWorkloadGraph,
@@ -1098,13 +1099,31 @@ const WorkloadView: React.FC = () => {
     if (!nodeSubscriptionId) return;
 
     try {
-      await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
+      const response = await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
 
       // Optimistic local updates: drop node, associated edges, group membership, and resilience data
       updateGraph(prev => {
         if (!prev) return prev;
         const remainingNodes = (prev.nodes || []).filter(n => n.id !== nodeId);
         const remainingEdges = (prev.edges || []).filter(e => e.source !== nodeId && e.target !== nodeId);
+        
+        // Add the bridge edges returned by the API
+        const newEdges = remainingEdges;
+        if (response?.bridge_edges && Array.isArray(response.bridge_edges)) {
+          for (const bridgeEdge of response.bridge_edges) {
+            newEdges.push({
+              id: bridgeEdge.id,
+              source: bridgeEdge.source,
+              target: bridgeEdge.target,
+              relationship: bridgeEdge.relationship,
+              confidence: bridgeEdge.confidence,
+              status: bridgeEdge.status,
+              origin: bridgeEdge.origin,
+              created_by: bridgeEdge.created_by,
+            });
+          }
+        }
+        
         const remainingGroups = (prev.groups || []).map(g => ({
           ...g,
           nodes: Array.isArray(g.nodes) ? g.nodes.filter(id => id !== nodeId) : [],
@@ -1112,7 +1131,7 @@ const WorkloadView: React.FC = () => {
         // Update node_overrides to track that this node is hidden
         const updatedOverrides = { ...prev.node_overrides };
         updatedOverrides[nodeId] = { ...updatedOverrides[nodeId], hidden: true };
-        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups, node_overrides: updatedOverrides };
+        return { ...prev, nodes: remainingNodes, edges: newEdges, groups: remainingGroups, node_overrides: updatedOverrides };
       });
 
       setResiliencyEvaluations(prev => {
@@ -1184,6 +1203,15 @@ const WorkloadView: React.FC = () => {
         }
       });
 
+      // Clear bridge edges for all affected subscriptions before restoring
+      for (const subId of dirtySubscriptions) {
+        try {
+          await clearBridgeEdges(subId);
+        } catch (err) {
+          console.warn(`Failed to clear bridge edges for ${subId}:`, err);
+        }
+      }
+
       // Execute all patch operations in parallel
       const patchPromises = patchOperations.map(({ nodeId, subscriptionId }) =>
         patchNode(subscriptionId, nodeId, { hidden: false })
@@ -1200,7 +1228,7 @@ const WorkloadView: React.FC = () => {
       console.error("Failed to restore hidden resources", err);
       // Silently continue - the refresh might still work
     }
-  };
+  };;
 
   const handleRenameNode = async (nodeId: string) => {
     const node = viewGraph?.nodes.find(n => n.id === nodeId);

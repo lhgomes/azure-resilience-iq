@@ -205,6 +205,24 @@ export async function createManualEdge(
   });
 }
 
+export async function syncBridgeEdges(
+  subscriptionId: SubscriptionId,
+  edges: Array<{ source: string; target: string; relationship: string; confidence?: number }>
+): Promise<{ count: number }> {
+  return await apiJson(subscriptionPath(subscriptionId, "/bridge-edges"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edges }),
+  });
+}
+
+export async function clearBridgeEdges(subscriptionId: SubscriptionId): Promise<{ status: string }> {
+  return await apiJson(subscriptionPath(subscriptionId, "/bridge-edges"), {
+    method: "DELETE",
+  });
+}
+
+
 export async function patchNode(
   subscriptionId: SubscriptionId,
   nodeId: string,
@@ -216,9 +234,9 @@ export async function patchNode(
     criticality_score?: number | null;
     hidden?: boolean | null;
   }
-): Promise<void> {
+): Promise<any> {
   // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
-  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, {
+  return await apiJson(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
