@@ -308,6 +308,40 @@ export function computeResourceGroupOptions(
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+export function computeValidationSourceOptions(
+  evaluations: Record<string, any> | null
+): Array<{ key: string; label: string }> {
+  if (!evaluations) return [];
+  
+  const sources = new Map<string, boolean>();
+
+  Object.values(evaluations).forEach((resourceEval: any) => {
+    if (resourceEval.checks && Array.isArray(resourceEval.checks)) {
+      resourceEval.checks.forEach((check: any) => {
+        if (check.validation_source) {
+          const sourceList = Array.isArray(check.validation_source)
+            ? check.validation_source
+            : [check.validation_source];
+          sourceList.forEach((source: string) => {
+            const key = (source || "").toString();
+            const lower = key.toLowerCase();
+            // Exclude transient/user review sources from the filter options
+            if (!key) return;
+            if (lower === "pendingreview" || lower === "user") return;
+            if (!sources.has(key)) {
+              sources.set(source, true);
+            }
+          });
+        }
+      });
+    }
+  });
+
+  return Array.from(sources.keys())
+    .map(key => ({ key, label: key }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
 export interface ViewGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];

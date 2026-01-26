@@ -44,6 +44,7 @@ import {
   buildViewGraph,
   computeResourceGroupOptions,
   computeServiceOptions,
+  computeValidationSourceOptions,
   LEVEL_TO_MAX_IMPORTANCE,
   normalizeGraph,
   type GraphSnapshot,
@@ -115,7 +116,12 @@ const WorkloadView: React.FC = () => {
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
   const [serviceFilter, setServiceFilter] = useState<Set<string>>(new Set());
   const [resourceGroupFilter, setResourceGroupFilter] = useState<Set<string>>(new Set());
+  const [validationSourceFilter, setValidationSourceFilter] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  const serviceFilterUserTouchedRef = React.useRef(false);
+  const resourceGroupFilterUserTouchedRef = React.useRef(false);
+  const validationSourceFilterUserTouchedRef = React.useRef(false);
 
   const [groupToolbarSelection, setGroupToolbarSelection] = useState<{
     selectedNodeIds: string[];
@@ -283,18 +289,15 @@ const WorkloadView: React.FC = () => {
 
   const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
     // Build lookup by resilience_check_id (deterministic UUIDv5 from resource_id + recommendation_id)
-    const overrideLookup = new Map<string, { status: "pass" | "fail" | "pending"; validation_source?: string; resilience_check_id?: string }>();
+    // NOTE: We only override status; we intentionally keep the original validation_source so
+    // PendingReview/User sources remain the same after an override.
+    const overrideLookup = new Map<string, { status: "pass" | "fail" | "pending"; resilience_check_id?: string }>();
 
     Object.entries(overrides || {}).forEach(([resilienceCheckId, override]) => {
       if (!resilienceCheckId) return;
 
-      const validationSource = ((override as any)?.overridden_by || "").toLowerCase() === "user"
-        ? "User"
-        : (override as any)?.overridden_by;
-
       overrideLookup.set(resilienceCheckId, {
         status: (override as any)?.status,
-        validation_source: validationSource,
         resilience_check_id: resilienceCheckId,
       });
     });
@@ -313,7 +316,8 @@ const WorkloadView: React.FC = () => {
           return {
             ...check,
             status: override.status,
-            validation_source: override.validation_source || check.validation_source,
+            // Preserve the original validation_source to keep PendingReview/User intact
+            validation_source: check.validation_source,
             resilience_check_id: resilienceCheckId,
           };
         });
@@ -587,14 +591,40 @@ const WorkloadView: React.FC = () => {
     return computeResourceGroupOptions(graph, viewLevel, aiLayerEnabled, userLayerEnabled);
   }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
+  const handleResourceGroupFilterChange = useCallback((next: Set<string>) => {
+    resourceGroupFilterUserTouchedRef.current = true;
+    setResourceGroupFilter(next);
+  }, []);
+
   const serviceOptions = useMemo(() => {
     if (!graph) return [];
     return computeServiceOptions(graph, viewLevel, aiLayerEnabled, userLayerEnabled);
   }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
+  const handleServiceFilterChange = useCallback((next: Set<string>) => {
+    serviceFilterUserTouchedRef.current = true;
+    setServiceFilter(next);
+  }, []);
+
+  const validationSourceOptions = useMemo(() => {
+    return computeValidationSourceOptions(resilience_evaluations);
+  }, [resilience_evaluations]);
+
+  const handleValidationSourceFilterChange = useCallback((next: Set<string>) => {
+    validationSourceFilterUserTouchedRef.current = true;
+    setValidationSourceFilter(next);
+  }, []);
+
   useEffect(() => {
     if (!serviceOptions.length) {
       if (expandedCategories.size) setExpandedCategories(new Set());
+      return;
+    }
+
+    // Auto-populate serviceFilter if it's empty (after subscription change or reset)
+    if (!serviceFilterUserTouchedRef.current && serviceFilter.size === 0) {
+      const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+      setServiceFilter(new Set(allServices));
       return;
     }
 
@@ -622,9 +652,30 @@ const WorkloadView: React.FC = () => {
       return;
     }
 
+    // Auto-populate resourceGroupFilter if it's empty (after subscription change or reset)
+    if (!resourceGroupFilterUserTouchedRef.current && resourceGroupFilter.size === 0) {
+      const allGroups = resourceGroupOptions.map(rg => rg.key);
+      setResourceGroupFilter(new Set(allGroups));
+      return;
+    }
+
     // Keep the user's current selection; avoid shrinking it when the option list changes.
     // This prevents transient option recalculation from hiding nodes unexpectedly.
   }, [resourceGroupOptions, resourceGroupFilter.size]);
+
+  useEffect(() => {
+    if (!validationSourceOptions.length) {
+      if (validationSourceFilter.size) setValidationSourceFilter(new Set());
+      return;
+    }
+
+    // Auto-populate only if user hasn't intentionally changed it (e.g., uncheck all)
+    if (!validationSourceFilterUserTouchedRef.current && validationSourceFilter.size === 0) {
+      const allSources = validationSourceOptions.map(s => s.key);
+      setValidationSourceFilter(new Set(allSources));
+      return;
+    }
+  }, [validationSourceOptions, validationSourceFilter.size]);
 
   // Build annotation map for element weight lookup
   const annotationMap = useMemo(() => {
@@ -1551,7 +1602,11 @@ const WorkloadView: React.FC = () => {
     // Reset filters - empty sets will trigger useEffect hooks to select all options
     setServiceFilter(new Set());
     setResourceGroupFilter(new Set());
+    setValidationSourceFilter(new Set());
     setExpandedCategories(new Set());
+    serviceFilterUserTouchedRef.current = false;
+    resourceGroupFilterUserTouchedRef.current = false;
+    validationSourceFilterUserTouchedRef.current = false;
   }, []);
 
   const handleSelectedSubscriptionsChange = useCallback((next: Set<string>) => {
@@ -1791,10 +1846,13 @@ const WorkloadView: React.FC = () => {
             onViewLevelChange={setViewLevel}
             resourceGroupOptions={resourceGroupOptions}
             resourceGroupFilter={resourceGroupFilter}
-            onResourceGroupFilterChange={setResourceGroupFilter}
+            onResourceGroupFilterChange={handleResourceGroupFilterChange}
             serviceOptions={serviceOptions}
             serviceFilter={serviceFilter}
-            onServiceFilterChange={setServiceFilter}
+            onServiceFilterChange={handleServiceFilterChange}
+            validationSourceOptions={validationSourceOptions}
+            validationSourceFilter={validationSourceFilter}
+            onValidationSourceFilterChange={handleValidationSourceFilterChange}
             expandedCategories={expandedCategories}
             onExpandedCategoriesChange={setExpandedCategories}
             showLegend={showLegend}
@@ -2249,6 +2307,7 @@ const WorkloadView: React.FC = () => {
                     viewLevel={viewLevel}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    validationSourceFilter={validationSourceFilter}
                     onOverrideSaved={handleOverrideSaved}
                     onOverrideDeleted={handleOverrideDeleted}
                   />
