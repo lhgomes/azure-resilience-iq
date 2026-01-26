@@ -460,11 +460,75 @@ export function buildViewGraph(args: {
 
   const visibleIds = new Set(visibleNodes.map(n => n.id));
 
-  const baseEdges = snapshot.edges
-    .filter(e => !(!userLayerEnabled && e.origin === "manual"))
-    .filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
+  // Consider all edges (respecting user layer visibility) for bridging
+  const allowedEdges = snapshot.edges.filter(e => !(!userLayerEnabled && e.origin === "manual"));
+
+  const baseEdges = allowedEdges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target));
 
   const existingKeys = new Set(baseEdges.map(e => `${e.source}|${e.relationship}|${e.target}`));
+
+  // Build adjacency for hidden-node traversal
+  const hiddenIds = new Set((snapshot.nodes || []).map(n => n.id).filter(id => !visibleIds.has(id)));
+  const adjacencyOut = new Map<string, GraphEdge[]>();
+  allowedEdges.forEach(edge => {
+    if (!adjacencyOut.has(edge.source)) adjacencyOut.set(edge.source, []);
+    adjacencyOut.get(edge.source)!.push(edge);
+  });
+
+  const bridgeEdges: GraphEdge[] = [];
+  const bridgeKeys = new Set<string>();
+
+  const addBridgeEdge = (source: string, relationship: string, target: string, confidence?: number) => {
+    const key = `${source}|${relationship}|${target}`;
+    if (existingKeys.has(key) || bridgeKeys.has(key)) return;
+
+    bridgeEdges.push({
+      id: `bridge-${source}-${relationship}-${target}`,
+      source,
+      target,
+      relationship,
+      confidence,
+      status: "proposed",
+      origin: "bridge",
+    });
+    bridgeKeys.add(key);
+  };
+
+  // For any edge from a visible node into a hidden node, walk forward through hidden nodes
+  // and connect to any downstream visible nodes to preserve the dependency chain.
+  for (const edge of allowedEdges) {
+    if (!visibleIds.has(edge.source)) continue;
+    if (!hiddenIds.has(edge.target)) continue;
+
+    const initialRelationship = edge.relationship || "related_to";
+    const initialConfidence = edge.confidence ?? 0.5;
+
+    const stack: Array<{ nodeId: string; minConfidence: number; visited: Set<string> }> = [
+      { nodeId: edge.target, minConfidence: initialConfidence, visited: new Set([edge.target]) },
+    ];
+
+    while (stack.length) {
+      const { nodeId, minConfidence, visited } = stack.pop()!;
+      const outs = adjacencyOut.get(nodeId) ?? [];
+
+      for (const outEdge of outs) {
+        const nextConfidence = Math.min(minConfidence, outEdge.confidence ?? 0.5);
+
+        if (hiddenIds.has(outEdge.target)) {
+          if (visited.has(outEdge.target)) continue;
+          const nextVisited = new Set(visited);
+          nextVisited.add(outEdge.target);
+          stack.push({ nodeId: outEdge.target, minConfidence: nextConfidence, visited: nextVisited });
+        } else if (visibleIds.has(outEdge.target)) {
+          addBridgeEdge(edge.source, initialRelationship, outEdge.target, nextConfidence);
+        }
+      }
+    }
+  }
+
+  // Merge base and bridge edges before adding AI-suggested edges
+  const combinedEdges = [...baseEdges, ...bridgeEdges];
+  combinedEdges.forEach(e => existingKeys.add(`${e.source}|${e.relationship}|${e.target}`));
 
   const suggestedEdges: GraphEdge[] = aiLayerEnabled
     ? (snapshot.llm_annotations?.edges ?? [])
@@ -483,7 +547,7 @@ export function buildViewGraph(args: {
 
   return {
     nodes: visibleNodes,
-    edges: [...baseEdges, ...suggestedEdges],
+    edges: [...combinedEdges, ...suggestedEdges],
     annotationMap,
   };
 }

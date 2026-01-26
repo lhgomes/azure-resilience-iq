@@ -89,6 +89,9 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
             <div style={{ marginBottom: 3 }}>
               <span style={{ color: "#9AA0A6" }}>╌ Gray dashed: Heuristic</span>
             </div>
+            <div style={{ marginBottom: 3 }}>
+              <span style={{ color: "#d946ef" }}>━ Magenta: Bridge (hidden node bypass)</span>
+            </div>
             <div style={{ marginTop: 6, fontSize: 11 }}>
               12 signal types: ARM_Declared, PrivateEndpoint, FlowLog, AppInsights, ConnectionString, AppConfig, PrivateDNS, SubnetRouting, DNSZoneLink, RouteTable, VNetCoupling, NSGRule
             </div>
