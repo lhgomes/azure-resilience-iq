@@ -5,12 +5,12 @@
  * All components that need scores should import and use these functions.
  */
 
-export interface ResilienceWeights {
+export interface ResiliencyWeights {
   categoryWeights: Record<string, number>;
   impactWeights: Record<string, number>;
 }
 
-export interface ResilienceCheck {
+export interface ResiliencyCheck {
   status: "pass" | "fail";
   category: string;
   impact: "High" | "Medium" | "Low";
@@ -27,10 +27,10 @@ export interface ResilienceCheck {
  * @param weights - Category and impact weights from backend
  * @returns Score between 0.0 and 1.0
  */
-export function calculateResilienceScore(
-  checks: ResilienceCheck[],
+export function calculateResiliencyScore(
+  checks: ResiliencyCheck[],
   elementWeight: number,
-  weights: ResilienceWeights
+  weights: ResiliencyWeights
 ): number {
   if (!checks || checks.length === 0) return 0;
 
@@ -69,7 +69,7 @@ export function getElementWeight(
 /**
  * Default weights (matches backend config defaults)
  */
-export const DEFAULT_WEIGHTS: ResilienceWeights = {
+export const DEFAULT_WEIGHTS: ResiliencyWeights = {
   categoryWeights: {
     HighAvailability: 0.30,
     DisasterRecovery: 0.20,

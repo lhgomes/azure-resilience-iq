@@ -17,6 +17,11 @@ interface ServiceOptionCategory {
   services: Array<{ key: string; label: string }>;
 }
 
+interface ValidationSourceOption {
+  key: string;
+  label: string;
+}
+
 interface Props {
   subscriptions: SubscriptionOption[];
   selectedSubscriptions: Set<string>;
@@ -45,6 +50,10 @@ interface Props {
   serviceOptions: ServiceOptionCategory[];
   serviceFilter: Set<string>;
   onServiceFilterChange: (next: Set<string>) => void;
+
+  validationSourceOptions: ValidationSourceOption[];
+  validationSourceFilter: Set<string>;
+  onValidationSourceFilterChange: (next: Set<string>) => void;
 
   expandedCategories: Set<string>;
   onExpandedCategoriesChange: (next: Set<string>) => void;
@@ -681,6 +690,97 @@ const WorkloadSidebar: React.FC<Props> = props => {
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Validation Source Filter */}
+          <div style={{ marginBottom: 20 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#323130", textTransform: "uppercase", letterSpacing: "0.5px" }}>Validation Source</h3>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  onClick={() => {
+                    const allSources = props.validationSourceOptions.map(vs => vs.key);
+                    props.onValidationSourceFilterChange(new Set(allSources));
+                  }}
+                  title="Select All"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#0078d4",
+                    cursor: "pointer",
+                    padding: "2px 4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#005a9e"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#0078d4"}
+                >
+                  <CheckmarkRegular style={{ fontSize: 16 }} />
+                </button>
+                <button
+                  onClick={() => {
+                    props.onValidationSourceFilterChange(new Set());
+                  }}
+                  title="Uncheck All"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#a4262c",
+                    cursor: "pointer",
+                    padding: "2px 4px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#750b1c"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#a4262c"}
+                >
+                  <DismissRegular style={{ fontSize: 16 }} />
+                </button>
+              </div>
+            </div>
+            <div
+              style={{
+                maxHeight: 150,
+                overflowY: "auto",
+                border: "1px solid #8a8886",
+                borderRadius: 2,
+                padding: "4px 8px",
+                background: "#fff",
+              }}
+            >
+              {props.validationSourceOptions.map(vs => (
+                <label
+                  key={vs.key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "6px 4px",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    color: "#323130",
+                    borderRadius: 2,
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f3f2f1"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                >
+                  <input
+                    type="checkbox"
+                    checked={props.validationSourceFilter.has(vs.key)}
+                    onChange={e => {
+                      const next = new Set(props.validationSourceFilter);
+                      if (e.target.checked) next.add(vs.key);
+                      else next.delete(vs.key);
+                      props.onValidationSourceFilterChange(next);
+                    }}
+                    style={{ cursor: "pointer" }}
+                  />
+                  {vs.label}
+                </label>
+              ))}
             </div>
           </div>
 

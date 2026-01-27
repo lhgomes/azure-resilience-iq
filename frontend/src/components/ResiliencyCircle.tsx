@@ -1,7 +1,7 @@
 import React from "react";
 
-interface ResilienceCircleProps {
-  score: number; // Resilience score 0.0-1.0
+interface ResiliencyCircleProps {
+  score: number; // Resiliency score 0.0-1.0
   size?: number; // diameter in pixels, default 80
   children?: React.ReactNode; // Icon or other content to display in center
 }
@@ -10,7 +10,7 @@ interface ResilienceCircleProps {
  * Renders a circular progress indicator showing resilience score.
  * The circle shows the score percentage in green, with remaining in red.
  */
-const ResilienceCircle: React.FC<ResilienceCircleProps> = ({
+const ResiliencyCircle: React.FC<ResiliencyCircleProps> = ({
   score,
   size = 80,
   children,
@@ -25,7 +25,7 @@ const ResilienceCircle: React.FC<ResilienceCircleProps> = ({
     #ef4444 ${(passPercentage / 100) * 360}deg 360deg
   )`;
 
-  const tooltipText = `Resilience Score: ${passPercentage.toFixed(1)}%`;
+  const tooltipText = `Resiliency Score: ${passPercentage.toFixed(1)}%`;
 
   return (
     <div
@@ -91,4 +91,4 @@ const ResilienceCircle: React.FC<ResilienceCircleProps> = ({
   );
 };
 
-export default ResilienceCircle;
+export default ResiliencyCircle;

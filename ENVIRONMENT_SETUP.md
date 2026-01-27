@@ -29,7 +29,7 @@ For local development, run:
 az login
 ```
 
-## Workflow: Collector → Resilience Evaluation → LLM Annotation → API
+## Workflow: Collector → Resiliency Evaluation → LLM Annotation → API
 
 ### Step 1: Run the Azure Resource Graph collector
 ```bash
@@ -41,13 +41,13 @@ This generates `backend/data/{subscription-id}/resources.json` and `backend/data
 
 If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
 
-### Step 2: Run resilience evaluations
+### Step 2: Run Resiliency evaluations
 ```bash
 cd backend
-python -m app.resilience.run --subscription-id <your-subscription-id>
+python -m app.Resiliency.run --subscription-id <your-subscription-id>
 ```
 
-This evaluates resources against Azure Proactive Resiliency Library (APRL) and saves results to `backend/data/{subscription-id}/resilience_evaluations.json`.
+This evaluates resources against Azure Proactive Resiliency Library (APRL) and saves results to `backend/data/{subscription-id}/Resiliency_evaluations.json`.
 (Takes 5–10 seconds depending on resource count.)
 
 ### Step 3: Run the LLM annotator (optional)
@@ -73,8 +73,8 @@ All data is now pre-computed and served instantly:
 # Get workload graph
 curl "http://localhost:8000/api/subscriptions/<your-subscription-id>/graph"
 
-# Get resilience evaluations
-curl "http://localhost:8000/api/resilience/evaluate/<your-subscription-id>"
+# Get Resiliency evaluations
+curl "http://localhost:8000/api/Resiliency/evaluate/<your-subscription-id>"
 
 # Get unified recommendations
 curl "http://localhost:8000/api/<your-subscription-id>/recommendations"
@@ -84,7 +84,7 @@ Or start the frontend and toggle visibility options in the UI.
 
 ## Application Configuration (app_config.yaml)
 
-The `backend/config/app_config.yaml` file controls application behavior and resilience analysis settings.
+The `backend/config/app_config.yaml` file controls application behavior and Resiliency analysis settings.
 
 ### Logging Configuration
 
@@ -104,10 +104,10 @@ llm:
 
 - **enabled**: Toggle LLM end-to-end. Set to `false` to skip processing and serving LLM annotations.
 
-### Resilience Analysis Configuration
+### Resiliency Analysis Configuration
 
 ```yaml
-resilience:
+Resiliency:
   category_weights:
     "HighAvailability": 0.30
     "DisasterRecovery": 0.20
@@ -134,7 +134,7 @@ resilience:
 - **OtherBestPractices** (0.05): General best practices and recommendations
 
 **Impact Weights** (must sum to 1.0):
-- **High** (0.6): Critical recommendations that significantly affect resilience
+- **High** (0.6): Critical recommendations that significantly affect Resiliency
 - **Medium** (0.3): Important recommendations with moderate impact
 - **Low** (0.1): Minor recommendations and optimizations
 
@@ -151,7 +151,7 @@ To modify settings:
 
 Example: To increase weight for Security and reduce Others:
 ```yaml
-resilience:
+Resiliency:
   category_weights:
     "HighAvailability": 0.25
     "DisasterRecovery": 0.20
@@ -168,6 +168,6 @@ The weights will be auto-normalized if they don't sum to exactly 1.0.
 - **`.env` is gitignored** – never commit credentials.
 - **`.env.example` is tracked** – use it as a template for setting up new environments.
 - **DefaultAzureCredential** avoids hardcoding API keys; prefer it over static keys.
-- **Resilience evaluation is recommended** – provides APRL-based recommendations before optional LLM processing.
+- **Resiliency evaluation is recommended** – provides APRL-based recommendations before optional LLM processing.
 - **LLM Annotator is optional** – skip step 3 if you want to test without LLM suggestions.
 - **API doesn't compute evaluations** – all results are pre-computed for instant response times.

@@ -1,4 +1,4 @@
-# Azure Resilience IQ
+# Azure Resiliency IQ
 
 A full-stack application for visualizing and analyzing Azure workloads using Azure Resource Graph and LLM-powered annotations.
 
@@ -126,7 +126,7 @@ Both options create:
 
 Data is organized by subscription ID. To use a different base directory, set `data.dir` in `backend/config/app_config.yaml`.
 
-### Step 2: Run Resilience Evaluations
+### Step 2: Run Resiliency Evaluations
 
 Evaluate resources against Azure Proactive Resiliency Library (APRL) recommendations:
 
@@ -135,12 +135,12 @@ python -m app.resilience.run --subscription-id <your-subscription-id>
 ```
 
 This analyzes resources and generates:
-- Resilience recommendations per resource
+- Resiliency recommendations per resource
 - Category-based evaluations (Availability, Data, Disaster Recovery, etc.)
 - Pass/fail status for each recommendation
-- Resilience scores and weighted metrics
+- Resiliency scores and weighted metrics
 - **Availability zone analysis** (deployment patterns, 3-AZ compliance)
-- **Resilience correlation groups** (Availability Sets, VMSS, Load Balancers, etc.)
+- **Resiliency correlation groups** (Availability Sets, VMSS, Load Balancers, etc.)
 
 Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
@@ -219,7 +219,7 @@ The application supports analyzing **multiple Azure subscriptions simultaneously
    - Nodes (deduplicated by resource ID)
    - Edges (preserved from all subscriptions)
    - LLM annotations (first occurrence wins)
-   - Resilience evaluations (merged by resource ID)
+   - Resiliency evaluations (merged by resource ID)
    - User overrides (combined across subscriptions)
 
 **Use Cases**:
@@ -227,6 +227,25 @@ The application supports analyzing **multiple Azure subscriptions simultaneously
 - Enterprise-wide resilience posture
 - Multi-tenant workload visualization
 - Development/staging/production comparison
+
+### Sidebar Filters
+
+The left sidebar provides multiple **filter layers** to focus your analysis:
+
+**Filter Types**:
+
+| Filter | Purpose | Impact |
+|--------|---------|--------|
+| **Resource Groups** | Filter resources by Azure resource group | Excludes non-matching resources from graph and scores |
+| **Services** | Filter by Azure service type (Compute, Storage, Database, etc.) | Focuses analysis on specific service categories |
+| **Validation Sources** | Filter by recommendation source (APRL, Heuristic, LLM, ZoneRecommendation) | Recalculates scores using only selected sources |
+
+**Behavior**:
+- Filters are **cumulative** - all active filters must match for a resource to display
+- Unchecking all items in a filter **excludes everything** (intentional for temporary exclusions)
+- Click "Reset Filters" to restore all filters to checked state
+- Filters automatically repopulate when you switch subscriptions (unless you've manually changed them)
+- Scores and stats **recalculate in real-time** as you adjust filters
 
 ### Workload Views
 
@@ -238,6 +257,7 @@ Save and restore specific configurations as **named workloads**:
 - AI/User layer toggles
 - Resource group filters
 - Service type filters
+- Validation source filters
 - Expanded filter categories
 - Graph viewport and node positions
 
@@ -269,7 +289,7 @@ azure-resilience-iq/
 │   │   ├── collector/        # Azure Resource Graph collector
 │   │   ├── graph/            # Graph building and modeling
 │   │   ├── llm/              # LLM annotation engine
-│   │   ├── resilience/       # Resilience evaluation and APRL integration
+│   │   ├── resilience/       # Resiliency evaluation and APRL integration
 │   │   ├── relationships/    # Resource relationship extraction
 │   │   ├── routes/           # API route handlers (resilience, recommendations)
 │   │   ├── services/         # Business logic (workloads, subscriptions, recommendations)
@@ -283,11 +303,11 @@ azure-resilience-iq/
 │   │       ├── resources.json               # Collected Azure resources
 │   │       ├── edges.json                  # Multi-source dependency edges
 │   │       ├── llm_annotations.json        # LLM-generated annotations
-│   │       ├── resilience_evaluations.json # Resilience scores and recommendations
+│   │       ├── resilience_evaluations.json # Resiliency scores and recommendations
 │   │       ├── node_overrides.json         # User node customizations
 │   │       ├── edge_overrides.json         # Edge accept/reject decisions
 │   │       ├── manual_edges.json           # User-created edges
-│   │       ├── resilience_overrides.json   # Resilience evaluation overrides
+│   │       ├── resilience_overrides.json   # Resiliency evaluation overrides
 │   │       └── groups.json                 # Node groupings
 │   ├── pyproject.toml        # Python dependencies
 │   └── .env                  # Environment configuration
@@ -349,7 +369,47 @@ The LLM annotator uses signal confidence to:
 - Apply caution for lower-confidence edges (<0.7)
 - Justify dependency assessments based on signal evidence
 
-## Resilience Correlation & Grouping
+## Resiliency Analysis - Workload Discovery & Filtering
+
+The **Resiliency Analysis** module evaluates resources against Azure best practices and presents findings through intelligent filtering:
+
+### Validation Sources
+
+Recommendations are evaluated through multiple **independent validation sources**, each with different confidence levels and detection methods:
+
+| Source | Method | Confidence | Use Case | Example |
+|--------|--------|-----------|----------|---------|
+| **APRL** | KQL Query | 🟢 Highest | Authoritative Azure best practices | Query confirms multi-region replication configured |
+| **Heuristic** | Pattern Matching | 🟡 Medium | Recommendations without KQL queries | Infers encryption from resource properties |
+| **LLM** | AI Analysis | 🟡 Medium | Heuristic escalation or complex logic | LLM evaluates application-level retry patterns |
+| **ZoneRecommendation** | Zone Analysis | 🟢 High | Availability Zone resilience | Detects single-zone vs multi-zone deployment |
+
+**Hierarchy**: APRL (if query exists) → Heuristic (if no query) → ZoneRecommendation (parallel zone analysis)
+
+### Filtering by Validation Source
+
+Use the **Validation Source filter** in the left sidebar to focus on specific types of recommendations:
+
+**Use Cases**:
+- Filter to **APRL only** to see recommendations backed by official Microsoft documentation
+- Filter to **Heuristic + LLM** to explore AI-inferred best practices
+- Filter to **ZoneRecommendation** to focus on availability zone resilience
+- Combine filters to cross-reference recommendations across sources
+
+**How It Works**:
+1. Open the sidebar (left side of the workload view)
+2. Scroll to **Validation Source** section
+3. Check/uncheck sources to include/exclude from scoring
+4. Overview stats, scores, and findings update automatically
+5. Click "Reset Filters" to restore all sources
+
+**Impact on Scoring**:
+When you filter by validation source, the resilience score recalculates using only recommendations from selected sources. For example:
+- If you uncheck **Heuristic**, all heuristic-based recommendations are excluded from the score
+- Weights are automatically normalized so the remaining recommendations still sum to 100%
+- Per-finding contribution percentages update to reflect the filtered set
+
+## Resiliency Correlation & Grouping
 
 The application automatically identifies and visualizes **resilience groups** - collections of resources configured for high availability and fault tolerance:
 
@@ -377,27 +437,27 @@ The system detects 8 types of resilience groups:
 
 ### Context-Aware Recommendations
 
-Resilience evaluations consider group membership:
+Resiliency evaluations consider group membership:
 - Single-zone VM in an Availability Set: ✅ "Multi-zone resilience achieved through Availability Set"
 - Standalone single-zone VM: ⚠️ "Migrate to multi-zone deployment"
 
-## Scoring & Resilience Calculation
+## Scoring & Resiliency Calculation
 
 The application uses a **hierarchical, weighted scoring model** to evaluate workload resilience against Azure best practices:
 
-### Resilience Score Overview
+### Resiliency Score Overview
 
 The resilience score represents the overall health of a workload on a scale of **0.0 to 1.0** (0-100%), calculated by aggregating evaluation results from the Azure Proactive Resiliency Library (APRL) against each resource.
 
 ### Three-Factor Scoring Formula
 
-Each individual recommendation check is weighted by three independent factors:
+Each individual recommendation is weighted by three independent factors:
 
-$$\text{Check Weight} = \text{Element Weight} \times \text{Category Weight} \times \text{Impact Weight}$$
+$$\text{Resiliency Item Weight} = \text{Resource Weight} \times \text{Category Weight} \times \text{Impact Weight}$$
 
-**Score** is calculated as the ratio of weighted passed checks to total weighted checks:
+**Score** is calculated as the ratio of weighted passed resiliency item to total weighted resiliency item:
 
-$$\text{Resilience Score} = \frac{\sum_{\text{passed}} \text{Check Weight}}{\sum_{\text{all}} \text{Check Weight}}$$
+$$\text{Cumulative Resiliency Score} = \frac{\sum_{\text{passed}} \text{Resiliency Item Weight}}{\sum_{\text{all}} \text{Resiliency Item Weight}}$$
 
 ### Scoring Factors
 
@@ -434,30 +494,30 @@ Severity level of each individual recommendation (configured in `app_config.yaml
 
 The overall resilience score aggregates resource-level scores using element weights:
 
-$$\text{Workload Score} = \frac{\sum_{\text{passed}} \text{Check Weight}}{\sum_{\text{all}} \text{Check Weight}}$$
+$$\text{Workload Score} = \frac{\sum_{\text{passed}} \text{Resiliency Item Weight}}{\sum_{\text{all}} \text{Resiliency Item Weight}}$$
 
-Where each check weight incorporates its resource's criticality (element weight).
+Where each resiliency item weight incorporates its resource's criticality (element weight).
 
 ### Category Breakdown
 
 The score is also decomposed by resilience category for targeted improvement:
 
-$$\text{Category Score} = \frac{\sum_{\text{passed, category}} \text{Weighted Checks}}{\sum_{\text{all, category}} \text{Weighted Checks}}$$
+$$\text{Category Score} = \frac{\sum_{\text{passed, category}} \text{Weighted Resiliency Items}}{\sum_{\text{all, category}} \text{Weighted Resiliency Items}}$$
 
 ### Example Calculation
 
 Consider a workload with 2 resources:
 
 **Resource 1** (Virtual Machine - Criticality: 0.8):
-- 1 High-Impact HighAvailability check: PASS
+- 1 High-Impact HighAvailability Resiliency Item: PASS
   - Weight: 0.8 × 0.30 × 0.6 = 0.144 ✓ (passed)
-- 1 Medium-Impact Security check: FAIL
+- 1 Medium-Impact Security Resiliency Item: FAIL
   - Weight: 0.8 × 0.10 × 0.3 = 0.024 ✗ (failed)
 
 **Resource 2** (Database - Criticality: 1.0):
-- 1 High-Impact DisasterRecovery check: PASS
+- 1 High-Impact DisasterRecovery Resiliency Item: PASS
   - Weight: 1.0 × 0.20 × 0.6 = 0.120 ✓ (passed)
-- 1 Low-Impact Monitoring check: PASS
+- 1 Low-Impact Monitoring Resiliency Item: PASS
   - Weight: 1.0 × 0.15 × 0.1 = 0.015 ✓ (passed)
 
 **Workload Score Calculation**:
@@ -530,8 +590,8 @@ The backend provides the following main endpoints:
 - `POST /api/subscriptions/{subscription_id}/groups/{group_id}/nodes` - Add node to group
 - `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
 
-### Resilience & Recommendations Endpoints
-- `GET /api/resilience/health` - Resilience module health check
+### Resiliency & Recommendations Endpoints
+- `GET /api/resilience/health` - Resiliency module health check
 - `GET /api/resilience/rules` - Get all resilience rules (with optional filtering by resource_type and category)
 - `GET /api/resilience/evaluate/{subscription_id}` - Get resilience evaluations for subscription
 - `GET /api/resilience/evaluate/{subscription_id}/resource/{resource_id}` - Get resilience evaluation for specific resource
@@ -628,9 +688,9 @@ Set these in `backend/config/app_config.yaml`.
 
 The frontend proxies API requests to the backend at `http://127.0.0.1:8000` (configured in `vite.config.ts`).
 
-## Zonal Resilience Analysis
+## Zonal Resiliency Analysis
 
-The application includes a dedicated **Zonal Resilience** tab that analyzes Azure Availability Zone configuration across all resources:
+The application includes a dedicated **Zonal Resiliency** tab that analyzes Azure Availability Zone configuration across all resources:
 
 ### Features
 
@@ -653,7 +713,7 @@ The application includes a dedicated **Zonal Resilience** tab that analyzes Azur
 1. Run resilience evaluation: `python -m app.resilience.run --subscription-id <id>`
 2. Start the frontend application
 3. Select your subscription
-4. Click the **"Zonal Resilience"** tab (🌍 icon)
+4. Click the **"Zonal Resiliency"** tab (🌍 icon)
 
 ## Terraform Configuration Analysis
 

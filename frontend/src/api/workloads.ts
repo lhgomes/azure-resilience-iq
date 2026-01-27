@@ -205,6 +205,24 @@ export async function createManualEdge(
   });
 }
 
+export async function syncBridgeEdges(
+  subscriptionId: SubscriptionId,
+  edges: Array<{ source: string; target: string; relationship: string; confidence?: number }>
+): Promise<{ count: number }> {
+  return await apiJson(subscriptionPath(subscriptionId, "/bridge-edges"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ edges }),
+  });
+}
+
+export async function clearBridgeEdges(subscriptionId: SubscriptionId): Promise<{ status: string }> {
+  return await apiJson(subscriptionPath(subscriptionId, "/bridge-edges"), {
+    method: "DELETE",
+  });
+}
+
+
 export async function patchNode(
   subscriptionId: SubscriptionId,
   nodeId: string,
@@ -216,9 +234,9 @@ export async function patchNode(
     criticality_score?: number | null;
     hidden?: boolean | null;
   }
-): Promise<void> {
+): Promise<any> {
   // URL-encode nodeId so slashes don't break the path, `:path` converter will decode it
-  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, {
+  return await apiJson(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/nodes/${encodeURIComponent(nodeId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -283,19 +301,19 @@ export async function removeNodeFromGroup(
   );
 }
 
-export interface ResilienceCheckMetrics {
+export interface ResiliencyCheckMetrics {
   total_checks: number;
   passed_checks: number;
   failed_checks: number;
   pass_percentage: number;
 }
 
-export interface ResilienceSummary {
-  [resourceId: string]: ResilienceCheckMetrics;
+export interface ResiliencySummary {
+  [resourceId: string]: ResiliencyCheckMetrics;
 }
 
-export async function getResilienceSummary(
+export async function getResiliencySummary(
   subscriptionId: string
-): Promise<ResilienceSummary> {
+): Promise<ResiliencySummary> {
   return apiJson(`/api/resilience/evaluate/${subscriptionId}/summary`);
 }

@@ -5,8 +5,8 @@ import GraphCanvas, {
   GraphEdge,
   GraphCanvasHandle
 } from "../components/GraphCanvasReactflow";
-import ResilienceSummary from "../components/ResilienceSummary";
-import ZonalResilienceSummary from "../components/ZonalResilienceSummary";
+import ResiliencySummary from "../components/ResiliencySummary";
+import ZonalResiliencySummary from "../components/ZonalResiliencySummary";
 import TabbedView from "../components/TabbedView";
 import EdgeDrawer, {
   EdgeData
@@ -18,6 +18,7 @@ import LegendPanel from "../components/LegendPanel";
 import {
   acceptEdge,
   createManualEdge,
+  clearBridgeEdges,
   deleteEdge,
   reverseEdgeDirection,
   fetchWorkloadGraph,
@@ -44,14 +45,15 @@ import {
   buildViewGraph,
   computeResourceGroupOptions,
   computeServiceOptions,
+  computeValidationSourceOptions,
   LEVEL_TO_MAX_IMPORTANCE,
   normalizeGraph,
   type GraphSnapshot,
   type ViewLevel,
 } from "../domain/graphView";
-import { calculateResilienceScore, getElementWeight, DEFAULT_WEIGHTS, type ResilienceWeights } from "../utils/resilienceScore";
-import { getZonalResilience, type ZonalResilienceResponse } from "../api/resilience";
-import { mergeGraphSnapshots, mergeResilienceEvaluations, mergeZonalResilienceData } from "../utils/multiSubscriptionMerge";
+import { calculateResiliencyScore, getElementWeight, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
+import { getZonalResiliency, type ZonalResiliencyResponse } from "../api/resilience";
+import { mergeGraphSnapshots, mergeResiliencyEvaluations, mergeZonalResiliencyData } from "../utils/multiSubscriptionMerge";
 import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular } from "@fluentui/react-icons";
 
 // Subscription-aware view: user selects one or more subscriptions
@@ -83,12 +85,12 @@ const WorkloadView: React.FC = () => {
     [selectionKey]
   );
   const [graph, setGraph] = useState<GraphSnapshot | null>(null);
-  const [resilience_evaluations, setResilienceEvaluations] = useState<Record<string, any> | null>(null);
-  const [resilience_overrides, setResilienceOverrides] = useState<Record<string, any>>({});
-  const [resilience_data, setResilienceData] = useState<any | null>(null);
-  const [zonal_resilience_data, setZonalResilienceData] = useState<ZonalResilienceResponse | null>(null);
-  const [zonal_resilience_loading, setZonalResilienceLoading] = useState(false);
-  const [zonal_resilience_error, setZonalResilienceError] = useState<string | null>(null);
+  const [resilience_evaluations, setResiliencyEvaluations] = useState<Record<string, any> | null>(null);
+  const [resilience_overrides, setResiliencyOverrides] = useState<Record<string, any>>({});
+  const [resilience_data, setResiliencyData] = useState<any | null>(null);
+  const [zonal_resilience_data, setZonalResiliencyData] = useState<ZonalResiliencyResponse | null>(null);
+  const [zonal_resilience_loading, setZonalResiliencyLoading] = useState(false);
+  const [zonal_resilience_error, setZonalResiliencyError] = useState<string | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<EdgeData | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -115,7 +117,12 @@ const WorkloadView: React.FC = () => {
   const [userLayerEnabled, setUserLayerEnabled] = useState(true);
   const [serviceFilter, setServiceFilter] = useState<Set<string>>(new Set());
   const [resourceGroupFilter, setResourceGroupFilter] = useState<Set<string>>(new Set());
+  const [validationSourceFilter, setValidationSourceFilter] = useState<Set<string>>(new Set());
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+
+  const serviceFilterUserTouchedRef = React.useRef(false);
+  const resourceGroupFilterUserTouchedRef = React.useRef(false);
+  const validationSourceFilterUserTouchedRef = React.useRef(false);
 
   const [groupToolbarSelection, setGroupToolbarSelection] = useState<{
     selectedNodeIds: string[];
@@ -132,7 +139,7 @@ const WorkloadView: React.FC = () => {
   const [pendingRefreshSubscriptions, setPendingRefreshSubscriptions] = useState<Set<string>>(new Set());
 
   // Weights for resilience score calculation
-  const [resilienceWeights, setResilienceWeights] = useState<ResilienceWeights>(DEFAULT_WEIGHTS);
+  const [resilienceWeights, setResiliencyWeights] = useState<ResiliencyWeights>(DEFAULT_WEIGHTS);
 
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
@@ -281,20 +288,17 @@ const WorkloadView: React.FC = () => {
     }
   }, []);
 
-  const applyResilienceOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
+  const applyResiliencyOverrides = useCallback((evaluations: Record<string, any>, overrides?: Record<string, any>) => {
     // Build lookup by resilience_check_id (deterministic UUIDv5 from resource_id + recommendation_id)
-    const overrideLookup = new Map<string, { status: "pass" | "fail" | "pending"; validation_source?: string; resilience_check_id?: string }>();
+    // NOTE: We only override status; we intentionally keep the original validation_source so
+    // PendingReview/User sources remain the same after an override.
+    const overrideLookup = new Map<string, { status: "pass" | "fail" | "pending"; resilience_check_id?: string }>();
 
     Object.entries(overrides || {}).forEach(([resilienceCheckId, override]) => {
       if (!resilienceCheckId) return;
 
-      const validationSource = ((override as any)?.overridden_by || "").toLowerCase() === "user"
-        ? "User"
-        : (override as any)?.overridden_by;
-
       overrideLookup.set(resilienceCheckId, {
         status: (override as any)?.status,
-        validation_source: validationSource,
         resilience_check_id: resilienceCheckId,
       });
     });
@@ -313,7 +317,8 @@ const WorkloadView: React.FC = () => {
           return {
             ...check,
             status: override.status,
-            validation_source: override.validation_source || check.validation_source,
+            // Preserve the original validation_source to keep PendingReview/User intact
+            validation_source: check.validation_source,
             resilience_check_id: resilienceCheckId,
           };
         });
@@ -336,11 +341,11 @@ const WorkloadView: React.FC = () => {
     );
   }, []);
 
-  const upsertResilienceOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
+  const upsertResiliencyOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
     const resilienceCheckId = override?.resilience_check_id;
     if (!resilienceCheckId) return;
 
-    setResilienceOverrides(prev => ({
+    setResiliencyOverrides(prev => ({
       ...(prev || {}),
       [resilienceCheckId]: {
         ...(prev || {})[resilienceCheckId],
@@ -350,10 +355,10 @@ const WorkloadView: React.FC = () => {
     }));
   }, []);
 
-  const removeResilienceOverride = useCallback((resilienceCheckId: string) => {
+  const removeResiliencyOverride = useCallback((resilienceCheckId: string) => {
     if (!resilienceCheckId) return;
 
-    setResilienceOverrides(prev => {
+    setResiliencyOverrides(prev => {
       const next = { ...(prev || {}) };
       delete next[resilienceCheckId];
       return next;
@@ -363,7 +368,7 @@ const WorkloadView: React.FC = () => {
   const applyOptimisticOverrideRemoval = useCallback((resilienceCheckId: string, resourceId?: string) => {
     if (!resilienceCheckId || !resourceId) return;
 
-    setResilienceEvaluations(prev => {
+    setResiliencyEvaluations(prev => {
       if (!prev || !prev[resourceId]) return prev;
 
       const entry = prev[resourceId];
@@ -428,7 +433,7 @@ const WorkloadView: React.FC = () => {
       persistGraph(mergedGraph);
       setGraph(mergedGraph);
 
-      const mergedEvaluations = mergeResilienceEvaluations(
+      const mergedEvaluations = mergeResiliencyEvaluations(
         results.map(item => ({
           subscriptionId: item.subscriptionId,
           evaluations: item.raw.resilience_evaluations?.evaluations || {},
@@ -440,14 +445,14 @@ const WorkloadView: React.FC = () => {
       }, {});
 
       if (Object.keys(mergedEvaluations).length > 0) {
-        setResilienceEvaluations(mergedEvaluations);
-        setResilienceData({ evaluations: mergedEvaluations });
+        setResiliencyEvaluations(mergedEvaluations);
+        setResiliencyData({ evaluations: mergedEvaluations });
       } else {
-        setResilienceEvaluations(null);
-        setResilienceData(null);
+        setResiliencyEvaluations(null);
+        setResiliencyData(null);
       }
 
-      setResilienceOverrides(mergedOverrides);
+      setResiliencyOverrides(mergedOverrides);
 
       if (skipFilterResetRef.current) {
         skipFilterResetRef.current = false;
@@ -465,42 +470,42 @@ const WorkloadView: React.FC = () => {
   }, [selectedSubscriptionIds, storageKey]);
 
   const handleOverrideSaved = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
-    upsertResilienceOverride(override);
+    upsertResiliencyOverride(override);
     if (override?.resource_id) {
       const parts = override.resource_id.split("/").filter(p => p);
       const subId = parts[0]?.toLowerCase() === "subscriptions" ? parts[1] : null;
       if (subId) markSubscriptionDirty(subId);
     }
-  }, [upsertResilienceOverride, markSubscriptionDirty]);
+  }, [upsertResiliencyOverride, markSubscriptionDirty]);
 
   const handleOverrideDeleted = useCallback((resilienceCheckId: string, resourceId?: string) => {
-    removeResilienceOverride(resilienceCheckId);
+    removeResiliencyOverride(resilienceCheckId);
     applyOptimisticOverrideRemoval(resilienceCheckId, resourceId);
     if (resourceId) {
       const parts = resourceId.split("/").filter(p => p);
       const subId = parts[0]?.toLowerCase() === "subscriptions" ? parts[1] : null;
       if (subId) markSubscriptionDirty(subId);
     }
-  }, [removeResilienceOverride, applyOptimisticOverrideRemoval, markSubscriptionDirty]);
+  }, [removeResiliencyOverride, applyOptimisticOverrideRemoval, markSubscriptionDirty]);
 
-  const fetchZonalResilience = useCallback(async () => {
+  const fetchZonalResiliency = useCallback(async () => {
     if (selectedSubscriptionIds.length === 0) return;
     try {
-      setZonalResilienceLoading(true);
-      setZonalResilienceError(null);
+      setZonalResiliencyLoading(true);
+      setZonalResiliencyError(null);
 
       const dataList = await Promise.all(
         selectedSubscriptionIds.map(async subscriptionId => ({
           subscriptionId,
-          data: await getZonalResilience(subscriptionId),
+          data: await getZonalResiliency(subscriptionId),
         }))
       );
 
-      setZonalResilienceData(mergeZonalResilienceData(dataList));
+      setZonalResiliencyData(mergeZonalResiliencyData(dataList));
     } catch (err: any) {
-      setZonalResilienceError(err.message ?? "Failed to load zonal resilience data");
+      setZonalResiliencyError(err.message ?? "Failed to load zonal resilience data");
     } finally {
-      setZonalResilienceLoading(false);
+      setZonalResiliencyLoading(false);
     }
   }, [selectedSubscriptionIds]);
 
@@ -551,7 +556,7 @@ const WorkloadView: React.FC = () => {
         const response = await fetch('/api/resilience/weights');
         if (response.ok) {
           const data = await response.json();
-          setResilienceWeights({
+          setResiliencyWeights({
             categoryWeights: data.category_weights || DEFAULT_WEIGHTS.categoryWeights,
             impactWeights: data.impact_weights || DEFAULT_WEIGHTS.impactWeights,
           });
@@ -587,14 +592,40 @@ const WorkloadView: React.FC = () => {
     return computeResourceGroupOptions(graph, viewLevel, aiLayerEnabled, userLayerEnabled);
   }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
+  const handleResourceGroupFilterChange = useCallback((next: Set<string>) => {
+    resourceGroupFilterUserTouchedRef.current = true;
+    setResourceGroupFilter(next);
+  }, []);
+
   const serviceOptions = useMemo(() => {
     if (!graph) return [];
     return computeServiceOptions(graph, viewLevel, aiLayerEnabled, userLayerEnabled);
   }, [graph, viewLevel, aiLayerEnabled, userLayerEnabled]);
 
+  const handleServiceFilterChange = useCallback((next: Set<string>) => {
+    serviceFilterUserTouchedRef.current = true;
+    setServiceFilter(next);
+  }, []);
+
+  const validationSourceOptions = useMemo(() => {
+    return computeValidationSourceOptions(resilience_evaluations);
+  }, [resilience_evaluations]);
+
+  const handleValidationSourceFilterChange = useCallback((next: Set<string>) => {
+    validationSourceFilterUserTouchedRef.current = true;
+    setValidationSourceFilter(next);
+  }, []);
+
   useEffect(() => {
     if (!serviceOptions.length) {
       if (expandedCategories.size) setExpandedCategories(new Set());
+      return;
+    }
+
+    // Auto-populate serviceFilter if it's empty (after subscription change or reset)
+    if (!serviceFilterUserTouchedRef.current && serviceFilter.size === 0) {
+      const allServices = serviceOptions.flatMap(cat => cat.services.map(s => s.key));
+      setServiceFilter(new Set(allServices));
       return;
     }
 
@@ -622,9 +653,30 @@ const WorkloadView: React.FC = () => {
       return;
     }
 
+    // Auto-populate resourceGroupFilter if it's empty (after subscription change or reset)
+    if (!resourceGroupFilterUserTouchedRef.current && resourceGroupFilter.size === 0) {
+      const allGroups = resourceGroupOptions.map(rg => rg.key);
+      setResourceGroupFilter(new Set(allGroups));
+      return;
+    }
+
     // Keep the user's current selection; avoid shrinking it when the option list changes.
     // This prevents transient option recalculation from hiding nodes unexpectedly.
   }, [resourceGroupOptions, resourceGroupFilter.size]);
+
+  useEffect(() => {
+    if (!validationSourceOptions.length) {
+      if (validationSourceFilter.size) setValidationSourceFilter(new Set());
+      return;
+    }
+
+    // Auto-populate only if user hasn't intentionally changed it (e.g., uncheck all)
+    if (!validationSourceFilterUserTouchedRef.current && validationSourceFilter.size === 0) {
+      const allSources = validationSourceOptions.map(s => s.key);
+      setValidationSourceFilter(new Set(allSources));
+      return;
+    }
+  }, [validationSourceOptions, validationSourceFilter.size]);
 
   // Build annotation map for element weight lookup
   const annotationMap = useMemo(() => {
@@ -639,8 +691,8 @@ const WorkloadView: React.FC = () => {
   // Merge overrides into evaluations for scoring without mutating cached graph
   const mergedEvaluations = useMemo(() => {
     if (!resilience_evaluations) return null;
-    return applyResilienceOverrides(resilience_evaluations, resilience_overrides);
-  }, [resilience_evaluations, resilience_overrides, applyResilienceOverrides]);
+    return applyResiliencyOverrides(resilience_evaluations, resilience_overrides);
+  }, [resilience_evaluations, resilience_overrides, applyResiliencyOverrides]);
 
   // Enrich graph with calculated resilience scores (SINGLE CALCULATION POINT)
   const graphWithScores = useMemo(() => {
@@ -671,7 +723,7 @@ const WorkloadView: React.FC = () => {
       }
 
       const elementWeight = getElementWeight(nodeId, annotationMap);
-      const score = calculateResilienceScore(checks, elementWeight, resilienceWeights);
+      const score = calculateResiliencyScore(checks, elementWeight, resilienceWeights);
 
       return {
         ...node,
@@ -766,10 +818,10 @@ const WorkloadView: React.FC = () => {
   useEffect(() => {
     if (selectedSubscriptionIds.length === 0) {
       setGraph(null);
-      setResilienceEvaluations(null);
-      setResilienceOverrides({});
-      setResilienceData(null);
-      setZonalResilienceData(null);
+      setResiliencyEvaluations(null);
+      setResiliencyOverrides({});
+      setResiliencyData(null);
+      setZonalResiliencyData(null);
       setPendingRefreshSubscriptions(new Set());
       setNeedsRefresh(false);
       return;
@@ -778,8 +830,8 @@ const WorkloadView: React.FC = () => {
     const stored = readStoredGraph();
     setGraph(stored);
     fetchGraph();
-    fetchZonalResilience();
-  }, [selectionKey, selectedSubscriptionIds.length, fetchGraph, fetchZonalResilience]);
+    fetchZonalResiliency();
+  }, [selectionKey, selectedSubscriptionIds.length, fetchGraph, fetchZonalResiliency]);
 
   // Accept edge
   const handleAcceptEdge = async (edgeId: string) => {
@@ -1047,13 +1099,31 @@ const WorkloadView: React.FC = () => {
     if (!nodeSubscriptionId) return;
 
     try {
-      await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
+      const response = await patchNode(nodeSubscriptionId, nodeId, { hidden: true });
 
       // Optimistic local updates: drop node, associated edges, group membership, and resilience data
       updateGraph(prev => {
         if (!prev) return prev;
         const remainingNodes = (prev.nodes || []).filter(n => n.id !== nodeId);
         const remainingEdges = (prev.edges || []).filter(e => e.source !== nodeId && e.target !== nodeId);
+        
+        // Add the bridge edges returned by the API
+        const newEdges = remainingEdges;
+        if (response?.bridge_edges && Array.isArray(response.bridge_edges)) {
+          for (const bridgeEdge of response.bridge_edges) {
+            newEdges.push({
+              id: bridgeEdge.id,
+              source: bridgeEdge.source,
+              target: bridgeEdge.target,
+              relationship: bridgeEdge.relationship,
+              confidence: bridgeEdge.confidence,
+              status: bridgeEdge.status,
+              origin: bridgeEdge.origin,
+              created_by: bridgeEdge.created_by,
+            });
+          }
+        }
+        
         const remainingGroups = (prev.groups || []).map(g => ({
           ...g,
           nodes: Array.isArray(g.nodes) ? g.nodes.filter(id => id !== nodeId) : [],
@@ -1061,17 +1131,17 @@ const WorkloadView: React.FC = () => {
         // Update node_overrides to track that this node is hidden
         const updatedOverrides = { ...prev.node_overrides };
         updatedOverrides[nodeId] = { ...updatedOverrides[nodeId], hidden: true };
-        return { ...prev, nodes: remainingNodes, edges: remainingEdges, groups: remainingGroups, node_overrides: updatedOverrides };
+        return { ...prev, nodes: remainingNodes, edges: newEdges, groups: remainingGroups, node_overrides: updatedOverrides };
       });
 
-      setResilienceEvaluations(prev => {
+      setResiliencyEvaluations(prev => {
         if (!prev) return prev;
         const next = { ...prev } as Record<string, any>;
         delete next[nodeId];
         return next;
       });
 
-      setResilienceData((prev: any) => {
+      setResiliencyData((prev: any) => {
         if (!prev?.evaluations) return prev;
         const nextEvals = { ...prev.evaluations } as Record<string, any>;
         delete nextEvals[nodeId];
@@ -1133,6 +1203,15 @@ const WorkloadView: React.FC = () => {
         }
       });
 
+      // Clear bridge edges for all affected subscriptions before restoring
+      for (const subId of dirtySubscriptions) {
+        try {
+          await clearBridgeEdges(subId);
+        } catch (err) {
+          console.warn(`Failed to clear bridge edges for ${subId}:`, err);
+        }
+      }
+
       // Execute all patch operations in parallel
       const patchPromises = patchOperations.map(({ nodeId, subscriptionId }) =>
         patchNode(subscriptionId, nodeId, { hidden: false })
@@ -1149,7 +1228,7 @@ const WorkloadView: React.FC = () => {
       console.error("Failed to restore hidden resources", err);
       // Silently continue - the refresh might still work
     }
-  };
+  };;
 
   const handleRenameNode = async (nodeId: string) => {
     const node = viewGraph?.nodes.find(n => n.id === nodeId);
@@ -1551,7 +1630,11 @@ const WorkloadView: React.FC = () => {
     // Reset filters - empty sets will trigger useEffect hooks to select all options
     setServiceFilter(new Set());
     setResourceGroupFilter(new Set());
+    setValidationSourceFilter(new Set());
     setExpandedCategories(new Set());
+    serviceFilterUserTouchedRef.current = false;
+    resourceGroupFilterUserTouchedRef.current = false;
+    validationSourceFilterUserTouchedRef.current = false;
   }, []);
 
   const handleSelectedSubscriptionsChange = useCallback((next: Set<string>) => {
@@ -1791,10 +1874,13 @@ const WorkloadView: React.FC = () => {
             onViewLevelChange={setViewLevel}
             resourceGroupOptions={resourceGroupOptions}
             resourceGroupFilter={resourceGroupFilter}
-            onResourceGroupFilterChange={setResourceGroupFilter}
+            onResourceGroupFilterChange={handleResourceGroupFilterChange}
             serviceOptions={serviceOptions}
             serviceFilter={serviceFilter}
-            onServiceFilterChange={setServiceFilter}
+            onServiceFilterChange={handleServiceFilterChange}
+            validationSourceOptions={validationSourceOptions}
+            validationSourceFilter={validationSourceFilter}
+            onValidationSourceFilterChange={handleValidationSourceFilterChange}
             expandedCategories={expandedCategories}
             onExpandedCategoriesChange={setExpandedCategories}
             showLegend={showLegend}
@@ -2055,12 +2141,12 @@ const WorkloadView: React.FC = () => {
           >
             {sidebarOpen ? <ArrowCollapseAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} /> : <ArrowExpandAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} />}
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resilience IQ</h2>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resiliency IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button
               onClick={() => {
                 fetchGraph();
-                fetchZonalResilience();
+                fetchZonalResiliency();
               }}
               disabled={selectedSubscriptionIds.length === 0}
               style={{
@@ -2142,7 +2228,7 @@ const WorkloadView: React.FC = () => {
           </div>
         </div>
 
-        {/* Tabbed View: Graph and Resilience */}
+        {/* Tabbed View: Graph and Resiliency */}
         <div style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column" }}>
           <TabbedView
             tabs={[
@@ -2239,7 +2325,7 @@ const WorkloadView: React.FC = () => {
                     Select one or more subscriptions to view resilience findings.
                   </div>
                 ) : resilience_evaluations ? (
-                  <ResilienceSummary
+                  <ResiliencySummary
                     evaluations={resilience_evaluations || {}}
                     workloadScore={resilience_data?.workload_score}
                     subscriptionId={singleSubscriptionId ?? undefined}
@@ -2249,6 +2335,7 @@ const WorkloadView: React.FC = () => {
                     viewLevel={viewLevel}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    validationSourceFilter={validationSourceFilter}
                     onOverrideSaved={handleOverrideSaved}
                     onOverrideDeleted={handleOverrideDeleted}
                   />
@@ -2259,7 +2346,7 @@ const WorkloadView: React.FC = () => {
                 ),
               },
               {
-                label: "Zonal Resilience",
+                label: "Zonal Resiliency",
                 icon: "🌍",
                 content: !hasSelection ? (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
@@ -2274,7 +2361,7 @@ const WorkloadView: React.FC = () => {
                     <strong>Error:</strong> {zonal_resilience_error}
                   </div>
                 ) : zonal_resilience_data ? (
-                  <ZonalResilienceSummary 
+                  <ZonalResiliencySummary 
                     data={zonal_resilience_data} 
                     graphData={graph ?? undefined}
                     resourceGroupFilter={resourceGroupFilter}

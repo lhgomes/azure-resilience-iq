@@ -59,7 +59,7 @@ class RecommendationMatcher:
     
     # Known ID mappings (from our analysis)
     ID_MAPPING = {
-        # WARA recommendationTypeId → Resilience aprlGuid
+        # WARA recommendationTypeId → Resiliency aprlGuid
         "1670c0af-6536-4cbf-872f-152c91a51a80": "302fda08-ee65-4fbe-a916-6dc0b33169c4",  # Capacity Reservation
         "5f2613df-629f-4b07-9425-2a47ea0dfad3": "273f6b30-68e0-4241-85ea-acf15ffb60bf",  # VMSS Flex
     }
@@ -297,7 +297,7 @@ class UnifiedRecommendationsService:
         Deduplicate recommendations from both sources.
         
         Strategy:
-        1. Use ID matching first (WARA ID → Resilience ID mapping)
+        1. Use ID matching first (WARA ID → Resiliency ID mapping)
         2. Use description similarity matching
         3. Keep unmatched recommendations from both sources
         """

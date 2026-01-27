@@ -28,6 +28,7 @@ const AzureEdge: React.FC<EdgeProps> = ({
     if (edgeData.origin === "manual") return "#22c55e";
     if (edgeData.origin === "llm") return "#f59e0b";
     if (edgeData.origin === "heuristic") return "#9AA0A6";
+    if (edgeData.origin === "bridge") return "#d946ef"; // Bridge edges - magenta
     return "#5EA0EF"; // ARG edges
   };
 

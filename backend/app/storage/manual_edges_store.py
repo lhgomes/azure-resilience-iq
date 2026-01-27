@@ -37,3 +37,14 @@ def delete_manual_edge(subscription_id: str, edge_id: str) -> bool:
     write_json(_path(subscription_id), [e.model_dump() for e in new_edges])
 
     return True
+
+
+def replace_edges_for_origin(subscription_id: str, origin: str, new_edges: list[ManualEdge]):
+    edges = load_manual_edges(subscription_id)
+    preserved = [e for e in edges if e.origin != origin]
+
+    dedup: dict[str, ManualEdge] = {e.id: e for e in preserved}
+    for edge in new_edges:
+        dedup[edge.id] = edge
+
+    write_json(_path(subscription_id), [e.model_dump() for e in dedup.values()])

@@ -9,7 +9,7 @@ This module orchestrates the flow:
 """
 
 from typing import Dict, Any, List, Optional
-from app.resilience.evaluator import ResilienceEvaluator
+from app.resilience.evaluator import ResiliencyEvaluator
 from app.models import WorkloadComponent
 from app.settings import get_settings
 import yaml
@@ -19,7 +19,7 @@ import logging
 LOGGER = logging.getLogger(__name__)
 
 
-class ResiliencePipeline:
+class ResiliencyPipeline:
     """
     Orchestrates the resilience analysis pipeline.
     
@@ -50,7 +50,7 @@ class ResiliencePipeline:
         aprl_root = aprl_root or settings.get_aprl_root()
         rules_dir = rules_dir or settings.get_rules_dir()
         
-        self.evaluator = ResilienceEvaluator(
+        self.evaluator = ResiliencyEvaluator(
             aprl_root=aprl_root,
             rules_dir=rules_dir,
             subscription_filter=subscription_filter,
@@ -80,12 +80,12 @@ class ResiliencePipeline:
         )
         
         # Step 2: Return evaluation results (frontend handles all scoring)
-        print("Resilience evaluation completed - scoring done client-side")
+        print("Resiliency evaluation completed - scoring done client-side")
         
         final_output = {
             "workload_name": workload_name,
             "evaluation": evaluation_results,
         }
         
-        print("Resilience analysis completed successfully")
+        print("Resiliency analysis completed successfully")
         return final_output
