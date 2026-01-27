@@ -508,6 +508,14 @@ def main():
             subscription_name = ""
             subscription_virtual_flag = False
 
+        # Filter to only monitored resources for resilience evaluation
+        # Non-monitored resources are kept in the graph for topology/relationship mapping
+        monitored_resources = [r for r in resources if r.get("monitored", True)]
+        non_monitored_count = len(resources) - len(monitored_resources)
+        if non_monitored_count > 0:
+            LOGGER.info(f"Filtering out {non_monitored_count} non-monitored resources for resilience evaluation")
+        
+        resources = monitored_resources
         virtual_flags = [bool(res.get("virtual", False)) for res in resources]
         all_virtual_resources = bool(resources) and all(virtual_flags)
         any_virtual_resources = any(virtual_flags)

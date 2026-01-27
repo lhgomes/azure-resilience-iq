@@ -18,11 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
-from app.resource_filters import (
-    filter_edges_by_ids,
-    filter_resources_by_type,
-    load_monitored_resource_types,
-)
+from app.resource_filters import load_monitored_resource_types
 from app.terraform.parser import TerraformParser
 from app.terraform.generator import TerraformResourceGenerator
 
@@ -186,10 +182,14 @@ Examples:
         generator.add_resources(tf_resources)
         resources_output, edges_output = generator.generate()
 
-        resources_output["resources"], kept_ids = filter_resources_by_type(
-            resources_output["resources"], allowed_types
-        )
-        edges_output["edges"] = filter_edges_by_ids(edges_output["edges"], kept_ids)
+        monitored_types = allowed_types or set()
+        for res in resources_output["resources"]:
+            res_type = str(res.get("type", "")).lower()
+            res["monitored"] = res_type in monitored_types
+
+        if allowed_types:
+            monitored_count = sum(1 for r in resources_output["resources"] if r.get("monitored"))
+            print(f"ℹ️ Flagged {monitored_count}/{len(resources_output['resources'])} resources as monitored types")
         
         # Create subscription directory
         sub_dir = get_subscription_dir(args.subscription_id)
