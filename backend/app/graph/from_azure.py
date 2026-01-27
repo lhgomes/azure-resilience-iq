@@ -12,6 +12,7 @@ from app.relationships.extract_networking import extract_networking_relationship
 from app.relationships.extract_private_endpoints import extract_private_endpoint_relationships
 from app.storage.manual_edges_store import load_manual_edges
 from app.config import get_edges_path
+from app.graph.bridge_edges import create_bridge_edges_for_non_monitored
 
 
 def load_unified_edges(subscription_id: str) -> List[Dict[str, Any]]:
@@ -118,6 +119,7 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
                 "importance": importance,
                 "display_name": base_name,
                 "virtual": bool(r.get("virtual", False)),
+                "monitored": r.get("monitored", True),  # Preserve monitored flag from resource
             }
         ))
 
@@ -278,5 +280,70 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             status=EdgeStatus.accepted
         ))
 
+    # Separate monitored and non-monitored nodes
+    monitored_node_ids = set()
+    for n in snapshot["nodes"]:
+        if isinstance(n, Node):
+            is_monitored = n.metadata.get("monitored", True)
+        elif isinstance(n, dict):
+            is_monitored = n.get("metadata", {}).get("monitored", True)
+        else:
+            # Pydantic model or other object
+            meta = getattr(n, "metadata", {})
+            is_monitored = meta.get("monitored", True) if isinstance(meta, dict) else True
+        
+        if is_monitored:
+            node_id = n.id if isinstance(n, Node) else n.get("id") if isinstance(n, dict) else getattr(n, "id", None)
+            if node_id:
+                monitored_node_ids.add(node_id)
+    
+    # Create bridge edges that connect monitored resources through non-monitored intermediates
+    bridge_edges = create_bridge_edges_for_non_monitored(merged_edges, monitored_node_ids)
+    
+    # Convert bridge edges back to Edge objects and add to merged edges
+    for be in bridge_edges:
+        be_obj = Edge(
+            id=be["id"],
+            source=be["source"],
+            target=be["target"],
+            relationship=be["relationship"],
+            confidence=be["confidence"],
+            origin=be["origin"],
+            evidence=[],
+            status=EdgeStatus.accepted
+        )
+        # Avoid duplicates by checking if this edge (source, target) already exists
+        if not any(e.source == be_obj.source and e.target == be_obj.target for e in merged_edges):
+            merged_edges.append(be_obj)
+
     snapshot["edges"] = merged_edges
+    
+    # Filter snapshot to only include monitored nodes and their edges
+    filtered_nodes = []
+    for n in snapshot["nodes"]:
+        if isinstance(n, Node):
+            node_id = n.id
+        elif isinstance(n, dict):
+            node_id = n.get("id")
+        else:
+            node_id = getattr(n, "id", None)
+        
+        if node_id in monitored_node_ids:
+            filtered_nodes.append(n)
+    
+    filtered_edges = []
+    for e in snapshot["edges"]:
+        if isinstance(e, Edge):
+            source, target = e.source, e.target
+        elif isinstance(e, dict):
+            source, target = e.get("source"), e.get("target")
+        else:
+            source, target = getattr(e, "source", None), getattr(e, "target", None)
+        
+        if source in monitored_node_ids and target in monitored_node_ids:
+            filtered_edges.append(e)
+    
+    snapshot["nodes"] = filtered_nodes
+    snapshot["edges"] = filtered_edges
+    
     return snapshot

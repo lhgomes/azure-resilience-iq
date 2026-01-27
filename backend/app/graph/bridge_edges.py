@@ -1,4 +1,4 @@
-"""Utility to create bridge edges when nodes are hidden."""
+"""Utility to create bridge edges when nodes are hidden or non-monitored."""
 
 import logging
 from app.intent.manual_edge import ManualEdge
@@ -183,3 +183,110 @@ def _find_visible_descendants(start_node: str, edges: list, visible_ids: set, hi
                 stack.append(next_node)
     
     return visible_descendants
+
+
+def create_bridge_edges_for_non_monitored(
+    edges: list, 
+    visible_node_ids: set
+) -> list:
+    """
+    Create bridge edges that connect monitored resources through non-monitored intermediates.
+    
+    When non-monitored resources exist in the topology (e.g., subnets between VMs and VNets),
+    create direct edges between the monitored endpoints to preserve the relationship.
+    
+    Args:
+        edges: All edges from the graph (can be Edge objects or dicts)
+        visible_node_ids: Set of monitored (visible) node IDs
+    
+    Returns:
+        List of created bridge edges (as dicts)
+    """
+    # Build adjacency for breadth-first search
+    forward_edges = {}  # node_id -> [(target, relationship, confidence), ...]
+    
+    for edge in edges:
+        if isinstance(edge, dict):
+            src = edge.get("source")
+            tgt = edge.get("target")
+            rel = edge.get("relationship", "relates_to")
+            conf = edge.get("confidence", 0.7)
+        else:
+            src = getattr(edge, "source", None)
+            tgt = getattr(edge, "target", None)
+            rel = getattr(edge, "relationship", "relates_to")
+            conf = getattr(edge, "confidence", 0.7)
+        
+        if not src or not tgt:
+            continue
+        
+        if src not in forward_edges:
+            forward_edges[src] = []
+        forward_edges[src].append((tgt, rel, conf))
+    
+    bridge_edges_by_pair = {}
+    
+    # For each visible source node, find visible descendants through non-visible intermediates
+    for source in visible_node_ids:
+        if source not in forward_edges:
+            continue
+        
+        # BFS through non-visible nodes to find visible targets
+        visited = {source}
+        queue = [(source, None, None)]  # (current_node, first_rel, first_conf)
+        
+        while queue:
+            current, first_rel, first_conf = queue.pop(0)
+            
+            if current not in forward_edges:
+                continue
+            
+            for next_node, rel, conf in forward_edges[current]:
+                if next_node in visited:
+                    continue
+                visited.add(next_node)
+                
+                # Use first relationship encountered in path
+                path_rel = first_rel or rel
+                path_conf = first_conf if first_conf is not None else conf
+                
+                if next_node in visible_node_ids and next_node != source:
+                    # Found a visible target; create bridge edge
+                    pair = (source, next_node)
+                    if pair not in bridge_edges_by_pair:
+                        bridge_edges_by_pair[pair] = (path_rel, path_conf)
+                        LOGGER.debug(f"Bridge: {source} -> {next_node} ({path_rel}) via non-monitored intermediates")
+                elif next_node not in visible_node_ids:
+                    # Continue searching through non-visible node
+                    queue.append((next_node, path_rel, path_conf))
+    
+    # Convert bridge edges to ManualEdge objects for storage
+    bridge_edges = []
+    for (source, target), (rel, conf) in bridge_edges_by_pair.items():
+        eid = edge_id(source, target, rel)
+        bridge_edges.append(
+            ManualEdge(
+                id=eid,
+                source=source,
+                target=target,
+                relationship=rel,
+                confidence=conf,
+                status="accepted",
+                origin="bridge_non_monitored",
+                created_by="system",
+            )
+        )
+    
+    return [
+        {
+            "id": e.id,
+            "source": e.source,
+            "target": e.target,
+            "relationship": e.relationship,
+            "confidence": e.confidence,
+            "status": e.status,
+            "origin": e.origin,
+            "created_by": e.created_by,
+        }
+        for e in bridge_edges
+    ]

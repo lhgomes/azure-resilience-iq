@@ -111,6 +111,9 @@ def get_workload_graph(subscription_id: str) -> dict:
     
     nodes_by_id = {n.get("id"): n for n in nodes_list if n.get("id")}
 
+    # Get monitored node IDs (already filtered by graph builder, but document for clarity)
+    monitored_ids = {node_id for node_id, node in nodes_by_id.items() if node.get("monitored", True)}
+
     # Apply user overrides that hide resources entirely
     hidden_ids = {node_id for node_id, override in node_overrides.items() if getattr(override, "hidden", False)}
     if hidden_ids:
@@ -148,6 +151,11 @@ def get_workload_graph(subscription_id: str) -> dict:
             resilience_results["evaluations"] = {
                 rid: data for rid, data in resilience_results.get("evaluations", {}).items() if rid not in hidden_ids
             }
+    
+    # Ensure only monitored nodes are in the final graph (already filtered by graph builder, but double-check)
+    # This ensures the API response only includes monitored resources
+    final_node_ids = {node_id for node_id in nodes_by_id.keys() if nodes_by_id[node_id].get("monitored", True)}
+    nodes_by_id = {node_id: node for node_id, node in nodes_by_id.items() if node_id in final_node_ids}
     
     for llm_node in annotations.nodes:
         node_id = llm_node.node_id
