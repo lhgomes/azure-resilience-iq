@@ -40,6 +40,7 @@ export interface GraphEdge {
   status?: "proposed" | "accepted" | "rejected";
   evidence?: Array<Record<string, unknown>>;
   origin?: string;
+  created_by?: string;
 }
 
 type GroupCreateRequest = { nonce: number; label: string };
