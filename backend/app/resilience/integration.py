@@ -6,7 +6,7 @@ into your existing Collect -> LLM -> Evaluate flow.
 """
 
 from typing import List, Dict, Any
-from app.resilience.pipeline import ResiliencePipeline
+from app.resilience.pipeline import ResiliencyPipeline
 from app.models import WorkloadComponent
 from app.graph.model import WorkloadGraph
 
@@ -48,7 +48,7 @@ async def analyze_workload_resilience(
     """
     
     # Initialize the resilience pipeline (loads settings from app config)
-    pipeline = ResiliencePipeline(
+    pipeline = ResiliencyPipeline(
         aprl_root=aprl_root,
         rules_dir=rules_dir,
     )
@@ -128,7 +128,7 @@ async def main_pipeline_example():
     # annotator = LLMAnnotator(...)
     # annotated_graph = await annotator.annotate(graph)
     
-    # Step 3 & 4: NEW - Resilience evaluation and scoring
+    # Step 3 & 4: NEW - Resiliency evaluation and scoring
     # resilience_results = await analyze_workload_resilience(
     #     workload_graph=annotated_graph,
     #     workload_name="my-workload",

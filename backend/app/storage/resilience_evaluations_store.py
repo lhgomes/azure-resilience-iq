@@ -1,5 +1,5 @@
 """
-Resilience Evaluations Storage Module
+Resiliency Evaluations Storage Module
 
 Provides functions to load and save APRL resilience evaluation results.
 Results are stored as JSON in data/{subscription_id}/resilience_evaluations.json

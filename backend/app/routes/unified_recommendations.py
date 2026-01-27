@@ -459,7 +459,7 @@ async def get_zonal_resilience_evaluations(subscription_id: str):
     Get resilience evaluation details for zonal resilience analysis.
     
     Returns evaluation checks for each resource including failure reasons and LLM reasoning.
-    Used by the frontend Zonal Resilience component to display rationale for non-compliant resources.
+    Used by the frontend Zonal Resiliency component to display rationale for non-compliant resources.
     
     Returns:
         {
@@ -496,7 +496,7 @@ async def get_zonal_resilience_evaluations(subscription_id: str):
     except FileNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=f"Resilience evaluations not found for subscription {subscription_id}. "
+            detail=f"Resiliency evaluations not found for subscription {subscription_id}. "
                    f"Run resilience evaluation first."
         )
     except Exception as e:

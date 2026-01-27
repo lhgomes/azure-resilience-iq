@@ -4,7 +4,7 @@
 
 import type { GraphSnapshot } from "../domain/graphView";
 import type { GraphNode, GraphEdge } from "../components/GraphCanvasReactflow";
-import type { ZonalResilienceResponse } from "../api/resilience";
+import type { ZonalResiliencyResponse } from "../api/resilience";
 import type { LlmNodeAnnotation, LlmEdgeSuggestion, NodeGroup } from "../api/workloads";
 
 /**
@@ -122,7 +122,7 @@ export function mergeGraphSnapshots(
 /**
  * Merge resilience evaluations from multiple subscriptions
  */
-export function mergeResilienceEvaluations(
+export function mergeResiliencyEvaluations(
   evaluations: Array<{ subscriptionId: string; evaluations: Record<string, any> }>,
 ): Record<string, any> {
   const merged: Record<string, any> = {};
@@ -174,9 +174,9 @@ export function mergeResilienceEvaluations(
 /**
  * Merge zonal resilience data from multiple subscriptions
  */
-export function mergeZonalResilienceData(
-  dataList: Array<{ subscriptionId: string; data: ZonalResilienceResponse }>,
-): ZonalResilienceResponse {
+export function mergeZonalResiliencyData(
+  dataList: Array<{ subscriptionId: string; data: ZonalResiliencyResponse }>,
+): ZonalResiliencyResponse {
   if (dataList.length === 0) {
     return {
       subscription_id: "multi",
@@ -189,7 +189,7 @@ export function mergeZonalResilienceData(
     return dataList[0].data;
   }
 
-  const resourceMap = new Map<string, ZonalResilienceResponse["resources"][number]>();
+  const resourceMap = new Map<string, ZonalResiliencyResponse["resources"][number]>();
   let latestTimestamp = dataList[0].data.analysis_timestamp;
 
   dataList.forEach(({ data }) => {

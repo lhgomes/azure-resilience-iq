@@ -14,7 +14,7 @@ from pathlib import Path
 backend_dir = Path(__file__).parent
 sys.path.insert(0, str(backend_dir))
 
-from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResilienceSummary
+from app.resilience.zonal_analyzer import ZonalAnalyzer, ZonalResiliencySummary
 from datetime import datetime, timezone
 
 
@@ -66,7 +66,7 @@ def test_zonal_analysis(subscription_id: str):
     
     # Calculate summary (pass resources for region analysis)
     all_zonal = [ZonalAnalyzer.extract_zonal_data(r) for r in resources]
-    summary = ZonalResilienceSummary(all_zonal, resources)
+    summary = ZonalResiliencySummary(all_zonal, resources)
     
     # Print summary
     print("ZONAL RESILIENCE SUMMARY")

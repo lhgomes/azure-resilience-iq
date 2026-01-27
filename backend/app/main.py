@@ -23,12 +23,14 @@ from pathlib import Path
 from app.config import get_subscription_dir
 
 from app.intent.overrides import EdgeOverride, EdgeDecision
-from app.storage.manual_edges_store import save_manual_edge, delete_manual_edge, load_manual_edges
+from app.storage.manual_edges_store import save_manual_edge, delete_manual_edge, load_manual_edges, replace_edges_for_origin
 from app.storage.node_overrides_store import (
     save_node_override,
     load_node_overrides,
     delete_node_override,
 )
+from app.graph.bridge_edges import create_bridge_edges_for_hidden_node
+from app.services.workloads import get_workload_graph
 from app.storage.edge_overrides_store import load_overrides, save_override
 from app.storage.groups_store import (
     load_groups,
@@ -53,7 +55,7 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
-app = FastAPI(title="Azure Resilience IQ")
+app = FastAPI(title="Azure Resiliency IQ")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -73,6 +75,10 @@ class CreateEdgeRequest(BaseModel):
     target: str
     relationship: str
     confidence: float | None = 1.0
+
+
+class SyncBridgeEdgesRequest(BaseModel):
+    edges: list[CreateEdgeRequest] = []
 
 
 class UpdateNodeRequest(BaseModel):
@@ -185,6 +191,8 @@ def reset_criticality_score(subscription_id: str, node_id: str):
 @app.patch("/api/subscriptions/{subscription_id}/nodes/{node_id:path}")
 def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
     node_id_norm = norm_id(node_id)
+    LOGGER.info(f"[PATCH] Received payload: {payload.model_dump(exclude_unset=False)}")
+    LOGGER.info(f"[PATCH] Fields set: {payload.model_fields_set}")
     if not payload.model_fields_set:
         raise HTTPException(status_code=400, detail="at least one field is required")
 
@@ -202,6 +210,8 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
     color = payload.color if "color" in payload.model_fields_set else (existing.color if existing else None)
     icon = payload.icon if "icon" in payload.model_fields_set else (existing.icon if existing else None)
     hidden = payload.hidden if "hidden" in payload.model_fields_set else (existing.hidden if existing else None)
+    
+    LOGGER.info(f"[PATCH] Extracted hidden value: {hidden} (type: {type(hidden).__name__})")
 
     group_id = payload.group_id if "group_id" in payload.model_fields_set else (existing.group_id if existing else None)
     if group_id is not None and group_id.strip() == "":
@@ -259,6 +269,30 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
         }
 
     save_node_override(subscription_id, override)
+    
+    # If node is being hidden, create bridge edges to maintain dependency chains
+    bridge_edges = []
+    if hidden is True:
+        try:
+            LOGGER.info(f"[Hide] Node {node_id_norm} is being hidden, fetching snapshot to create bridges")
+            # Import here to avoid circular imports
+            from app.services.workloads import build_workload_snapshot
+            
+            # Get the raw snapshot (not filtered for hidden nodes) so we can see the node being hidden
+            raw_snapshot = build_workload_snapshot(subscription_id)
+            if raw_snapshot:
+                LOGGER.info(f"[Hide] Got snapshot with {len(raw_snapshot.get('nodes', []))} nodes and {len(raw_snapshot.get('edges', []))} edges")
+                bridge_edges = create_bridge_edges_for_hidden_node(
+                    subscription_id,
+                    node_id_norm,
+                    raw_snapshot.get("edges", []),
+                    raw_snapshot.get("nodes", [])
+                )
+            else:
+                LOGGER.warning(f"[Hide] Failed to get snapshot for {subscription_id}")
+        except Exception as e:
+            LOGGER.warning(f"[Hide] Failed to create bridge edges for hidden node {node_id_norm}: {e}", exc_info=True)
+    
     return {
         "status": "updated",
         "node_id": node_id_norm,
@@ -268,6 +302,7 @@ def update_node(subscription_id: str, node_id: str, payload: UpdateNodeRequest):
         "icon": icon,
         "group_id": group_id,
         "group_label": group_label,
+        "bridge_edges": bridge_edges,
     }
 
 
@@ -319,6 +354,51 @@ def create_manual_edge(subscription_id: str, payload: CreateEdgeRequest):
     save_manual_edge(subscription_id, manual_edge)
 
     return {"edge": manual_edge}
+
+
+@app.put("/api/subscriptions/{subscription_id}/bridge-edges")
+def sync_bridge_edges(subscription_id: str, payload: SyncBridgeEdgesRequest):
+    bridge_edges: list[ManualEdge] = []
+
+    for item in payload.edges:
+        source = norm_id(item.source)
+        target = norm_id(item.target)
+        relationship = item.relationship
+
+        if not source or not target:
+            raise HTTPException(status_code=400, detail="source and target are required")
+
+        if source == target:
+            raise HTTPException(status_code=400, detail="source and target must be different")
+
+        if not relationship:
+            raise HTTPException(status_code=400, detail="relationship is required")
+
+        eid = build_edge_id(source, target, relationship)
+
+        bridge_edges.append(
+            ManualEdge(
+                id=eid,
+                source=source,
+                target=target,
+                relationship=relationship,
+                confidence=item.confidence or 1.0,
+                status="accepted",
+                origin="bridge",
+                created_by="system",
+            )
+        )
+
+    replace_edges_for_origin(subscription_id, "bridge", bridge_edges)
+
+    return {"count": len(bridge_edges)}
+
+
+@app.delete("/api/subscriptions/{subscription_id}/bridge-edges")
+def clear_bridge_edges(subscription_id: str):
+    """Clear all bridge edges for a subscription (used when restoring hidden resources)."""
+    replace_edges_for_origin(subscription_id, "bridge", [])
+    return {"status": "cleared"}
 
 @app.post("/api/subscriptions/{subscription_id}/edges/{edge_id:path}/accept")
 def accept_edge(subscription_id: str, edge_id: str):

@@ -1,5 +1,5 @@
-# Zone Resilience Recommendations - APRL Integration
-# Resilience Rules Extra (APRLv3 Candidate)
+# Zone Resiliency Recommendations - APRL Integration
+# Resiliency Rules Extra (APRLv3 Candidate)
 
 ## Overview
 

@@ -1,4 +1,4 @@
-# Custom Resilience Rules
+# Custom Resiliency Rules
 
 This directory contains custom KQL queries for resilience checks that are **pending contribution to APRL** (Azure Proactive Resiliency Library v2).
 
@@ -197,7 +197,7 @@ across multiple regions.
 
 ---
 
-## Integration with Resilience Analyzer
+## Integration with Resiliency Analyzer
 
 These queries are automatically loaded by the resilience evaluation system:
 

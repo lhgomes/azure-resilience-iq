@@ -1,5 +1,5 @@
 """
-Resilience evaluation engine - evaluates workload components against APRL recommendations.
+Resiliency evaluation engine - evaluates workload components against APRL recommendations.
 
 This module evaluates Azure resources against Azure Proactive Resiliency Library (APRL) v2
 best practices. It determines which recommendations are met and which are not, organizing
@@ -23,7 +23,7 @@ from pathlib import Path
 from app.models import WorkloadComponent
 
 
-class ResilienceEvaluator:
+class ResiliencyEvaluator:
     """
     Evaluates workload components against APRL recommendations.
     
