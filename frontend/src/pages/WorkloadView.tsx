@@ -458,8 +458,12 @@ const WorkloadView: React.FC = () => {
         skipFilterResetRef.current = false;
       } else {
         // Reset filters after loading new graph data so all options are checked
+        serviceFilterUserTouchedRef.current = false;
+        resourceGroupFilterUserTouchedRef.current = false;
+        validationSourceFilterUserTouchedRef.current = false;
         setServiceFilter(new Set());
         setResourceGroupFilter(new Set());
+        setValidationSourceFilter(new Set());
         setExpandedCategories(new Set());
       }
     } catch (err: any) {
