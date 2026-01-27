@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set
 
 import yaml
 from app.settings import load_settings
@@ -40,7 +40,7 @@ def load_monitored_resource_types(config_path: Optional[str] = None) -> Set[str]
     try:
         raw = _load_raw_config(target)
     except FileNotFoundError:
-        LOGGER.warning("HA/DR resource type config not found at %s; no filtering applied", target)
+        LOGGER.warning("HA/DR resource type config not found at %s; no monitoring tags will be applied", target)
         return set()
     except Exception as exc:  # pragma: no cover - defensive logging
         LOGGER.error("Failed to read HA/DR resource type config at %s: %s", target, exc)
@@ -59,47 +59,7 @@ def load_monitored_resource_types(config_path: Optional[str] = None) -> Set[str]
         entries = raw
 
     if not isinstance(entries, list):
-        LOGGER.warning("HA/DR resource type config at %s is not a list; skipping filter", target)
+        LOGGER.warning("HA/DR resource type config at %s is not a list; skipping monitoring tags", target)
         return set()
 
     return {str(item).lower() for item in entries if item}
-
-
-def filter_resources_by_type(
-    resources: List[Dict[str, Any]], allowed_types: Set[str]
-) -> Tuple[List[Dict[str, Any]], Set[str]]:
-    """Filter resources by allowlisted types.
-
-    Args:
-        resources: List of resource dictionaries with a `type` field.
-        allowed_types: Lowercase allowlist of resource types.
-
-    Returns:
-        Tuple of (filtered_resources, kept_ids)
-    """
-    if not allowed_types:
-        ids = {r.get("id") for r in resources if r.get("id")}
-        return resources, ids
-
-    filtered: List[Dict[str, Any]] = []
-    kept_ids: Set[str] = set()
-    for res in resources:
-        res_type = str(res.get("type", "")).lower()
-        if res_type in allowed_types:
-            filtered.append(res)
-            if res.get("id"):
-                kept_ids.add(res["id"])
-
-    return filtered, kept_ids
-
-
-def filter_edges_by_ids(edges: List[Dict[str, Any]], valid_ids: Set[str]) -> List[Dict[str, Any]]:
-    """Keep edges whose endpoints are retained resources."""
-    if not valid_ids:
-        return edges
-
-    return [
-        edge
-        for edge in edges
-        if edge.get("source") in valid_ids and edge.get("target") in valid_ids
-    ]

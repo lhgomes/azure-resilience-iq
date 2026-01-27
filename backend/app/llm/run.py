@@ -73,14 +73,24 @@ def main():
         
         # Handle new format with subscription metadata
         if isinstance(resources_data, dict) and "resources" in resources_data:
-            resources = resources_data["resources"]
+            all_resources = resources_data["resources"]
         else:
             # Fallback for direct list format
-            resources = resources_data
+            all_resources = resources_data
         
-        graph = build_graph_from_resources(resources, args.subscription_id)
-        LOGGER.info("Loaded graph with %d nodes and %d edges", 
+        # Filter to only monitored resources for LLM evaluation
+        # Non-monitored resources are kept in the graph for topology/relationship mapping
+        resources = [r for r in all_resources if r.get("monitored", True)]
+        non_monitored_count = len(all_resources) - len(resources)
+        if non_monitored_count > 0:
+            LOGGER.info(f"Filtering out {non_monitored_count} non-monitored resources for LLM evaluation")
+        
+        # Keep all resources for graph building (to preserve relationships), 
+        # but only annotate monitored ones
+        graph = build_graph_from_resources(all_resources, args.subscription_id)
+        LOGGER.info("Loaded graph with %d total nodes and %d edges", 
                     len(graph["nodes"]), len(graph["edges"]))
+        LOGGER.info("Annotating %d monitored resources", len(resources))
 
         # Run annotator
         LOGGER.info("Running LLM annotator...")

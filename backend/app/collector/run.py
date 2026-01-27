@@ -1,8 +1,6 @@
 import json
 import argparse
-from typing import List, Dict, Any
 
-from azure.identity import AzureCliCredential
 from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
@@ -10,7 +8,7 @@ from app.relationships.multi_source import MultiSourceAggregator
 from app.relationships.extract_runtime import query_flow_logs, query_application_insights
 from app.relationships.utils import norm_id, short_id
 from app.graph.builder import edge_id
-from app.resource_filters import load_monitored_resource_types, filter_resources_by_type
+from app.resource_filters import load_monitored_resource_types
 
 def normalize_resource_groups(resource_groups):
     return [rg.lower() for rg in resource_groups]
@@ -47,12 +45,12 @@ def main():
         tags = dict(t.split("=", 1) for t in args.tag)
 
     allowed_types = load_monitored_resource_types()
+    monitored_types = allowed_types or set()
 
     resources = query_resources(
         subscription_id=args.subscription_id,
         resource_groups=normalize_resource_groups(args.resource_group) if args.resource_group else None,
         tags=tags,
-        allowed_types=sorted(allowed_types) if allowed_types else None,
     )
 
     # Query subresources (Private DNS Zone Groups, Firewall Rules)
@@ -98,12 +96,14 @@ def main():
         
         # Explicitly mark collected Azure resources as non-virtual
         resource_dict['virtual'] = False
+        # Flag whether the resource type is in the monitored allowlist
+        res_type = str(resource_dict.get('type', '')).lower()
+        resource_dict['monitored'] = res_type in monitored_types
         normalized_resources.append(resource_dict)
 
-    # Defensive post-filter in case upstream query filtering is adjusted
-    normalized_resources, _ = filter_resources_by_type(normalized_resources, allowed_types)
     if allowed_types:
-        print(f"ℹ️ Filtered to {len(normalized_resources)} HA/DR resource-type resources (from {len(all_resources)})")
+        monitored_count = sum(1 for r in normalized_resources if r.get('monitored'))
+        print(f"ℹ️ Flagged {monitored_count}/{len(normalized_resources)} resources as monitored types")
     
     output = normalized_resources
     # Build lookup by normalized ID

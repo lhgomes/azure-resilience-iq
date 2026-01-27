@@ -29,17 +29,12 @@ def normalize_id_fields(data: Any) -> Any:
 def build_filter_clause(
     resource_groups: Optional[List[str]],
     tags: Optional[Dict[str, str]],
-    allowed_types: Optional[List[str]] = None,
 ) -> str:
     clauses = []
 
     if resource_groups:
         rg_list = ", ".join(f"'{rg}'" for rg in resource_groups)
         clauses.append(f"resourceGroup in ({rg_list})")
-
-    if allowed_types:
-        types_list = ", ".join(f"'{t}'" for t in allowed_types)
-        clauses.append(f"type in~ ({types_list})")
 
     if tags:
         for k, v in tags.items():
@@ -55,12 +50,11 @@ def query_resources(
     subscription_id: str,
     resource_groups: Optional[List[str]] = None,
     tags: Optional[Dict[str, str]] = None,
-    allowed_types: Optional[List[str]] = None,
 ) -> List[AzureResource]:
 
     client = get_arg_client()
 
-    filter_clause = build_filter_clause(resource_groups, tags, allowed_types)
+    filter_clause = build_filter_clause(resource_groups, tags)
 
     query = f"""
     Resources

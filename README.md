@@ -682,7 +682,7 @@ Set these in `backend/config/app_config.yaml`.
 | `azure_openai.max_tokens` | No | `6000` | Maximum tokens for LLM response |
 | `azure_openai.api_key` | No | empty | API key; if empty, uses DefaultAzureCredential |
 | `data.dir` | No | `./data` | Base directory for collected artifacts |
-| `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist for HA/DR resource filtering |
+| `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
 
 ### Frontend Configuration
 
