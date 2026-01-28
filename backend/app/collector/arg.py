@@ -5,6 +5,125 @@ from .auth import get_arg_client
 from app.relationships.utils import norm_id
 
 
+def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
+    """
+    Post-process resources to populate backend_pool_ids on VMs and VMSS.
+    
+    Extracts Load Balancer backend pool IDs from NIC resources and populates
+    them on the VMs/VMSS that reference those NICs.
+    
+    This must be done after all resources are collected because we need to:
+    1. Look up NIC resources to get their ipConfigurations
+    2. Extract loadBalancerBackendAddressPools from ipConfigurations
+    3. Map those backend pools back to the VMs that use those NICs
+    """
+    # Build lookup maps
+    resources_by_id = {r['id']: r for r in resources}
+    nic_to_backend_pools: Dict[str, List[str]] = {}
+    
+    # First pass: Extract backend pool IDs from all NICs
+    for resource in resources:
+        rtype = resource.get('type', '').lower()
+        if 'microsoft.network/networkinterfaces' not in rtype:
+            continue
+        
+        nic_id = resource['id']
+        backend_pools = []
+        
+        # Extract from ipConfigurations
+        ip_configs = resource.get('properties', {}).get('ipConfigurations', [])
+        if not isinstance(ip_configs, list):
+            continue
+        
+        for ip_config in ip_configs:
+            ip_props = ip_config.get('properties', {}) if isinstance(ip_config, dict) else {}
+            
+            # Extract Load Balancer backend pools
+            lb_pools = ip_props.get('loadBalancerBackendAddressPools', [])
+            if isinstance(lb_pools, list):
+                for pool in lb_pools:
+                    if isinstance(pool, dict) and 'id' in pool:
+                        pool_id = norm_id(pool['id'])
+                        if pool_id not in backend_pools:
+                            backend_pools.append(pool_id)
+            
+            # Extract Application Gateway backend pools
+            ag_pools = ip_props.get('applicationGatewayBackendAddressPools', [])
+            if isinstance(ag_pools, list):
+                for pool in ag_pools:
+                    if isinstance(pool, dict) and 'id' in pool:
+                        pool_id = norm_id(pool['id'])
+                        if pool_id not in backend_pools:
+                            backend_pools.append(pool_id)
+        
+        if backend_pools:
+            nic_to_backend_pools[nic_id] = backend_pools
+    
+    # Second pass: Populate backend_pool_ids on VMs and VMSS based on their NICs
+    for resource in resources:
+        rtype = resource.get('type', '').lower()
+        
+        # Handle VMs
+        if 'microsoft.compute/virtualmachines' in rtype and '/extensions' not in rtype.lower():
+            # Get NICs from networkProfile
+            nic_refs = resource.get('properties', {}).get('networkProfile', {}).get('networkInterfaces', [])
+            if not isinstance(nic_refs, list):
+                continue
+            
+            all_backend_pools = []
+            for nic_ref in nic_refs:
+                if isinstance(nic_ref, dict) and 'id' in nic_ref:
+                    nic_id = norm_id(nic_ref['id'])
+                    if nic_id in nic_to_backend_pools:
+                        all_backend_pools.extend(nic_to_backend_pools[nic_id])
+            
+            # Deduplicate and set
+            if all_backend_pools:
+                resource['backend_pool_ids'] = list(set(all_backend_pools))
+        
+        # Handle VMSS
+        elif 'microsoft.compute/virtualmachinescalesets' in rtype:
+            # VMSS references backend pools directly in virtualMachineProfile
+            vm_profile = resource.get('properties', {}).get('virtualMachineProfile', {})
+            network_profile = vm_profile.get('networkProfile', {})
+            nic_configs = network_profile.get('networkInterfaceConfigurations', [])
+            
+            if not isinstance(nic_configs, list):
+                continue
+            
+            all_backend_pools = []
+            for nic_config in nic_configs:
+                nic_props = nic_config.get('properties', {}) if isinstance(nic_config, dict) else {}
+                ip_configs = nic_props.get('ipConfigurations', [])
+                
+                if not isinstance(ip_configs, list):
+                    continue
+                
+                for ip_config in ip_configs:
+                    ip_props = ip_config.get('properties', {}) if isinstance(ip_config, dict) else {}
+                    
+                    # Extract Load Balancer backend pools
+                    lb_pools = ip_props.get('loadBalancerBackendAddressPools', [])
+                    if isinstance(lb_pools, list):
+                        for pool in lb_pools:
+                            if isinstance(pool, dict) and 'id' in pool:
+                                pool_id = norm_id(pool['id'])
+                                if pool_id not in all_backend_pools:
+                                    all_backend_pools.append(pool_id)
+                    
+                    # Extract Application Gateway backend pools
+                    ag_pools = ip_props.get('applicationGatewayBackendAddressPools', [])
+                    if isinstance(ag_pools, list):
+                        for pool in ag_pools:
+                            if isinstance(pool, dict) and 'id' in pool:
+                                pool_id = norm_id(pool['id'])
+                                if pool_id not in all_backend_pools:
+                                    all_backend_pools.append(pool_id)
+            
+            if all_backend_pools:
+                resource['backend_pool_ids'] = list(set(all_backend_pools))
+
+
 def normalize_id_fields(data: Any) -> Any:
     """
     Recursively normalize all 'id' fields in a data structure to lowercase.
@@ -101,15 +220,10 @@ def query_resources(
         if parent_resource_id:
             parent_resource_id = norm_id(parent_resource_id)
         
-        # Extract backend pool IDs from network interfaces
+        # Note: backend_pool_ids will be populated in post-processing
+        # after all NICs are collected, since we need to look up NIC resources
+        # to extract their loadBalancerBackendAddressPools references
         backend_pool_ids = None
-        network_interfaces = row.get("networkInterfaces")
-        if network_interfaces and isinstance(network_interfaces, list):
-            backend_pool_ids = []
-            for nic in network_interfaces:
-                if isinstance(nic, dict) and "id" in nic:
-                    # Normalize network interface ID
-                    backend_pool_ids.append(norm_id(nic["id"]))
         
         # Normalize all id fields in properties recursively
         normalized_properties = normalize_id_fields(row.get("properties") or {})

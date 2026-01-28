@@ -199,15 +199,22 @@ class ResourceCorrelator:
             lb_id = lb.get('id')
             lb_name = lb.get('name')
             
-            # Find resources that reference this LB
+            # Find resources that reference this LB's backend pools
             backend_members = []
             for resource in self.all_resources:
-                # Check if resource has LB references
+                # Check if resource has backend pool IDs that belong to this LB
                 backend_pool_ids = resource.get('backend_pool_ids', [])
                 if backend_pool_ids and isinstance(backend_pool_ids, list):
-                    # Simple heuristic: if resource is a NIC and has any value, it's likely in a backend pool
-                    if 'networkinterface' in resource.get('type', '').lower():
-                        backend_members.append(resource)
+                    # Check if any backend pool ID belongs to this load balancer
+                    for pool_id in backend_pool_ids:
+                        if isinstance(pool_id, str) and lb_id.lower() in pool_id.lower():
+                            # This resource is in a backend pool of this LB
+                            # Look for VMs or NICs
+                            rtype = resource.get('type', '').lower()
+                            if 'virtualmachine' in rtype or 'networkinterface' in rtype:
+                                if resource not in backend_members:
+                                    backend_members.append(resource)
+                            break
                 # Also check via parent LB (some resources might reference via properties)
                 elif resource.get('parent_resource_id') == lb_id:
                     backend_members.append(resource)
