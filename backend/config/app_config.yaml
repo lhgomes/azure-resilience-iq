@@ -16,14 +16,19 @@ llm:
   max_nodes_per_batch: 30
 
 # Azure OpenAI Configuration
+# Configure via environment variables in .env:
+#   AZURE_OPENAI_ENDPOINT
+#   AZURE_OPENAI_DEPLOYMENT
+#   AZURE_OPENAI_API_VERSION
+#   AZURE_OPENAI_API_KEY (optional; prefer managed identity)
 azure_openai:
-  endpoint: "https://aoai-workload-graph.openai.azure.com/"
-  deployment: "gpt-4o-mini"
-  api_version: "2024-05-01-preview"
+  endpoint: ""  # Set via AZURE_OPENAI_ENDPOINT environment variable
+  deployment: ""  # Set via AZURE_OPENAI_DEPLOYMENT environment variable
+  api_version: ""  # Set via AZURE_OPENAI_API_VERSION environment variable
   timeout_seconds: 60
   max_attempts: 2
   max_tokens: 6000
-  api_key: ""  # optional; prefer managed identity if empty
+  api_key: ""  # Set via AZURE_OPENAI_API_KEY environment variable (optional)
 
 # Data Paths
 data:
