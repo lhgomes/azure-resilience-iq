@@ -169,6 +169,38 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
 
     snapshot = gb.build(workload_id)
 
+    # Filter out synthetic subnets - they're not monitored resources
+    # Keep track of them so we can create bridge edges before removing them
+    synthetic_subnet_ids = {sid for sid in synthetic_nodes if sid in gb.nodes}
+    
+    # Create bridge edges for synthetic subnets before removing them
+    if synthetic_subnet_ids:
+        bridge_edges_for_subnets = create_bridge_edges_for_non_monitored(snapshot["edges"], 
+                                                                          set(rid for rid in by_id.keys()) - synthetic_subnet_ids)
+        # Add bridge edges to the edge list
+        for be in bridge_edges_for_subnets:
+            be_obj = Edge(
+                id=be["id"],
+                source=be["source"],
+                target=be["target"],
+                relationship=be["relationship"],
+                confidence=be["confidence"],
+                origin=be["origin"],
+                evidence=[],
+                status=EdgeStatus.proposed
+            )
+            snapshot["edges"].append(be_obj)
+        
+        # Remove synthetic subnet nodes and their direct edges
+        snapshot["nodes"] = [n for n in snapshot["nodes"] 
+                             if not (isinstance(n, Node) and n.id in synthetic_subnet_ids) 
+                             and not (isinstance(n, dict) and n.get("id") in synthetic_subnet_ids)
+                             and not (hasattr(n, "id") and getattr(n, "id") in synthetic_subnet_ids)]
+        
+        snapshot["edges"] = [e for e in snapshot["edges"] 
+                            if not ((isinstance(e, Edge) and (e.source in synthetic_subnet_ids or e.target in synthetic_subnet_ids))
+                                   or (isinstance(e, dict) and (e.get("source") in synthetic_subnet_ids or e.get("target") in synthetic_subnet_ids)))]
+
     # Load and merge multi-source unified edges (with signal details)
     unified_edges = load_unified_edges(workload_id)
     unified_edges_by_key = {}

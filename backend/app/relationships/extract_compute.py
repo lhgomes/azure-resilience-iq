@@ -21,7 +21,7 @@ def extract_compute_relationships(resources_by_id: Dict[str, Dict[str, Any]]) ->
         
         # Virtual Machines
         if rtype == 'microsoft.compute/virtualmachines':
-            edges.extend(_extract_vm_relationships(rid, props, resources_by_id))
+            edges.extend(_extract_vm_relationships(rid, resource, resources_by_id))
         
         # VM Scale Sets
         elif rtype == 'microsoft.compute/virtualmachinescalesets':
@@ -30,9 +30,11 @@ def extract_compute_relationships(resources_by_id: Dict[str, Dict[str, Any]]) ->
     return edges
 
 
-def _extract_vm_relationships(vm_id: str, props: Dict[str, Any], resources_by_id: Dict[str, Any]) -> List[Tuple[str, str, str, str, float, list]]:
+def _extract_vm_relationships(vm_id: str, vm_resource: Dict[str, Any], resources_by_id: Dict[str, Any]) -> List[Tuple[str, str, str, str, float, list]]:
     """Extract relationships from a Virtual Machine"""
     edges = []
+    
+    props = vm_resource.get('properties') or {}
     
     # 1. Storage Profile - OS Disk
     storage_profile = props.get('storageProfile') or {}
@@ -135,6 +137,40 @@ def _extract_vm_relationships(vm_id: str, props: Dict[str, Any], resources_by_id
                             [{'field': 'osProfile.linuxConfiguration.ssh.publicKeys[].keyData', 'match': 'content'}]
                         ))
                         break
+    
+    # 6. Backend Pool Membership (Load Balancer / Application Gateway)
+    # This field is populated by the collector's populate_backend_pool_ids() function
+    # Note: backend_pool_ids is at the root level of the resource, not in properties
+    backend_pool_ids = vm_resource.get('backend_pool_ids') or []
+    for idx, pool_id in enumerate(backend_pool_ids):
+        if isinstance(pool_id, str) and pool_id.strip():
+            pool_id_norm = norm_id(pool_id)
+            
+            # Extract parent Load Balancer or Application Gateway ID
+            # Pattern: .../loadbalancers/NAME/backendaddresspools/POOL -> .../loadbalancers/NAME
+            # Pattern: .../applicationgateways/NAME/backendaddresspools/POOL -> .../applicationgateways/NAME
+            parent_id = None
+            if '/backendaddresspools/' in pool_id_norm:
+                parent_id = pool_id_norm.split('/backendaddresspools/')[0]
+            
+            if parent_id and parent_id in resources_by_id:
+                # Determine relationship type based on parent resource type
+                parent_type = resources_by_id[parent_id].get('type', '').lower()
+                if 'loadbalancer' in parent_type:
+                    relationship = 'load_balanced_by'
+                elif 'applicationgateway' in parent_type:
+                    relationship = 'routed_by_appgw'
+                else:
+                    relationship = 'backend_pool_member'
+                
+                edges.append((
+                    vm_id,
+                    parent_id,
+                    relationship,
+                    'ARM_Inferred',
+                    0.95,
+                    [{'field': f'backend_pool_ids[{idx}]', 'value': pool_id, 'backend_pool': pool_id_norm}]
+                ))
     
     return edges
 
