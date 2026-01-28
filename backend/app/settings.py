@@ -8,10 +8,15 @@ Loads application configuration from:
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import yaml
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 LOGGER = logging.getLogger(__name__)
 
@@ -168,16 +173,19 @@ class AppSettings:
         return logging_config.get("level", "INFO").upper()
 
     def get_azure_openai_config(self) -> Dict[str, Any]:
-        """Get Azure OpenAI configuration values."""
+        """Get Azure OpenAI configuration values.
+        
+        Priority: Environment variables > YAML config > defaults
+        """
         aoai = self.config.get("azure_openai", {})
         return {
-            "endpoint": aoai.get("endpoint"),
-            "deployment": aoai.get("deployment"),
-            "api_version": aoai.get("api_version", "2024-05-01-preview"),
+            "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT") or aoai.get("endpoint"),
+            "deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT") or aoai.get("deployment"),
+            "api_version": os.getenv("AZURE_OPENAI_API_VERSION") or aoai.get("api_version", "2024-05-01-preview"),
             "timeout_seconds": int(aoai.get("timeout_seconds", 60)),
             "max_attempts": int(aoai.get("max_attempts", 2)),
             "max_tokens": int(aoai.get("max_tokens", 6000)),
-            "api_key": aoai.get("api_key"),
+            "api_key": os.getenv("AZURE_OPENAI_API_KEY") or aoai.get("api_key"),
         }
 
     def get_llm_batching_config(self) -> Dict[str, int]:

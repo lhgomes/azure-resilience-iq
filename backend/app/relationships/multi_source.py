@@ -493,7 +493,3 @@ class MultiSourceAggregator:
                     source_resource=source_type
                 )
             )
-
-        # Remove marked edges
-        for key in edges_to_remove:
-            del self.edges_by_key[key]
