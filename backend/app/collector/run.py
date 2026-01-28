@@ -13,6 +13,36 @@ from app.resource_filters import load_monitored_resource_types
 def normalize_resource_groups(resource_groups):
     return [rg.lower() for rg in resource_groups]
 
+def discover_log_analytics_workspaces(resources_by_id):
+    """
+    Auto-discover Log Analytics workspace IDs from collected resources.
+    
+    Returns:
+        tuple: (flow_logs_workspace_ids, appinsights_workspace_ids)
+    """
+    flow_logs_workspaces = set()
+    appinsights_workspaces = set()
+    
+    for resource in resources_by_id.values():
+        resource_type = (resource.get('type') or '').lower()
+        properties = resource.get('properties', {})
+        
+        # Extract from Flow Logs
+        if resource_type == 'microsoft.network/networkwatchers/flowlogs':
+            flow_analytics = properties.get('flowAnalyticsConfiguration', {})
+            nw_config = flow_analytics.get('networkWatcherFlowAnalyticsConfiguration', {})
+            workspace_id = nw_config.get('workspaceResourceId')
+            if workspace_id:
+                flow_logs_workspaces.add(workspace_id)
+        
+        # Extract from Application Insights
+        elif resource_type == 'microsoft.insights/components':
+            workspace_id = properties.get('WorkspaceResourceId')
+            if workspace_id:
+                appinsights_workspaces.add(workspace_id)
+    
+    return list(flow_logs_workspaces), list(appinsights_workspaces)
+
 def get_subscription_name(subscription_id: str) -> str:
     """Fetch subscription name from Azure."""
     try:
@@ -33,10 +63,12 @@ def main():
     parser.add_argument("--subscription-id", required=True)
     parser.add_argument("--resource-group", action="append")
     parser.add_argument("--tag", action="append", help="key=value")
-    parser.add_argument("--include-runtime", action="store_true", 
-                       help="Include runtime data (Flow Logs, App Insights)")
-    parser.add_argument("--log-analytics-workspace-id", 
-                       help="Log Analytics workspace ID for runtime queries")
+    parser.add_argument("--ignore-flowlog", action="store_true",
+                       help="Skip Flow Logs collection (auto-discovered from resources by default)")
+    parser.add_argument("--ignore-appinsights", action="store_true",
+                       help="Skip Application Insights collection (auto-discovered from resources by default)")
+    parser.add_argument("--log-analytics-workspace-id", action="append",
+                       help="(Optional) Specify Log Analytics workspace ID(s) for runtime queries (repeatable). If not provided, workspaces will be auto-discovered from Flow Log and App Insights resources.")
 
     args = parser.parse_args()
 
@@ -141,14 +173,59 @@ def main():
     print("📊 Extracting multi-source signals...")
     aggregator = MultiSourceAggregator(resources_by_id, role_assignments)
     
-    # Prepare optional runtime data (stub for now)
+    # Prepare optional runtime data
     appinsights_data = None
     flow_logs_data = None
     
-    if args.include_runtime and args.log_analytics_workspace_id:
-        print("⏳ Querying Application Insights and Flow Logs...")
-        flow_logs_data = query_flow_logs(args.log_analytics_workspace_id)
-        appinsights_data = query_application_insights(args.log_analytics_workspace_id)
+    # Auto-discover and query runtime data (unless explicitly ignored)
+    if args.log_analytics_workspace_id:
+        # Manual override - use specified workspace(s)
+        print(f"⏳ Querying runtime data from specified workspace(s)...")
+        flow_logs_workspaces = args.log_analytics_workspace_id
+        appinsights_workspaces = args.log_analytics_workspace_id
+    else:
+        # Auto-discovery from collected resources
+        print("🔍 Auto-discovering Log Analytics workspaces from collected resources...")
+        flow_logs_workspaces, appinsights_workspaces = discover_log_analytics_workspaces(resources_by_id)
+        
+        if flow_logs_workspaces:
+            print(f"  ✔ Found {len(flow_logs_workspaces)} Flow Logs workspace(s)")
+        if appinsights_workspaces:
+            print(f"  ✔ Found {len(appinsights_workspaces)} App Insights workspace(s)")
+        
+        if not flow_logs_workspaces and not appinsights_workspaces:
+            print("  ⚠️  No Log Analytics workspaces found in collected resources")
+            print("      Tip: Use --log-analytics-workspace-id to specify manually (repeatable)")
+    
+    # Query Flow Logs from discovered/specified workspaces (unless ignored)
+    if not args.ignore_flowlog and flow_logs_workspaces:
+        print("⏳ Querying Flow Logs...")
+        flow_logs_data = []
+        for workspace_id in flow_logs_workspaces:
+            workspace_name = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
+            print(f"  → Workspace: {workspace_name}")
+            data = query_flow_logs(workspace_id)
+            if data:
+                flow_logs_data.extend(data)
+        if flow_logs_data:
+            print(f"  ✔ Retrieved {len(flow_logs_data)} flow records total")
+    elif args.ignore_flowlog:
+        print("⊘ Flow Logs collection skipped (--ignore-flowlog)")
+    
+    # Query Application Insights from discovered/specified workspaces (unless ignored)
+    if not args.ignore_appinsights and appinsights_workspaces:
+        print("⏳ Querying Application Insights...")
+        appinsights_data = []
+        for workspace_id in appinsights_workspaces:
+            workspace_name = workspace_id.split('/')[-1] if '/' in workspace_id else workspace_id
+            print(f"  → Workspace: {workspace_name}")
+            data = query_application_insights(workspace_id)
+            if data:
+                appinsights_data.extend(data)
+        if appinsights_data:
+            print(f"  ✔ Retrieved {len(appinsights_data)} dependency records total")
+    elif args.ignore_appinsights:
+        print("⊘ Application Insights collection skipped (--ignore-appinsights)")
     
     unified_edges = aggregator.extract_all_signals(
         appinsights_data=appinsights_data,
