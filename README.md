@@ -322,13 +322,36 @@ azure-resilience-iq/
 │   ├── package.json          # npm dependencies
 │   └── vite.config.ts        # Vite configuration
 └── README.md
-```
+
+## Graph Composition
+
+### Node Filtering
+
+The workload graph displays **monitored resources only** - resources that are actively collected and analyzed:
+
+- **Monitored resources**: Compute (VMs, VMSS), Storage, Databases, Networking (VNets, Load Balancers, App Gateways, etc.)
+- **Non-monitored resources**: Subnets, synthetic intermediate resources
+- **Automatic bridging**: When non-monitored resources are filtered out, dependency edges are automatically bridged to connect their upstream and downstream nodes, preserving the complete dependency chain
+
+**Example**: If VM → Subnet → NSG dependencies exist, the graph shows VM → NSG (with subnet bridging applied automatically)
+
+### Supported Resource Types
+
+Monitored resource types include:
+- **Compute**: Virtual Machines, VM Scale Sets, Kubernetes (AKS)
+- **Networking**: VNets, Load Balancers, Application Gateways, Azure Firewall, Public IPs
+- **Storage**: Storage Accounts, Disks, NetApp Volumes
+- **Database**: SQL Server/Database, SQL Managed Instance, Cosmos DB, MySQL/PostgreSQL
+- **Data**: Event Hub, Service Bus, Databricks
+- **Web**: App Service, Container Apps, Container Registry
+- **Integration**: API Management, Key Vault, Application Insights
+- **Recovery**: Recovery Services Vaults
 
 ## Multi-Source Dependency Detection
 
 The application uses a **multi-signal approach** to discover Azure resource dependencies with high confidence:
 
-### Detection Methods (12 Signal Types)
+### Detection Methods (13 Signal Types)
 
 The system detects dependencies through multiple independent methods:
 
@@ -336,6 +359,7 @@ The system detects dependencies through multiple independent methods:
 |---|---|---|
 | 0.98 | ARM_Declared | Azure Resource Manager properties |
 | 0.96 | PrivateEndpoint | Private Endpoint configurations |
+| 0.95 | BackendPoolMembership | Load Balancer and Application Gateway backend pools |
 | 0.92 | FlowLogObserved | NSG Flow Log analysis |
 | 0.90 | ApplicationInsights | App Insights dependency tracking |
 | 0.90 | ConnectionString | Config/connection string patterns |

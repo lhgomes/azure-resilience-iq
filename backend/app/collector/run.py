@@ -1,7 +1,7 @@
 import json
 import argparse
 
-from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields
+from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields, populate_backend_pool_ids
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.relationships.multi_source import MultiSourceAggregator
@@ -72,10 +72,17 @@ def main():
     # Combine all resources
     all_resources = resources + subresources
 
+    # Post-process: Populate backend_pool_ids from NIC resources
+    print("🔗 Populating backend pool IDs from network interfaces...")
+    all_resources_dicts = [r.model_dump() for r in all_resources]
+    populate_backend_pool_ids(all_resources_dicts)
+    print("✔ Backend pool IDs populated")
+
     # Normalize all resource IDs at the source
     normalized_resources = []
+    for r in all_resources_dicts:
     for r in all_resources:
-        resource_dict = r.model_dump()
+        resource_dict = r  # Already converted to dict above
         
         # Normalize all id fields (main id and nested ids in properties)
         resource_dict = normalize_id_fields(resource_dict)
