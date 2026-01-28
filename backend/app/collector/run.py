@@ -81,7 +81,6 @@ def main():
     # Normalize all resource IDs at the source
     normalized_resources = []
     for r in all_resources_dicts:
-    for r in all_resources:
         resource_dict = r  # Already converted to dict above
         
         # Normalize all id fields (main id and nested ids in properties)
