@@ -393,6 +393,27 @@ The LLM annotator uses signal confidence to:
 - Apply caution for lower-confidence edges (<0.7)
 - Justify dependency assessments based on signal evidence
 
+### Extending Dependency Detection
+
+Users can add custom resource reference patterns without writing code:
+
+1. **Edit** `backend/config/reference_definitions.yaml`
+2. **Add** new reference patterns following the schema:
+
+```yaml
+- source_type: microsoft.network/loadbalancers
+  target_type: microsoft.network/publicipaddresses
+  relationship: uses_public_ip
+  reference_field: frontendIPConfigurations[].properties.publicIPAddress.id
+  is_array: true
+  confidence: 0.95
+  description: Load Balancer uses Public IP
+```
+
+3. **Restart** the collector to load new definitions
+
+The system currently includes **20 pre-configured patterns** covering networking, compute, private endpoints, storage, databases, and application gateways. 
+
 ## Resiliency Analysis - Workload Discovery & Filtering
 
 The **Resiliency Analysis** module evaluates resources against Azure best practices and presents findings through intelligent filtering:

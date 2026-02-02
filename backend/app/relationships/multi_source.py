@@ -8,14 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .signal_types import SignalType, SignalSource, calculate_aggregated_confidence
-from .extract_networking import extract_networking_relationships
 from .extract_aks import extract_aks_relationships
-from .extract_private_endpoints import extract_private_endpoint_relationships
 from .extract_access_rules import extract_database_firewall_relationships, extract_role_assignment_relationships
 from .extract_appinsights import extract_appinsights_signals
 from .extract_connections import extract_connection_string_signals
 from .extract_dns import extract_dns_signals
-from .extract_compute import extract_compute_relationships
+from .extract_references import extract_resource_references
 from .utils import norm_id
 
 
@@ -62,13 +60,13 @@ class MultiSourceAggregator:
         
         # Extract from static/declarative sources
         self._extract_arm_signals()
-        self._extract_compute_signals()
-        self._extract_networking_signals()
-        self._extract_private_endpoint_signals()
         self._extract_aks_signals()
         self._extract_nsg_udr_signals()
         self._extract_database_firewall_signals()
         self._extract_role_assignment_signals()
+        
+        # Extract from configuration-driven reference definitions
+        self._extract_reference_definitions_signals()
         
         # Extract from configuration sources
         self._extract_connection_string_signals()
@@ -166,9 +164,9 @@ class MultiSourceAggregator:
         # Default: return the original property name
         return prop_key
     
-    def _extract_compute_signals(self):
-        """Extract signals from compute resources (VMs, VMScaleSets)"""
-        edges = extract_compute_relationships(self.resources_by_id)
+    def _extract_reference_definitions_signals(self):
+        """Extract signals from configuration-driven reference definitions"""
+        edges = extract_resource_references(self.resources_by_id)
         
         for source, target, relationship, signal_type, confidence, evidence_list in edges:
             self._add_signal(
@@ -178,45 +176,9 @@ class MultiSourceAggregator:
                 signal=SignalSource(
                     type=SignalType.ARM_DECLARED,
                     confidence=confidence,
-                    evidence={'compute_resource': relationship, 'evidence': evidence_list},
+                    evidence={'reference_definition': evidence_list},
                     timestamp=datetime.utcnow().isoformat() + 'Z',
-                    source_resource='ComputeResource'
-                )
-            )
-    
-    def _extract_networking_signals(self):
-        """Extract signals from networking topology"""
-        edges, _ = extract_networking_relationships(self.resources_by_id)
-        
-        for source, target, relationship, _, _, evidence_list in edges:
-            self._add_signal(
-                source=source,
-                target=target,
-                relationship=relationship,
-                signal=SignalSource(
-                    type=SignalType.VNET_COUPLING,
-                    confidence=0.70,
-                    evidence={'topology': relationship, 'evidence': evidence_list},
-                    timestamp=datetime.utcnow().isoformat() + 'Z',
-                    source_resource='NetworkTopology'
-                )
-            )
-    
-    def _extract_private_endpoint_signals(self):
-        """Extract signals from Private Endpoint mappings"""
-        edges, _ = extract_private_endpoint_relationships(self.resources_by_id)
-        
-        for source, target, relationship, _, _, evidence_list in edges:
-            self._add_signal(
-                source=source,
-                target=target,
-                relationship=relationship,
-                signal=SignalSource(
-                    type=SignalType.PRIVATE_ENDPOINT,
-                    confidence=0.96,
-                    evidence={'endpoint_mapping': evidence_list},
-                    timestamp=datetime.utcnow().isoformat() + 'Z',
-                    source_resource='PrivateEndpoint'
+                    source_resource='ReferenceDefinition'
                 )
             )
     

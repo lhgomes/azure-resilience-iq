@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from azure.mgmt.resourcegraph.models import QueryRequest
 from .models import AzureResource
 from .auth import get_arg_client
-from app.relationships.utils import norm_id
+from app.relationships.utils import norm_id, is_azure_resource_id
 
 
 def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
@@ -122,23 +122,6 @@ def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
             
             if all_backend_pools:
                 resource['backend_pool_ids'] = list(set(all_backend_pools))
-
-
-def is_azure_resource_id(value: str) -> bool:
-    """
-    Detect if a string is an Azure resource ID.
-    Azure IDs start with /subscriptions/ and contain the resource structure.
-    
-    Args:
-        value: String to check
-        
-    Returns:
-        True if value is an Azure resource ID, False otherwise
-    """
-    if not isinstance(value, str):
-        return False
-    normalized = (value or "").strip().lower()
-    return normalized.startswith('/subscriptions/')
 
 
 def normalize_id_fields(data: Any) -> Any:
