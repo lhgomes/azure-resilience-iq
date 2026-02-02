@@ -988,7 +988,13 @@ class TerraformResourceGenerator:
                 }
             ],
             "confidence": 1.0,
-            "evidence": f"Terraform defines {relationship} relationship",
+            "evidence": [
+                {
+                    "type": "Terraform",
+                    "description": f"Terraform defines {relationship} relationship",
+                    "source": "Terraform Configuration"
+                }
+            ],
             "origin": origin,
             "timestamp": datetime.utcnow().isoformat()
         }
