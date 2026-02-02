@@ -8,8 +8,6 @@ from app.graph.model import Edge, EdgeStatus, Node
 from app.relationships.utils import norm_id, parent_id
 
 from app.relationships.extract_aks import extract_aks_relationships
-from app.relationships.extract_networking import extract_networking_relationships
-from app.relationships.extract_private_endpoints import extract_private_endpoint_relationships
 from app.storage.manual_edges_store import load_manual_edges
 from app.config import get_edges_path
 from app.graph.bridge_edges import create_bridge_edges_for_non_monitored
@@ -126,18 +124,25 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     all_edges: List[Tuple[str, str, str, str, float, list]] = []
     synthetic_nodes: Set[str] = set()
 
-    # AKS
-    all_edges += extract_aks_relationships(by_id)
-
-    # Networking (subnets, NSG, route tables, NIC)
-    net_edges, net_synth = extract_networking_relationships(by_id)
-    all_edges += net_edges
-    synthetic_nodes |= net_synth
-
-    # Private Endpoints
-    pe_edges, pe_synth = extract_private_endpoint_relationships(by_id)
-    all_edges += pe_edges
-    synthetic_nodes |= pe_synth
+    # Use unified edges from collector if available (primary path)
+    unified_edges = load_unified_edges(workload_id)
+    if unified_edges:
+        # Convert unified edges to legacy tuple format for compatibility
+        for edge_data in unified_edges:
+            if isinstance(edge_data, dict):
+                all_edges.append((
+                    edge_data.get('source', ''),
+                    edge_data.get('target', ''),
+                    edge_data.get('relationship', ''),
+                    edge_data.get('origin', 'unknown'),
+                    float(edge_data.get('confidence', 0.5)),
+                    edge_data.get('evidence', [])
+                ))
+    else:
+        # Fallback: Extract edges using AKS extractor (only non-redundant extractor)
+        # Networking, compute, and private endpoint extraction now handled by
+        # configuration-driven reference definitions in the collector
+        all_edges += extract_aks_relationships(by_id)
 
     # create synthetic nodes (subnets etc.) if missing
     for sid in synthetic_nodes:

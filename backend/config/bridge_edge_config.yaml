@@ -1,0 +1,15 @@
+# Bridge Edge Configuration
+# 
+# Defines which relationships get special "targeted" bridge handling
+# when traversing through non-monitored (hidden) resources.
+#
+# Bridge edges reconnect monitored endpoints when non-monitored resources
+# (e.g., NICs, subnets) lie between them in the topology.
+
+bridge_relationships:
+  # Relationships that use targeted bridging (e.g., via NIC mapping)
+  # For LB/AppGW, we create LB→NIC→VM as LB→VM (via nic_to_vms mapping)
+  # All other relationships use forward-directed traversal instead
+  targeted_bridge:
+    - "balances"          # Load Balancer → NIC becomes LB → VM
+    - "routes_to"         # App Gateway → NIC becomes AppGW → VM
