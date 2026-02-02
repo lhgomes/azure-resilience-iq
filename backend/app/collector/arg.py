@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from azure.mgmt.resourcegraph.models import QueryRequest
 from .models import AzureResource
 from .auth import get_arg_client
-from app.relationships.utils import norm_id
+from app.relationships.utils import norm_id, is_azure_resource_id
 
 
 def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
@@ -126,14 +126,17 @@ def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
 
 def normalize_id_fields(data: Any) -> Any:
     """
-    Recursively normalize all 'id' fields in a data structure to lowercase.
+    Recursively normalize all Azure resource IDs in a data structure to lowercase.
+    Identifies Azure IDs by pattern (starts with /subscriptions/) rather than field name.
+    This catches all Azure IDs regardless of field name: id, parentResourceId, failoverGroupId, etc.
+    
     Handles strings, dicts, and lists.
     """
     if isinstance(data, dict):
         normalized = {}
         for key, value in data.items():
-            if key == "id" and isinstance(value, str):
-                # Normalize any field named 'id'
+            if isinstance(value, str) and is_azure_resource_id(value):
+                # Normalize any Azure resource ID, regardless of field name
                 normalized[key] = norm_id(value)
             else:
                 # Recursively normalize nested structures

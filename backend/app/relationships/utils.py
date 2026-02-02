@@ -6,6 +6,17 @@ def norm_id(resource_id: str) -> str:
     return (resource_id or "").strip().lower()
 
 
+def is_azure_resource_id(value: Any) -> bool:
+    """
+    Check if a value is an Azure resource ID.
+    Azure resource IDs follow the pattern: /subscriptions/{guid}/...
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    return normalized.startswith('/subscriptions/')
+
+
 def short_id(resource_id: str) -> str:
     """Deterministic compact ID derived from the canonical ARM ID."""
     rid = norm_id(resource_id)

@@ -1,0 +1,173 @@
+# Azure Resource Reference Definitions
+#
+# Defines source->target relationships and where to find the reference in properties.
+# Users can extend this to add new reference patterns.
+#
+# Schema:
+#   source_type: Azure resource type of the source (e.g., microsoft.network/privateendpoints)
+#   target_type: Azure resource type of the target (optional, null = auto-detect from ID)
+#   relationship: Relationship name (e.g., private_link_to)
+#   reference_field: JSON path WITHIN resource.properties where target ID(s) are stored
+#                    (e.g., "storageProfile.osDisk.managedDisk.id" not "properties.storageProfile...")
+#   is_array: Whether the reference field is an array (e.g., [].id vs single id)
+#   confidence: Confidence score for this relationship type (0.0-1.0)
+#   description: Human-readable description
+
+# === Networking ===
+- source_type: microsoft.network/virtualnetworks
+  target_type: null
+  relationship: contains_subnet
+  reference_field: subnets[].id
+  is_array: true
+  confidence: 0.98
+  description: VNet contains Subnets
+
+- source_type: microsoft.network/networkinterfaces
+  target_type: null
+  relationship: attached_to_subnet
+  reference_field: ipConfigurations[].properties.subnet.id
+  is_array: true
+  confidence: 0.95
+  description: NIC attached to Subnet
+
+- source_type: microsoft.network/networkinterfaces
+  target_type: microsoft.network/publicipaddresses
+  relationship: uses_public_ip
+  reference_field: ipConfigurations[].properties.publicIPAddress.id
+  is_array: true
+  confidence: 0.95
+  description: NIC uses Public IP
+
+- source_type: microsoft.network/networkinterfaces
+  target_type: microsoft.network/networksecuritygroups
+  relationship: protected_by_nsg
+  reference_field: networkSecurityGroup.id
+  is_array: false
+  confidence: 0.95
+  description: NIC protected by NSG
+
+- source_type: microsoft.network/subnets
+  target_type: microsoft.network/networksecuritygroups
+  relationship: protected_by_nsg
+  reference_field: networkSecurityGroup.id
+  is_array: false
+  confidence: 0.90
+  description: Subnet protected by NSG
+
+- source_type: microsoft.network/subnets
+  target_type: microsoft.network/routetables
+  relationship: routed_by_route_table
+  reference_field: routeTable.id
+  is_array: false
+  confidence: 0.90
+  description: Subnet routed by Route Table
+
+# === Compute ===
+- source_type: microsoft.compute/virtualmachines
+  target_type: microsoft.compute/disks
+  relationship: uses_os_disk
+  reference_field: storageProfile.osDisk.managedDisk.id
+  is_array: false
+  confidence: 0.98
+  description: VM uses OS Disk
+
+- source_type: microsoft.compute/virtualmachines
+  target_type: microsoft.compute/disks
+  relationship: uses_data_disk
+  reference_field: storageProfile.dataDisks[].managedDisk.id
+  is_array: true
+  confidence: 0.98
+  description: VM uses Data Disk
+
+- source_type: microsoft.compute/virtualmachines
+  target_type: microsoft.network/networkinterfaces
+  relationship: uses_nic
+  reference_field: networkProfile.networkInterfaces[].id
+  is_array: true
+  confidence: 0.98
+  description: VM uses NIC
+
+# === Load Balancing & Application Delivery ===
+- source_type: microsoft.network/loadbalancers
+  target_type: microsoft.network/networkinterfaces
+  relationship: balances
+  reference_field: backendAddressPools[].properties.backendIPConfigurations[].id
+  is_array: true
+  confidence: 0.95
+  description: Load Balancer balances traffic to NICs
+
+- source_type: microsoft.network/applicationgateways
+  target_type: microsoft.network/networkinterfaces
+  relationship: routes_to
+  reference_field: backendAddressPools[].properties.backendIPConfigurations[].id
+  is_array: true
+  confidence: 0.95
+  description: Application Gateway routes traffic to NICs
+
+# === Private Endpoints ===
+- source_type: microsoft.network/privateendpoints
+  target_type: null
+  relationship: private_link_to
+  reference_field: privateLinkServiceConnections[].properties.privateLinkServiceId
+  is_array: true
+  confidence: 0.96
+  description: Private Endpoint connects to service via Private Link
+
+- source_type: microsoft.network/privateendpoints
+  target_type: null
+  relationship: private_link_to
+  reference_field: manualPrivateLinkServiceConnections[].properties.privateLinkServiceId
+  is_array: true
+  confidence: 0.96
+  description: Private Endpoint manually connects to service via Private Link
+
+- source_type: microsoft.network/privateendpoints/privatednszonegroups
+  target_type: microsoft.network/privatednszones
+  relationship: uses_private_dns_zone
+  reference_field: privateDnsZoneConfigs[].properties.privateDnsZoneId
+  is_array: true
+  confidence: 0.90
+  description: Private Endpoint DNS Zone Group uses Private DNS Zone
+
+# === Storage ===
+- source_type: microsoft.storage/storageaccounts
+  target_type: null
+  relationship: references
+  reference_field: primaryEndpoints
+  is_array: false
+  confidence: 0.70
+  description: Storage Account references endpoints
+
+# === Databases ===
+- source_type: microsoft.sql/servers/databases
+  target_type: null
+  relationship: uses_failover_group
+  reference_field: failoverGroupId
+  is_array: false
+  confidence: 0.95
+  description: Database uses Failover Group
+
+- source_type: microsoft.dbforpostgresql/servers
+  target_type: null
+  relationship: uses_failover_group
+  reference_field: failoverGroupId
+  is_array: false
+  confidence: 0.95
+  description: PostgreSQL Server uses Failover Group
+
+# === Application Gateway ===
+- source_type: microsoft.network/applicationgateways
+  target_type: microsoft.network/publicipaddresses
+  relationship: uses_public_ip
+  reference_field: frontendIPConfigurations[].properties.publicIPAddress.id
+  is_array: true
+  confidence: 0.95
+  description: Application Gateway uses Public IP
+
+- source_type: microsoft.network/applicationgateways
+  target_type: null
+  relationship: references
+  reference_field: firewallPolicy.id
+  is_array: false
+  confidence: 0.90
+  description: Application Gateway references WAF Policy
