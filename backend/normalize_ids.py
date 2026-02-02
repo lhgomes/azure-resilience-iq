@@ -22,16 +22,36 @@ def short_id(resource_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, rid))
 
 
+def is_azure_resource_id(value: str) -> bool:
+    """
+    Detect if a string is an Azure resource ID.
+    Azure IDs start with /subscriptions/ and contain the resource structure.
+    
+    Args:
+        value: String to check
+        
+    Returns:
+        True if value is an Azure resource ID, False otherwise
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = (value or "").strip().lower()
+    return normalized.startswith('/subscriptions/')
+
+
 def normalize_id_fields(data: Any) -> Any:
     """
-    Recursively normalize all 'id' fields in a data structure to lowercase.
+    Recursively normalize all Azure resource IDs in a data structure to lowercase.
+    Identifies Azure IDs by pattern (starts with /subscriptions/) rather than field name.
+    This catches all Azure IDs regardless of field name: id, parentResourceId, failoverGroupId, etc.
+    
     Handles strings, dicts, and lists.
     """
     if isinstance(data, dict):
         normalized = {}
         for key, value in data.items():
-            if key == "id" and isinstance(value, str):
-                # Normalize any field named 'id'
+            if isinstance(value, str) and is_azure_resource_id(value):
+                # Normalize any Azure resource ID, regardless of field name
                 normalized[key] = norm_id(value)
             else:
                 # Recursively normalize nested structures

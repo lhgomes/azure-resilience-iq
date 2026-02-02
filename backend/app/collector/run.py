@@ -104,16 +104,13 @@ def main():
     # Combine all resources
     all_resources = resources + subresources
 
-    # Post-process: Populate backend_pool_ids from NIC resources
-    print("🔗 Populating backend pool IDs from network interfaces...")
+    # Convert to dicts early for post-processing
     all_resources_dicts = [r.model_dump() for r in all_resources]
-    populate_backend_pool_ids(all_resources_dicts)
-    print("✔ Backend pool IDs populated")
-
-    # Normalize all resource IDs at the source
+    
+    # Normalize all resource IDs first (before backend pool population)
     normalized_resources = []
     for r in all_resources_dicts:
-        resource_dict = r  # Already converted to dict above
+        resource_dict = r
         
         # Normalize all id fields (main id and nested ids in properties)
         resource_dict = normalize_id_fields(resource_dict)
@@ -137,7 +134,13 @@ def main():
         # Flag whether the resource type is in the monitored allowlist
         res_type = str(resource_dict.get('type', '')).lower()
         resource_dict['monitored'] = res_type in monitored_types
+        
         normalized_resources.append(resource_dict)
+    
+    # Post-process: Populate backend_pool_ids from NIC resources (after normalization)
+    print("🔗 Populating backend pool IDs from network interfaces...")
+    populate_backend_pool_ids(normalized_resources)
+    print("✔ Backend pool IDs populated")
 
     if allowed_types:
         monitored_count = sum(1 for r in normalized_resources if r.get('monitored'))
