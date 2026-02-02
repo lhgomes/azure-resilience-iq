@@ -20,8 +20,7 @@ def load_bridge_config() -> dict:
     except Exception as e:
         LOGGER.warning(f"Failed to load bridge config from {config_path}: {e}. Using defaults.")
         return {
-            "allowed_first_hop": ["balances", "routes_to"],
-            "skip_in_general_bridging": ["balances", "routes_to"],
+            "targeted_bridge": ["balances", "routes_to"],
         }
 
 
@@ -213,6 +212,8 @@ def create_bridge_edges_for_non_monitored(
     create direct edges between the monitored endpoints to preserve the relationship.
     
     Bridge behavior is configurable via backend/config/bridge_edge_config.yaml
+    - targeted_bridge: Relationships using special targeting (e.g., LB→NIC via nic_to_vms map)
+    - All others: Use forward-directed traversal through non-monitored nodes
     
     Args:
         edges: All edges from the graph (can be Edge objects or dicts)
@@ -221,10 +222,9 @@ def create_bridge_edges_for_non_monitored(
     Returns:
         List of created bridge edges (as dicts)
     """
-    # Load configuration for allowed relationships
+    # Load configuration for targeted bridging relationships
     config = load_bridge_config()
-    allowed_first_hop = set(config.get("allowed_first_hop", ["balances", "routes_to"]))
-    skip_in_general = set(config.get("skip_in_general_bridging", ["balances", "routes_to"]))
+    targeted_bridge = set(config.get("targeted_bridge", ["balances", "routes_to"]))
     
     # Build adjacency for breadth-first search
     forward_edges = {}  # node_id -> [(target, relationship, confidence), ...]
@@ -266,7 +266,7 @@ def create_bridge_edges_for_non_monitored(
             continue
         nic_to_vms.setdefault(tgt, set()).add(src)
 
-    # Targeted bridging for allowed first-hop relationships (e.g., LB/AppGW -> VM via NICs)
+    # Targeted bridging for configured relationships (e.g., LB/AppGW -> VM via NICs)
     for edge in edges:
         if isinstance(edge, dict):
             src = edge.get("source")
@@ -279,7 +279,7 @@ def create_bridge_edges_for_non_monitored(
             rel = getattr(edge, "relationship", "relates_to")
             conf = getattr(edge, "confidence", 0.7)
 
-        if rel not in allowed_first_hop or not src or not tgt:
+        if rel not in targeted_bridge or not src or not tgt:
             continue
         if src not in visible_node_ids:
             continue
@@ -295,6 +295,7 @@ def create_bridge_edges_for_non_monitored(
                 LOGGER.debug(f"Bridge: {src} -> {vm_id} ({rel}) via NIC {tgt}")
 
     # General bridging for other relationships (directed traversal)
+    # Skip relationships that use targeted bridging (they're handled above)
     for source in visible_node_ids:
         if source not in forward_edges:
             continue
@@ -309,7 +310,7 @@ def create_bridge_edges_for_non_monitored(
                 continue
 
             for next_node, rel, conf in forward_edges[current]:
-                if rel in skip_in_general:
+                if rel in targeted_bridge:
                     continue
                 if next_node in visited:
                     continue
