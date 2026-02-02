@@ -372,12 +372,19 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     for e in snapshot["edges"]:
         if isinstance(e, Edge):
             source, target = e.source, e.target
+            origin = e.origin
         elif isinstance(e, dict):
             source, target = e.get("source"), e.get("target")
+            origin = e.get("origin")
         else:
             source, target = getattr(e, "source", None), getattr(e, "target", None)
+            origin = getattr(e, "origin", None)
         
-        if source in monitored_node_ids and target in monitored_node_ids:
+        # Manual edges can be cross-subscription, so allow them even if target is not monitored
+        # This preserves cross-subscription dependencies defined by users
+        if origin == "manual":
+            filtered_edges.append(e)
+        elif source in monitored_node_ids and target in monitored_node_ids:
             filtered_edges.append(e)
     
     snapshot["nodes"] = filtered_nodes
