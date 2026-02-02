@@ -204,6 +204,7 @@ def create_bridge_edges_for_non_monitored(
     """
     # Build adjacency for breadth-first search
     forward_edges = {}  # node_id -> [(target, relationship, confidence), ...]
+    undirected_edges = {}  # node_id -> [neighbor, ...]
     
     for edge in edges:
         if isinstance(edge, dict):
@@ -223,41 +224,91 @@ def create_bridge_edges_for_non_monitored(
         if src not in forward_edges:
             forward_edges[src] = []
         forward_edges[src].append((tgt, rel, conf))
+
+        if src not in undirected_edges:
+            undirected_edges[src] = []
+        if tgt not in undirected_edges:
+            undirected_edges[tgt] = []
+        undirected_edges[src].append(tgt)
+        undirected_edges[tgt].append(src)
     
     bridge_edges_by_pair = {}
-    
-    # For each visible source node, find visible descendants through non-visible intermediates
+    lb_appgw_relationships = {"balances", "routes_to"}
+
+    # Build NIC -> VM map for targeted LB/AppGW bridging (VM -> NIC uses_nic)
+    nic_to_vms = {}
+    for edge in edges:
+        if isinstance(edge, dict):
+            src = edge.get("source")
+            tgt = edge.get("target")
+            rel = edge.get("relationship", "relates_to")
+        else:
+            src = getattr(edge, "source", None)
+            tgt = getattr(edge, "target", None)
+            rel = getattr(edge, "relationship", "relates_to")
+
+        if rel != "uses_nic" or not src or not tgt:
+            continue
+        nic_to_vms.setdefault(tgt, set()).add(src)
+
+    # Targeted bridging for LB/AppGW -> VM via NICs
+    for edge in edges:
+        if isinstance(edge, dict):
+            src = edge.get("source")
+            tgt = edge.get("target")
+            rel = edge.get("relationship", "relates_to")
+            conf = edge.get("confidence", 0.7)
+        else:
+            src = getattr(edge, "source", None)
+            tgt = getattr(edge, "target", None)
+            rel = getattr(edge, "relationship", "relates_to")
+            conf = getattr(edge, "confidence", 0.7)
+
+        if rel not in lb_appgw_relationships or not src or not tgt:
+            continue
+        if src not in visible_node_ids:
+            continue
+        if tgt in visible_node_ids:
+            continue
+
+        for vm_id in nic_to_vms.get(tgt, set()):
+            if vm_id not in visible_node_ids:
+                continue
+            pair = (src, vm_id)
+            if pair not in bridge_edges_by_pair:
+                bridge_edges_by_pair[pair] = (rel, conf)
+                LOGGER.debug(f"Bridge: {src} -> {vm_id} ({rel}) via NIC {tgt}")
+
+    # General bridging for other relationships (directed traversal)
     for source in visible_node_ids:
         if source not in forward_edges:
             continue
-        
-        # BFS through non-visible nodes to find visible targets
+
         visited = {source}
         queue = [(source, None, None)]  # (current_node, first_rel, first_conf)
-        
+
         while queue:
             current, first_rel, first_conf = queue.pop(0)
-            
+
             if current not in forward_edges:
                 continue
-            
+
             for next_node, rel, conf in forward_edges[current]:
+                if rel in lb_appgw_relationships:
+                    continue
                 if next_node in visited:
                     continue
                 visited.add(next_node)
-                
-                # Use first relationship encountered in path
+
                 path_rel = first_rel or rel
                 path_conf = first_conf if first_conf is not None else conf
-                
+
                 if next_node in visible_node_ids and next_node != source:
-                    # Found a visible target; create bridge edge
                     pair = (source, next_node)
                     if pair not in bridge_edges_by_pair:
                         bridge_edges_by_pair[pair] = (path_rel, path_conf)
                         LOGGER.debug(f"Bridge: {source} -> {next_node} ({path_rel}) via non-monitored intermediates")
                 elif next_node not in visible_node_ids:
-                    # Continue searching through non-visible node
                     queue.append((next_node, path_rel, path_conf))
     
     # Convert bridge edges to ManualEdge objects for storage
