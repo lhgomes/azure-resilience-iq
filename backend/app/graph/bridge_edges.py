@@ -1,11 +1,28 @@
 """Utility to create bridge edges when nodes are hidden or non-monitored."""
 
 import logging
+import yaml
+from pathlib import Path
 from app.intent.manual_edge import ManualEdge
 from app.storage.manual_edges_store import load_manual_edges, replace_edges_for_origin
 from app.graph.builder import edge_id
 
 LOGGER = logging.getLogger(__name__)
+
+
+def load_bridge_config() -> dict:
+    """Load bridge edge configuration from YAML file."""
+    config_path = Path(__file__).parent.parent.parent / "config" / "bridge_edge_config.yaml"
+    try:
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+        return config.get("bridge_relationships", {})
+    except Exception as e:
+        LOGGER.warning(f"Failed to load bridge config from {config_path}: {e}. Using defaults.")
+        return {
+            "allowed_first_hop": ["balances", "routes_to"],
+            "skip_in_general_bridging": ["balances", "routes_to"],
+        }
 
 
 def create_bridge_edges_for_hidden_node(subscription_id: str, hidden_node_id: str, edges: list, nodes: list) -> list:
@@ -195,6 +212,8 @@ def create_bridge_edges_for_non_monitored(
     When non-monitored resources exist in the topology (e.g., subnets between VMs and VNets),
     create direct edges between the monitored endpoints to preserve the relationship.
     
+    Bridge behavior is configurable via backend/config/bridge_edge_config.yaml
+    
     Args:
         edges: All edges from the graph (can be Edge objects or dicts)
         visible_node_ids: Set of monitored (visible) node IDs
@@ -202,9 +221,13 @@ def create_bridge_edges_for_non_monitored(
     Returns:
         List of created bridge edges (as dicts)
     """
+    # Load configuration for allowed relationships
+    config = load_bridge_config()
+    allowed_first_hop = set(config.get("allowed_first_hop", ["balances", "routes_to"]))
+    skip_in_general = set(config.get("skip_in_general_bridging", ["balances", "routes_to"]))
+    
     # Build adjacency for breadth-first search
     forward_edges = {}  # node_id -> [(target, relationship, confidence), ...]
-    undirected_edges = {}  # node_id -> [neighbor, ...]
     
     for edge in edges:
         if isinstance(edge, dict):
@@ -224,18 +247,10 @@ def create_bridge_edges_for_non_monitored(
         if src not in forward_edges:
             forward_edges[src] = []
         forward_edges[src].append((tgt, rel, conf))
-
-        if src not in undirected_edges:
-            undirected_edges[src] = []
-        if tgt not in undirected_edges:
-            undirected_edges[tgt] = []
-        undirected_edges[src].append(tgt)
-        undirected_edges[tgt].append(src)
     
     bridge_edges_by_pair = {}
-    lb_appgw_relationships = {"balances", "routes_to"}
 
-    # Build NIC -> VM map for targeted LB/AppGW bridging (VM -> NIC uses_nic)
+    # Build NIC -> VM map for targeted first-hop bridging
     nic_to_vms = {}
     for edge in edges:
         if isinstance(edge, dict):
@@ -251,7 +266,7 @@ def create_bridge_edges_for_non_monitored(
             continue
         nic_to_vms.setdefault(tgt, set()).add(src)
 
-    # Targeted bridging for LB/AppGW -> VM via NICs
+    # Targeted bridging for allowed first-hop relationships (e.g., LB/AppGW -> VM via NICs)
     for edge in edges:
         if isinstance(edge, dict):
             src = edge.get("source")
@@ -264,7 +279,7 @@ def create_bridge_edges_for_non_monitored(
             rel = getattr(edge, "relationship", "relates_to")
             conf = getattr(edge, "confidence", 0.7)
 
-        if rel not in lb_appgw_relationships or not src or not tgt:
+        if rel not in allowed_first_hop or not src or not tgt:
             continue
         if src not in visible_node_ids:
             continue
@@ -294,7 +309,7 @@ def create_bridge_edges_for_non_monitored(
                 continue
 
             for next_node, rel, conf in forward_edges[current]:
-                if rel in lb_appgw_relationships:
+                if rel in skip_in_general:
                     continue
                 if next_node in visited:
                     continue

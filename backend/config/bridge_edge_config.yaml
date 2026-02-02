@@ -1,0 +1,20 @@
+# Bridge Edge Configuration
+# 
+# Defines which relationships are eligible for creating bridge edges
+# when traversing through non-monitored (hidden) resources.
+#
+# Bridge edges reconnect monitored endpoints when non-monitored resources
+# (e.g., NICs, subnets) lie between them in the topology.
+
+bridge_relationships:
+  # Relationships that initiate bridge edge creation
+  # These are checked against the first hop from visible nodes through hidden intermediates
+  allowed_first_hop:
+    - "balances"          # Load Balancer → NIC becomes LB → VM
+    - "routes_to"         # App Gateway → NIC becomes AppGW → VM
+  
+  # Relationships to skip during general (forward-directed) bridging
+  # These are handled separately above and should not appear in other traversals
+  skip_in_general_bridging:
+    - "balances"
+    - "routes_to"
