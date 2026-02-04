@@ -132,34 +132,6 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
           </div>
         </div>
 
-        <div style={{ marginBottom: 12 }}>
-          <strong>Resiliency Scoring:</strong>
-          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
-            <div style={{ marginBottom: 4 }}>
-              Score = Passed Checks Weight / Total Checks Weight
-            </div>
-            <div style={{ marginBottom: 4 }}>
-              Weight = Element Weight × Category Weight × Impact Weight
-            </div>
-            <div>
-              Configured in app_config.yaml. See README for details.
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <strong>Resiliency Groups:</strong>
-          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
-            Auto-detected groups: Availability Sets, VMSS, Load Balancer backends, Storage geo-redundancy, SQL failover groups, Cosmos replication, and custom groups. Resources evaluated in group context.
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 0 }}>
-          <strong>APRL Coverage:</strong>
-          <div style={{ marginTop: 4, color: "#9AA0A6", fontSize: 11 }}>
-            Services covered by Azure Proactive Resiliency Library show resilience score colors. Non-covered services (Azure-managed) show gray.
-          </div>
-        </div>
       </div>
     </div>
   );

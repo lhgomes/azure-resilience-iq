@@ -483,16 +483,10 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     // Check validation source filter if it has items
     if (validationSourceFilter && validationSourceFilter.size > 0) {
       if (check.validation_source) {
-        const sourceList = Array.isArray(check.validation_source)
-          ? check.validation_source
-          : [check.validation_source];
-        
-        // Check if any of the sources match the filter
-        const hasMatchingSource = sourceList.some((source: string) => 
-          validationSourceFilter.has(source)
-        );
-        
-        if (!hasMatchingSource) return false;
+        // Check if the source matches the filter
+        if (!validationSourceFilter.has(check.validation_source)) {
+          return false;
+        }
       } else {
         // If check has no validation_source and filter is active, exclude it
         return false;
@@ -965,13 +959,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       return checksOrFindings
         .map((f: any) => {
-          // Handle validation_source as either string (legacy) or array (new)
-          let valSource: string;
-          if (Array.isArray(f.validation_source)) {
-            valSource = f.validation_source.join(", ");
-          } else {
-            valSource = (f.validation_source || "").toLowerCase() === "user" ? "User" : f.validation_source || "";
-          }
+          // Normalize validation_source display
+          const valSource = (f.validation_source || "").toLowerCase() === "user" ? "User" : f.validation_source || "";
           
           return {
             ...f,
@@ -986,13 +975,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
             return true;
           }
           if (validationSourceFilter.size > 0) {
-            const sourceList = Array.isArray(f.validation_source)
-              ? f.validation_source
-              : f.validation_source ? [f.validation_source] : [];
-            const hasMatchingSource = sourceList.some((source: string) => 
-              validationSourceFilter.has(source)
-            );
-            return hasMatchingSource;
+            const source = f.validation_source || "";
+            return validationSourceFilter.has(source);
           }
           return true;
         })
@@ -1348,111 +1332,59 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
 
   return (
     <div style={{ padding: "24px", paddingBottom: "64px", background: "#f9fafb", display: "flex", flexDirection: "column" }}>
+      <style>{`
+        .tooltip-trigger:hover + .tooltip-content {
+          opacity: 1 !important;
+          visibility: visible !important;
+        }
+      `}</style>
       {/* Header Section - Overview Card */}
       <div
         style={{
           background: "#fff",
           borderRadius: "12px",
-          padding: "24px",
+          padding: "16px",
           marginBottom: "24px",
           boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
           border: "1px solid #e5e7eb",
           flexShrink: 0,
         }}
       >
-        <h1
-          style={{
-            margin: "0 0 24px",
-            fontSize: "24px",
-            fontWeight: 700,
-            color: "#1f2937",
-          }}
-        >
-          Resiliency Overview
-        </h1>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "auto auto auto 1fr auto",
-            gap: "24px",
-            alignItems: "flex-start",
-          }}
-        >
-          {/* Resiliency Score Donut */}
-          {adjustedWorkloadScore !== undefined && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-              <ScoreDonut score={adjustedWorkloadScore} size={140} />
-              <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 600, color: "#1f2937" }}>
-                Overall Score
-              </div>
-            </div>
-          )}
-
-          {/* Pass/Fail Donut Chart */}
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-            <DonutChart passed={stats.passedChecks} failed={stats.failedChecks} size={140} />
-            <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: "12px", fontWeight: 600, color: riskLevel.color }}>
-                {riskLevel.level}
-              </div>
-            </div>
-          </div>
-
-          {/* Impact Donut Chart - All three levels */}
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
-            <div
-              title={`Failed items: ${failedImpactCounts.total} (High: ${failedImpactCounts.high}, Medium: ${failedImpactCounts.medium}, Low: ${failedImpactCounts.low})`}
-              style={{
-                position: "relative",
-                width: "140px",
-                height: "140px",
-                borderRadius: "50%",
-                background: (() => {
-                  const { high, medium, low, total } = failedImpactCounts;
-                  if (total === 0) return "#e5e7eb";
-                  const highPct = (high / total) * 100;
-                  const mediumPct = (medium / total) * 100;
-                  const lowPct = (low / total) * 100;
-                  return `conic-gradient(
-                    from 0deg,
-                    #dc2626 0deg ${(highPct / 100) * 360}deg,
-                    #f59e0b ${(highPct / 100) * 360}deg ${((highPct + mediumPct) / 100) * 360}deg,
-                    #10b981 ${((highPct + mediumPct) / 100) * 360}deg 360deg
-                  )`;
-                })(),
-                padding: "4px",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
+          {/* Main Stats + Category + Impact bars */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "12px"}}>
               <div
                 style={{
-                  width: "100%",
-                  height: "100%",
-                  borderRadius: "50%",
-                  background: "#ffffff",
-                  display: "flex",
-                  justifyContent: "center",
-                  alignItems: "center",
-                  flexDirection: "column",
+                  padding: "10px",
+                  background: (() => {
+                    const score = adjustedWorkloadScore * 100;
+                    if (score >= 80) return "#d0fbe7"; // Green
+                    if (score >= 60) return "#fef3c7"; // Yellow
+                    if (score >= 40) return "#fed7aa"; // Orange
+                    return "#fecaca"; // Red
+                  })(),
+                  borderRadius: "8px",
+                  borderLeft: `3px solid ${(() => {
+                    const score = adjustedWorkloadScore * 100;
+                    if (score >= 80) return "#10b981"; // Green
+                    if (score >= 60) return "#f59e0b"; // Orange/Yellow
+                    if (score >= 40) return "#f97316"; // Dark Orange
+                    return "#dc2626"; // Red
+                  })()}`,
                 }}
               >
-                <span style={{ fontSize: "18px", fontWeight: 700, color: "#1f2937" }}>
-                  {failedImpactCounts.total}
-                </span>
-                <span style={{ fontSize: "10px", color: "#6b7280" }}>Failed</span>
+                <div style={{ fontSize: "11px", color: "#5a606b", marginBottom: "4px" }}>Overall Score</div>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: (() => {
+                  const score = adjustedWorkloadScore * 100;
+                  if (score >= 80) return "#10b981"; // Green
+                  if (score >= 60) return "#f59e0b"; // Orange/Yellow
+                  if (score >= 40) return "#f97316"; // Dark Orange
+                  return "#dc2626"; // Red
+                })() }}>
+                  {(adjustedWorkloadScore * 100).toFixed(0)}%
+                </div>
               </div>
-            </div>
-            <div style={{ textAlign: "center", fontSize: "11px", fontWeight: 600, color: "#1f2937" }}>
-              Impact
-            </div>
-          </div>
 
-          {/* Main Stats + Category + Impact bars */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px", marginBottom: "16px" }}>
-                <div
+              <div
                 style={{
                   padding: "10px",
                   background: "#dee7f3",
@@ -1460,7 +1392,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   borderLeft: "3px solid #448eef",
                 }}
               >
-                <div style={{ fontSize: "11px", color: "#5a606b", marginBottom: "4px" }}>Total Checks</div>
+                <div style={{ fontSize: "11px", color: "#5a606b", marginBottom: "4px" }}>Total Resiliency Items</div>
                 <div style={{ fontSize: "18px", fontWeight: 700, color: "#448eef" }}>
                   {stats.totalChecks}
                 </div>
@@ -1494,7 +1426,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
               </div>
           </div>
         </div>
-      </div>
 
       {/* Resources Grid */}
       <div style={{ marginBottom: "24px" }}>
@@ -1639,7 +1570,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -1697,7 +1627,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -1755,7 +1684,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -1821,7 +1749,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
                     <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#6b7280" }}>Checks</span>
                     <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
                   </div>
                 </div>
@@ -2621,22 +2548,67 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                         const bg = src === 'aprl' ? '#dbeafe' : src === 'llm' ? '#fef3c7' : src === 'heuristic' ? '#e0e7ff' : src === 'user' ? '#dcfce7' : src === 'pendingreview' ? '#f3e8ff' : '#e5e7eb';
                         const fg = src === 'aprl' ? '#1e40af' : src === 'llm' ? '#92400e' : src === 'heuristic' ? '#3730a3' : src === 'user' ? '#166534' : src === 'pendingreview' ? '#6b21a8' : '#374151';
                         const bd = src === 'aprl' ? '#bfdbfe' : src === 'llm' ? '#fde68a' : src === 'heuristic' ? '#c7d2fe' : src === 'user' ? '#bbf7d0' : src === 'pendingreview' ? '#e9d5ff' : '#d1d5db';
+                        
+                        // Get reasoning from learn_more object
+                        const heuristicReasoning = (finding.learn_more as any)?.heuristic_reasoning;
+                        const llmReasoning = (finding.learn_more as any)?.llm_reasoning;
+                        const reasoning = heuristicReasoning || llmReasoning;
+                        
                         return (
-                          <span
-                            style={{
-                              display: 'inline-block',
-                              padding: '2px 6px',
-                              borderRadius: '3px',
-                              fontSize: '10px',
-                              fontWeight: 600,
-                              background: bg,
-                              color: fg,
-                              border: `1px solid ${bd}`,
-                            }}
-                            title={`Confirmed by ${label}`}
-                          >
-                            {label}
-                          </span>
+                          <div style={{ position: "relative", display: "inline-block" }}>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '2px 6px',
+                                borderRadius: '3px',
+                                fontSize: '10px',
+                                fontWeight: 600,
+                                background: bg,
+                                color: fg,
+                                border: `1px solid ${bd}`,
+                                cursor: reasoning ? 'help' : 'default',
+                              }}
+                              title={reasoning ? undefined : `Confirmed by ${label}`}
+                              className={reasoning ? "tooltip-trigger" : ""}
+                            >
+                              {label}
+                            </span>
+                            {reasoning && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  bottom: "100%",
+                                  left: "50%",
+                                  transform: "translateX(-50%)",
+                                  marginBottom: "8px",
+                                  padding: "12px",
+                                  background: "rgba(17, 24, 39, 0.96)",
+                                  color: "#e5e7eb",
+                                  borderRadius: "6px",
+                                  fontSize: "12px",
+                                  lineHeight: "1.5",
+                                  maxWidth: "320px",
+                                  width: "max-content",
+                                  zIndex: 1000,
+                                  pointerEvents: "none",
+                                  opacity: 0,
+                                  visibility: "hidden",
+                                  transition: "opacity 0.2s, visibility 0.2s",
+                                  boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
+                                  border: "1px solid rgba(148, 163, 184, 0.35)",
+                                  textAlign: "left",
+                                }}
+                                className="tooltip-content"
+                              >
+                                <div style={{ fontWeight: 700, marginBottom: "6px", color: "#fff", fontSize: "11px" }}>
+                                  {label} Validation
+                                </div>
+                                <div style={{ fontSize: "11px", color: "#e5e7eb" }}>
+                                  {reasoning}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         );
                       })()
                     ) : (

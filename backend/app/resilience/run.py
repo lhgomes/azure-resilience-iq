@@ -234,6 +234,7 @@ def _generate_zone_recommendation_checks(
         deployment_pattern_str = zonal_data.get("deployment_pattern", "unknown")
         pattern_map = {
             "single_zone": DeploymentPattern.SINGLE_ZONE,
+            "multi_zone": DeploymentPattern.MULTI_ZONE,
             "multi_zone_2": DeploymentPattern.MULTI_ZONE,
             "multi_zone_3plus": DeploymentPattern.MULTI_ZONE,
             "zone_redundant": DeploymentPattern.ZONE_REDUNDANT,
@@ -273,7 +274,7 @@ def _generate_zone_recommendation_checks(
                     "links": zone_rec.learn_more_links
                 } if zone_rec.learn_more_links else {},
                 "status": status,
-                "validation_source": ["ZoneRecommendation"],
+                "validation_source": "ZoneRecommendation",
                 "deployment_pattern": deployment_pattern_str,
                 "resilience_check_id": generate_resilience_check_id(resource_id, zone_rec.aprl_guid or f"zone-{resource_type.replace('/', '-')}-{deployment_pattern_str}"),
             }
@@ -652,14 +653,9 @@ def main():
                             
                             # Option 1: Same recommendation_id (exact match)
                             if zone_rec_id and existing_rec_id == zone_rec_id:
-                                # Merge validation sources
-                                existing_sources = existing_check.get("validation_source", [])
-                                if isinstance(existing_sources, str):
-                                    existing_sources = [existing_sources]
-                                if "ZoneRecommendation" not in existing_sources:
-                                    existing_sources.append("ZoneRecommendation")
-                                    existing_check["validation_source"] = existing_sources
-
+                                # Keep the original validation_source (APRL/Heuristic/LLM)
+                                # Zone analysis enriches the check but doesn't change how it was validated
+                                
                                 # Enrich existing APRL/Heuristic check with zone recommendation details
                                 existing_long = existing_check.get("long_description", "")
                                 existing_benefits = existing_check.get("potential_benefits", "")
@@ -696,10 +692,8 @@ def main():
                                 break
                             
                             # Option 2: Check if any existing APRL/Heuristic check covers this zone guidance
-                            existing_sources = existing_check.get("validation_source", [])
-                            if isinstance(existing_sources, str):
-                                existing_sources = [existing_sources]
-                            if existing_sources and existing_sources[0] in ["APRL", "Heuristic"]:
+                            existing_source = existing_check.get("validation_source", "")
+                            if existing_source in ["APRL", "Heuristic"]:
                                 # Check for common zone-related keywords overlap
                                 zone_keywords = {"zone", "vmss", "flex", "redundant", "zrs", "availability"}
                                 zone_words_in_zone = {word for word in zone_keywords if word in zone_desc_lower}
@@ -708,7 +702,7 @@ def main():
                                 # If both mention zones/redundancy and share key terms, consider it duplicate
                                 if zone_words_in_zone and zone_words_in_aprl and len(zone_words_in_zone & zone_words_in_aprl) >= 1:
                                     merged = True
-                                    LOGGER.debug(f"Skipping duplicate zone check '{zone_check['description'][:50]}...' - already covered by {existing_sources[0]} check '{existing_check['description'][:50]}'")
+                                    LOGGER.debug(f"Skipping duplicate zone check '{zone_check['description'][:50]}...' - already covered by {existing_source} check '{existing_check['description'][:50]}'")
                                     break
                         
                         if not merged:

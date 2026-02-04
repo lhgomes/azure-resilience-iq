@@ -319,19 +319,15 @@ export function computeValidationSourceOptions(
     if (resourceEval.checks && Array.isArray(resourceEval.checks)) {
       resourceEval.checks.forEach((check: any) => {
         if (check.validation_source) {
-          const sourceList = Array.isArray(check.validation_source)
-            ? check.validation_source
-            : [check.validation_source];
-          sourceList.forEach((source: string) => {
-            const key = (source || "").toString();
-            const lower = key.toLowerCase();
-            // Exclude transient/user review sources from the filter options
-            if (!key) return;
-            if (lower === "pendingreview" || lower === "user") return;
-            if (!sources.has(key)) {
-              sources.set(source, true);
-            }
-          });
+          const source = check.validation_source;
+          const key = (source || "").toString();
+          const lower = key.toLowerCase();
+          // Exclude transient review source from the filter options
+          if (!key) return;
+          if (lower === "pendingreview") return;
+          if (!sources.has(key)) {
+            sources.set(source, true);
+          }
         }
       });
     }
@@ -357,6 +353,7 @@ export function buildViewGraph(args: {
 }): ViewGraph {
   const { snapshot, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter } = args;
   const annotationMap = aiLayerEnabled ? buildAnnotationMap(snapshot) : new Map();
+  const hasGroups = (snapshot.groups ?? []).length > 0;
 
   // Build a map from node_id to group info
   const nodeToGroupMap = new Map<string, { groupId: string; groupLabel: string }>();
@@ -442,6 +439,11 @@ export function buildViewGraph(args: {
       };
     })
     .filter(n => {
+      // If there are no groups, skip filtering to avoid hiding the entire graph.
+      if (!hasGroups) {
+        return true;
+      }
+
       // If resourceGroupFilter is defined and empty, exclude everything
       if (resourceGroupFilter.size === 0) {
         return false;

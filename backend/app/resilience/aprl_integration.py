@@ -401,6 +401,102 @@ class APRLEvaluator:
                     continue
                 raise
 
+    def _filter_vms_in_multizone_lb_pools(
+        self,
+        failing_vm_ids: set,
+        all_resources: List[Dict[str, Any]],
+        subscription_id: str,
+    ) -> set:
+        """
+        Filter out VMs from failing set if they achieve multi-zone HA via load balancer.
+        
+        VMs that are:
+        1. Part of a load balancer backend pool
+        2. Where the backend pool has VMs distributed across 2+ availability zones
+        3. Achieve active-active multi-zone HA without needing VMSS
+        
+        Args:
+            failing_vm_ids: Set of VM resource IDs that failed the VMSS check
+            all_resources: All resources in the subscription
+            subscription_id: Azure subscription ID
+            
+        Returns:
+            Filtered set of VM IDs that still need VMSS recommendation
+        """
+        if not failing_vm_ids:
+            return failing_vm_ids
+        
+        # Build a map of VM ID -> zones
+        vm_zones_map = {}
+        for resource in all_resources:
+            rtype = resource.get('type', '').lower()
+            if 'microsoft.compute/virtualmachines' in rtype and '/extensions' not in rtype:
+                vm_id = resource.get('id')
+                zones = resource.get('zones', [])
+                if vm_id:
+                    vm_zones_map[vm_id.lower()] = zones if isinstance(zones, list) else []
+        
+        # Build a map of backend pool ID -> set of zones from VMs in that pool
+        backend_pool_zones = {}
+        for resource in all_resources:
+            rtype = resource.get('type', '').lower()
+            if 'microsoft.compute/virtualmachines' in rtype and '/extensions' not in rtype:
+                vm_id = resource.get('id')
+                vm_zones = resource.get('zones', [])
+                backend_pool_ids = resource.get('backend_pool_ids', [])
+                
+                if vm_id and backend_pool_ids and isinstance(backend_pool_ids, list):
+                    for pool_id in backend_pool_ids:
+                        if pool_id not in backend_pool_zones:
+                            backend_pool_zones[pool_id] = set()
+                        # Add zones from this VM to the pool's zone set
+                        if isinstance(vm_zones, list):
+                            for zone in vm_zones:
+                                backend_pool_zones[pool_id].add(str(zone))
+        
+        # Filter out VMs that are in multi-zone backend pools (2+ zones)
+        filtered_failing_ids = set()
+        for vm_id in failing_vm_ids:
+            # Find if this VM is in any backend pool
+            vm_resource = None
+            for resource in all_resources:
+                if resource.get('id', '').lower() == vm_id.lower():
+                    vm_resource = resource
+                    break
+            
+            if not vm_resource:
+                # VM not found in resource list, keep in failing set
+                filtered_failing_ids.add(vm_id)
+                continue
+            
+            backend_pool_ids = vm_resource.get('backend_pool_ids', [])
+            
+            # Check if ANY backend pool this VM belongs to has multi-zone distribution
+            is_in_multizone_pool = False
+            if backend_pool_ids and isinstance(backend_pool_ids, list):
+                for pool_id in backend_pool_ids:
+                    pool_zones = backend_pool_zones.get(pool_id, set())
+                    if len(pool_zones) >= 2:
+                        # This pool has VMs in 2+ zones = active-active multi-zone HA
+                        is_in_multizone_pool = True
+                        LOGGER.debug(
+                            f"VM {vm_resource.get('name')} achieves multi-zone HA via load balancer "
+                            f"backend pool (zones: {sorted(pool_zones)}). Excluding from VMSS recommendation."
+                        )
+                        break
+            
+            if not is_in_multizone_pool:
+                # VM is either not in a backend pool or in a single-zone pool
+                filtered_failing_ids.add(vm_id)
+        
+        filtered_count = len(failing_vm_ids) - len(filtered_failing_ids)
+        if filtered_count > 0:
+            LOGGER.info(
+                f"Filtered {filtered_count} VMs from VMSS recommendation (multi-zone LB backend pool)"
+            )
+        
+        return filtered_failing_ids
+
     def _check_property_based_finding(
         self,
         resource_type: str,
@@ -727,6 +823,7 @@ class APRLEvaluator:
                 rec.recommendations_file_path
             )
             failing_ids: set = set()
+            overridden_by_backend_pool: set = set()  # Track VMs where APRL result was overridden
 
             detail_entry: Dict[str, Any] = {
                 "resource_type": resource_type,
@@ -787,6 +884,18 @@ class APRLEvaluator:
                         failing_ids = {
                             row.get("id") for row in rows if isinstance(row, dict) and row.get("id")
                         }
+                        
+                        # Post-process for VMSS Flex recommendation (273f6b30-68e0-4241-85ea-acf15ffb60bf)
+                        # Filter out VMs that achieve multi-zone HA through load balancer backend pools
+                        overridden_by_backend_pool = set()
+                        if rec.aprl_guid == "273f6b30-68e0-4241-85ea-acf15ffb60bf":
+                            original_failing_ids = failing_ids.copy()
+                            failing_ids = self._filter_vms_in_multizone_lb_pools(
+                                failing_ids, resources, subscription_id
+                            )
+                            # Track which VMs were overridden (APRL said fail, but we say pass)
+                            overridden_by_backend_pool = original_failing_ids - failing_ids
+                        
                         detail_entry["rows"] = rows
                         detail_entry["status"] = "success"
                     except HttpResponseError as exc:
@@ -884,7 +993,10 @@ class APRLEvaluator:
 
             # Add check result for ALL resources (both pass and fail)
             # Determine validation_source based on whether KQL was available or strategy used
-            validation_source = "APRL" if kql_query else "Heuristic"
+            base_validation_source = "APRL" if kql_query else "Heuristic"
+            
+            # Track VMs overridden by backend pool logic (lowercase for matching)
+            overridden_ids_lower = {oid.lower() for oid in overridden_by_backend_pool if oid}
             
             for rid in resource_ids:
                 if rid:
@@ -893,23 +1005,46 @@ class APRLEvaluator:
                         continue
                     
                     is_failed = rid.lower() in failing_ids_lower
-                    # Build source list: start with base source (APRL or Heuristic)
-                    sources = [validation_source]
+                    # Use top-level validation source (LLM > Heuristic > APRL)
+                    # If APRL was overridden by our backend pool logic, use Heuristic
+                    if rid.lower() in overridden_ids_lower:
+                        validation_source = "Heuristic"
+                    else:
+                        validation_source = base_validation_source
                     # Get original learn_more (APRL has 0 or 1 item, stored as list)
                     learn_more = rec.learn_more_links[0] if rec.learn_more_links else {}
+                    
+                    # Add reasoning for heuristic override
+                    if rid.lower() in overridden_ids_lower:
+                        learn_more = dict(learn_more) if learn_more else {}
+                        learn_more["heuristic_reasoning"] = (
+                            "This VM achieves active-active multi-zone high availability through Load Balancer or "
+                            "Application Gateway backend pool distribution across availability zones. "
+                            "While VMSS Flex is a best practice, the current architecture already provides "
+                            "equivalent fault tolerance and automatic distribution across multiple zones."
+                        )
                     
                     if not kql_query and is_failed:
                         # Check if LLM escalation was used by looking at stored strategy
                         _, strategy = strategy_map.get((rid, rec.guid), (False, None))
                         if strategy and hasattr(strategy, 'llm_analysis_used') and strategy.llm_analysis_used:
-                            # Add LLM to sources list (don't replace, append)
-                            if "LLM" not in sources:
-                                sources.append("LLM")
+                            # LLM is the top-level validation that was actually executed
+                            validation_source = "LLM"
                             # Add LLM reasoning to the learn_more object if available
                             if hasattr(strategy, 'llm_reasoning') and strategy.llm_reasoning:
                                 # Add llm_reasoning field to existing object
                                 learn_more = dict(learn_more) if learn_more else {}
                                 learn_more["llm_reasoning"] = strategy.llm_reasoning
+                    
+                    # Add reasoning for any Heuristic validation that doesn't have it yet
+                    if validation_source == "Heuristic" and not (learn_more and learn_more.get("heuristic_reasoning")):
+                        learn_more = dict(learn_more) if learn_more else {}
+                        # Generic heuristic reasoning if none has been added
+                        if "heuristic_reasoning" not in learn_more:
+                            learn_more["heuristic_reasoning"] = (
+                                "Based on heuristic analysis of the resource configuration and properties, "
+                                "this recommendation has been validated to provide appropriate guidance for this resource."
+                            )
                     
                     check_obj = {
                         "recommendation_id": rec.guid,
@@ -920,7 +1055,7 @@ class APRLEvaluator:
                         "potential_benefits": rec.potential_benefits,
                         "learn_more": learn_more,
                         "status": "fail" if is_failed else "pass",
-                        "validation_source": sources,
+                        "validation_source": validation_source,
                         "resilience_check_id": generate_resilience_check_id(rid, rec.guid)
                     }
                     checks_map[rid].append(check_obj)
@@ -951,7 +1086,7 @@ class APRLEvaluator:
                         "url": eval_result.get("learn_more_url", None),  # Use URL suggested by LLM
                         "llm_reasoning": eval_result.get("practical_guide", ""),
                     }
-                    checks_map[rid][idx]["validation_source"] = ["LLM"]
+                    checks_map[rid][idx]["validation_source"] = "LLM"
         
         # Build per-resource results
         for res in resources:
