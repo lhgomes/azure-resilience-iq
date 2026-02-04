@@ -29,7 +29,7 @@ import {
   createGroup,
   updateGroup,
   deleteGroup,
-  addNodeToGroup,
+  addNodesToGroup,
   removeNodeFromGroup,
   listWorkloads,
   getWorkload,
@@ -380,10 +380,7 @@ const WorkloadView: React.FC = () => {
           const nextCheck = { ...check, status: "fail" as const };
           const validationSource = check?.validation_source;
 
-          if (Array.isArray(validationSource)) {
-            const filtered = validationSource.filter((v: string) => String(v).toLowerCase() !== "user");
-            nextCheck.validation_source = filtered.length > 0 ? filtered : ["APRL"];
-          } else if (typeof validationSource === "string") {
+          if (typeof validationSource === "string") {
             const lower = validationSource.toLowerCase();
             nextCheck.validation_source = lower === "user" || !validationSource ? "APRL" : validationSource;
           } else {
@@ -475,22 +472,14 @@ const WorkloadView: React.FC = () => {
 
   const handleOverrideSaved = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
     upsertResiliencyOverride(override);
-    if (override?.resource_id) {
-      const parts = override.resource_id.split("/").filter(p => p);
-      const subId = parts[0]?.toLowerCase() === "subscriptions" ? parts[1] : null;
-      if (subId) markSubscriptionDirty(subId);
-    }
-  }, [upsertResiliencyOverride, markSubscriptionDirty]);
+    // Validation overrides should not trigger Refresh Annotations & Scores
+  }, [upsertResiliencyOverride]);
 
   const handleOverrideDeleted = useCallback((resilienceCheckId: string, resourceId?: string) => {
     removeResiliencyOverride(resilienceCheckId);
     applyOptimisticOverrideRemoval(resilienceCheckId, resourceId);
-    if (resourceId) {
-      const parts = resourceId.split("/").filter(p => p);
-      const subId = parts[0]?.toLowerCase() === "subscriptions" ? parts[1] : null;
-      if (subId) markSubscriptionDirty(subId);
-    }
-  }, [removeResiliencyOverride, applyOptimisticOverrideRemoval, markSubscriptionDirty]);
+    // Validation overrides should not trigger Refresh Annotations & Scores
+  }, [removeResiliencyOverride, applyOptimisticOverrideRemoval]);
 
   const fetchZonalResiliency = useCallback(async () => {
     if (selectedSubscriptionIds.length === 0) return;
@@ -644,7 +633,6 @@ const WorkloadView: React.FC = () => {
 
     setExpandedCategories(mixedCategories);
   }, [serviceOptions, serviceFilter]);
-
   useEffect(() => {
     if (!resourceGroupOptions.length) {
       if (pendingWorkloadApplyRef.current) return;
@@ -667,7 +655,6 @@ const WorkloadView: React.FC = () => {
     // Keep the user's current selection; avoid shrinking it when the option list changes.
     // This prevents transient option recalculation from hiding nodes unexpectedly.
   }, [resourceGroupOptions, resourceGroupFilter.size]);
-
   useEffect(() => {
     if (!validationSourceOptions.length) {
       if (validationSourceFilter.size) setValidationSourceFilter(new Set());
@@ -758,6 +745,40 @@ const WorkloadView: React.FC = () => {
       resourceGroupFilter,
     });
   }, [graphWithScores, aiLayerEnabled, userLayerEnabled, serviceFilter, resourceGroupFilter]);
+
+  const nodesForView = viewGraph?.nodes ?? graph?.nodes ?? [];
+  const edgesForView = viewGraph?.edges ?? graph?.edges ?? [];
+  const hasSelection = selectedSubscriptionIds.length > 0;
+
+  // Auto layout when view level or service filter changes (debounced to avoid transient states)
+  const layoutResetTimerRef = useRef<number | null>(null);
+  const layoutResetKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!nodesForView || nodesForView.length === 0) return;
+
+    const key = JSON.stringify({
+      viewLevel,
+      services: Array.from(serviceFilter).sort(),
+      count: nodesForView.length,
+    });
+
+    layoutResetKeyRef.current = key;
+
+    if (layoutResetTimerRef.current) {
+      window.clearTimeout(layoutResetTimerRef.current);
+    }
+
+    layoutResetTimerRef.current = window.setTimeout(() => {
+      if (layoutResetKeyRef.current !== key) return;
+      graphCanvasRef.current?.resetLayout();
+    }, 200);
+
+    return () => {
+      if (layoutResetTimerRef.current) {
+        window.clearTimeout(layoutResetTimerRef.current);
+      }
+    };
+  }, [viewLevel, serviceFilter, nodesForView]);
 
   const resolveSubscriptionIdForEdge = useCallback((edgeId: string): string | null => {
     // Edges are always stored in the source node's subscription
@@ -1357,6 +1378,31 @@ const WorkloadView: React.FC = () => {
     const groupSubscriptionId = resolveSubscriptionIdForNodeIds(memberIds);
     if (!groupSubscriptionId) return;
 
+    // Recursively find all target dependencies of the selected nodes
+    const directDeps = new Set<string>();
+    if (graph) {
+      const visited = new Set<string>();
+      const queue = [...memberIds];
+      
+      while (queue.length > 0) {
+        const nodeId = queue.shift()!;
+        if (visited.has(nodeId)) continue;
+        visited.add(nodeId);
+        
+        // Find edges where this node is the source
+        const outgoingEdges = graph.edges.filter(e => e.source === nodeId);
+        for (const edge of outgoingEdges) {
+          // Only include the target if it's not already in memberIds
+          if (!memberIds.includes(edge.target) && !visited.has(edge.target)) {
+            directDeps.add(edge.target);
+            queue.push(edge.target);
+          }
+        }
+      }
+    }
+
+    const allMemberIds = [...memberIds, ...Array.from(directDeps)];
+
     // Optimistic UI update - create new group
     updateGraph(prev => {
       if (!prev) return prev;
@@ -1365,20 +1411,20 @@ const WorkloadView: React.FC = () => {
       // Remove nodes from any existing groups
       const updatedGroups = groups.map(g => ({
         ...g,
-        nodes: g.nodes.filter(id => !memberIds.includes(id)),
+        nodes: g.nodes.filter(id => !allMemberIds.includes(id)),
       }));
       
       // Add new group
       return {
         ...prev,
-        groups: [...updatedGroups, { id: groupId, name: label, nodes: memberIds }],
+        groups: [...updatedGroups, { id: groupId, name: label, nodes: allMemberIds }],
       };
     });
 
     // Remove nodes from any existing groups first
     if (graph?.groups) {
       for (const group of graph.groups) {
-        for (const nodeId of memberIds) {
+        for (const nodeId of allMemberIds) {
           if (group.nodes.includes(nodeId)) {
             await removeNodeFromGroup(groupSubscriptionId, group.id, nodeId);
           }
@@ -1387,8 +1433,7 @@ const WorkloadView: React.FC = () => {
     }
 
     // Create the new group
-    await createGroup(groupSubscriptionId, { id: groupId, name: label, nodes: memberIds });
-    markSubscriptionDirty(groupSubscriptionId);
+    await createGroup(groupSubscriptionId, { id: groupId, name: label, nodes: allMemberIds });
   };
 
 
@@ -1410,7 +1455,9 @@ const WorkloadView: React.FC = () => {
 
     // Delete the entire group
     await deleteGroup(groupSubscriptionId, groupId);
-    markSubscriptionDirty(groupSubscriptionId);
+    
+    // Update groups in state
+    updateGraph(prev => prev ? { ...prev, groups: (prev.groups ?? []).filter(g => g.id !== groupId) } : prev);
   };
 
   const renameGroup = async (args: { groupId: string; label: string; memberIds: string[] }) => {
@@ -1431,7 +1478,9 @@ const WorkloadView: React.FC = () => {
 
     // Update the group name
     await updateGroup(groupSubscriptionId, groupId, { name: label });
-    markSubscriptionDirty(groupSubscriptionId);
+    
+    // Update groups in state
+    updateGraph(prev => prev ? { ...prev, groups: (prev.groups ?? []).map(g => g.id === groupId ? { ...g, name: label } : g) } : prev);
   };
 
   const moveNodeToGroup = async (args: { nodeId: string; groupId: string }) => {
@@ -1441,37 +1490,48 @@ const WorkloadView: React.FC = () => {
     const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
     if (!nodeSubscriptionId) return;
 
-    // Optimistic UI update - add node to the group's nodes array
-    updateGraph(prev => {
-      if (!prev) return prev;
-
-      const groups = prev.groups ?? [];
-      const updatedGroups = groups.map(g => {
-        if (g.id === groupId && !g.nodes.includes(nodeId)) {
-          return { ...g, nodes: [...g.nodes, nodeId] };
-        }
-        // Remove from other groups
-        return { ...g, nodes: g.nodes.filter(id => id !== nodeId) };
-      });
-
-      return {
-        ...prev,
-        groups: updatedGroups,
-      };
-    });
-
-    // Remove from any existing groups first
-    if (graph.groups) {
-      for (const group of graph.groups) {
-        if (group.nodes.includes(nodeId) && group.id !== groupId) {
-          await removeNodeFromGroup(nodeSubscriptionId, group.id, nodeId);
+    // Recursively find all target dependencies of the node being moved
+    const directDeps = new Set<string>([nodeId]);
+    const visited = new Set<string>();
+    const queue = [nodeId];
+    
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      if (visited.has(currentId)) continue;
+      visited.add(currentId);
+      
+      const outgoingEdges = graph.edges.filter(e => e.source === currentId);
+      for (const edge of outgoingEdges) {
+        if (!visited.has(edge.target)) {
+          directDeps.add(edge.target);
+          queue.push(edge.target);
         }
       }
     }
 
-    // Add to the new group
-    await addNodeToGroup(nodeSubscriptionId, groupId, nodeId);
-    markSubscriptionDirty(nodeSubscriptionId);
+    const allNodeIds = Array.from(directDeps);
+
+    // Remove from any existing groups first
+    if (graph.groups) {
+      for (const group of graph.groups) {
+        for (const id of allNodeIds) {
+          if (group.nodes.includes(id) && group.id !== groupId) {
+            await removeNodeFromGroup(nodeSubscriptionId, group.id, id);
+          }
+        }
+      }
+    }
+
+    // Add all nodes to the group in one API call
+    const updatedGroup = await addNodesToGroup(nodeSubscriptionId, groupId, allNodeIds);
+    
+    // Update just this group in state
+    updateGraph(prev => {
+      if (!prev) return prev;
+      const groups = prev.groups ?? [];
+      const updatedGroups = groups.map(g => g.id === updatedGroup.id ? updatedGroup : g);
+      return { ...prev, groups: updatedGroups };
+    });
   };
 
   const handleRemoveNodeFromGroup = async (args: { nodeId: string; groupId: string }) => {
@@ -1481,27 +1541,23 @@ const WorkloadView: React.FC = () => {
     const nodeSubscriptionId = resolveSubscriptionIdForNode(nodeId);
     if (!nodeSubscriptionId) return;
 
-    // Optimistic UI update - remove node from the group's nodes array
+    // Remove from the group
+    const result = await removeNodeFromGroup(nodeSubscriptionId, groupId, nodeId);
+    
+    // Update groups in state
     updateGraph(prev => {
       if (!prev) return prev;
-
       const groups = prev.groups ?? [];
-      const updatedGroups = groups.map(g => {
-        if (g.id === groupId) {
-          return { ...g, nodes: g.nodes.filter(id => id !== nodeId) };
-        }
-        return g;
-      });
-
-      return {
-        ...prev,
-        groups: updatedGroups,
-      };
+      
+      if (result === null) {
+        // Group was deleted
+        return { ...prev, groups: groups.filter(g => g.id !== groupId) };
+      } else {
+        // Group was updated
+        const updatedGroups = groups.map(g => g.id === result.id ? result : g);
+        return { ...prev, groups: updatedGroups };
+      }
     });
-
-    // Remove from the group
-    await removeNodeFromGroup(nodeSubscriptionId, groupId, nodeId);
-    markSubscriptionDirty(nodeSubscriptionId);
   };
 
   const handleNodeRemoveFromGroupClick = (args: { nodeId: string; groupId: string }) => {
@@ -1777,10 +1833,6 @@ const WorkloadView: React.FC = () => {
       </div>
     );
   }
-
-  const nodesForView = viewGraph?.nodes ?? graph?.nodes ?? [];
-  const edgesForView = viewGraph?.edges ?? graph?.edges ?? [];
-  const hasSelection = selectedSubscriptionIds.length > 0;
 
   const suggestGroupName = (selectedIds: string[]): string => {
     if (selectedIds.length === 0) return "";
@@ -2250,6 +2302,7 @@ const WorkloadView: React.FC = () => {
                         ref={graphCanvasRef}
                         nodes={nodesForView}
                         edges={edgesForView}
+                        groups={graph?.groups ?? []}
                         graphViewState={pendingGraphView}
                         onGraphViewApplied={() => setPendingGraphView(null)}
                         selectedEdgeId={selectedEdge?.id ?? null}
@@ -2262,8 +2315,10 @@ const WorkloadView: React.FC = () => {
                         onEdgeCreate={handleCreateManualLink}
                         onNodeRename={handleRenameNode}
                         onNodeHide={handleHideNode}
+                        onNodeDragStart={() => { setSelectedNode(null); setSelectedEdge(null); }}
                         onGroupCreate={applyGroupToNodes}
                         groupCreateRequest={groupCreateRequest}
+                        onRemoveNodeFromGroup={handleRemoveNodeFromGroup}
                         onSelectionStateChange={state => {
                           const prevSelection = lastGroupToolbarSelectionRef.current;
                           lastGroupToolbarSelectionRef.current = state;

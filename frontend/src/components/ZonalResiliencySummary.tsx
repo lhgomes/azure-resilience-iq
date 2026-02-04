@@ -483,17 +483,6 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
           border: "1px solid #e5e7eb",
         }}
       >
-        <h1
-          style={{
-            margin: "0 0 24px",
-            fontSize: "24px",
-            fontWeight: 700,
-            color: "#1f2937",
-          }}
-        >
-          Zonal Resiliency Analysis
-        </h1>
-
         <div
           style={{
             display: "grid",

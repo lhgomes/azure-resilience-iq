@@ -147,6 +147,10 @@ export async function fetchWorkloadGraph(subscriptionId: SubscriptionId): Promis
   return await apiJson<RawGraphSnapshot>(subscriptionPath(subscriptionId, `/graph`));
 }
 
+export async function fetchGroups(subscriptionId: SubscriptionId): Promise<NodeGroup[]> {
+  return await apiJson<NodeGroup[]>(subscriptionPath(subscriptionId, `/groups`));
+}
+
 export async function listWorkloads(): Promise<WorkloadSummary[]> {
   return await apiJson<WorkloadSummary[]>("/api/workloads");
 }
@@ -278,15 +282,15 @@ export async function deleteGroup(subscriptionId: SubscriptionId, groupId: strin
   });
 }
 
-export async function addNodeToGroup(
+export async function addNodesToGroup(
   subscriptionId: SubscriptionId,
   groupId: string,
-  nodeId: string
-): Promise<void> {
-  await apiNoBody(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes`, {
+  nodeIds: string[]
+): Promise<NodeGroup> {
+  return await apiJson<NodeGroup>(`/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ node_id: nodeId }),
+    body: JSON.stringify({ node_ids: nodeIds }),
   });
 }
 
@@ -294,11 +298,18 @@ export async function removeNodeFromGroup(
   subscriptionId: SubscriptionId,
   groupId: string,
   nodeId: string
-): Promise<void> {
-  await apiNoBody(
+): Promise<NodeGroup | null> {
+  const result = await apiJson<NodeGroup | { status: string; group_id: string }>(
     `/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/nodes/${encodeURIComponent(nodeId)}`,
     { method: "DELETE" }
   );
+  
+  // If group was deleted, return null
+  if ('status' in result && result.status === 'deleted') {
+    return null;
+  }
+  
+  return result as NodeGroup;
 }
 
 export interface ResiliencyCheckMetrics {

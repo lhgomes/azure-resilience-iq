@@ -24,6 +24,7 @@ class ResiliencyGroupType(Enum):
     AVAILABILITY_SET = "availability_set"
     VMSS = "vmss"
     LOAD_BALANCER_BACKEND = "load_balancer_backend"
+    APPLICATION_GATEWAY_BACKEND = "application_gateway_backend"
     STORAGE_REDUNDANCY = "storage_redundancy"
     DATABASE_FAILOVER = "database_failover"
     REPLICATED_RESOURCE = "replicated_resource"
@@ -85,6 +86,7 @@ class ResourceCorrelator:
         self._identify_availability_set_groups()
         self._identify_vmss_groups()
         self._identify_load_balancer_backend_groups()
+        self._identify_application_gateway_backend_groups()
         self._identify_storage_redundancy_groups()
         self._identify_database_failover_groups()
         self._identify_cosmos_replication_groups()
@@ -235,6 +237,53 @@ class ResourceCorrelator:
                 )
                 self.groups.append(group)
                 logger.debug(f"Found LB backend group: {lb_name} with {len(backend_members)} members")
+
+    def _identify_application_gateway_backend_groups(self) -> None:
+        """Find resources behind Application Gateways and group them"""
+        app_gateways = [
+            r for r in self.all_resources
+            if 'microsoft.network/applicationgateways' in r.get('type', '').lower()
+        ]
+
+        for agw in app_gateways:
+            agw_id = agw.get('id')
+            agw_name = agw.get('name')
+            agw_zones = agw.get('zones', [])
+            is_zone_redundant = isinstance(agw_zones, list) and len(agw_zones) >= 2
+
+            backend_members = []
+            for resource in self.all_resources:
+                backend_pool_ids = resource.get('backend_pool_ids', [])
+                if backend_pool_ids and isinstance(backend_pool_ids, list):
+                    for pool_id in backend_pool_ids:
+                        if isinstance(pool_id, str) and agw_id and agw_id.lower() in pool_id.lower():
+                            rtype = resource.get('type', '').lower()
+                            if 'virtualmachine' in rtype or 'networkinterface' in rtype:
+                                if resource not in backend_members:
+                                    backend_members.append(resource)
+                            break
+                elif resource.get('parent_resource_id') == agw_id:
+                    backend_members.append(resource)
+
+            if backend_members:
+                group = ResiliencyGroup(
+                    id=f"{agw_id}:backend",
+                    name=f"Application Gateway Backend: {agw_name}",
+                    type=ResiliencyGroupType.APPLICATION_GATEWAY_BACKEND,
+                    member_ids=[m.get('id') for m in backend_members if m.get('id')],
+                    member_types=[m.get('type', 'Unknown') for m in backend_members],
+                    metadata={
+                        'application_gateway_id': agw_id,
+                        'application_gateway_name': agw_name,
+                        'is_zone_redundant': is_zone_redundant,
+                        'member_count': len(backend_members),
+                        'zones': agw_zones,
+                    }
+                )
+                self.groups.append(group)
+                logger.debug(
+                    f"Found Application Gateway backend group: {agw_name} with {len(backend_members)} members"
+                )
     
     def _identify_storage_redundancy_groups(self) -> None:
         """Find storage accounts with geo-redundancy configuration"""

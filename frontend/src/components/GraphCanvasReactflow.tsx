@@ -65,12 +65,18 @@ type GroupState = {
 const NODE_W = 180;
 const NODE_H = 200;
 const GROUP_PAD = 40;
+const GROUP_GAP_X = 100;
+const GROUP_GAP_Y = 180;
+const MAX_GROUP_SPREAD = (NODE_W + GROUP_GAP_X) * 3;
+const GRID_X = NODE_W + GROUP_GAP_X;
+const GRID_Y = NODE_H + GROUP_GAP_Y;
 const COLLAPSED_GROUP_W = 220;
 const COLLAPSED_GROUP_H = 72;
 
 interface Props {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  groups?: Array<{ id: string; name: string; nodes: string[] }>;
   userLayerEnabled: boolean;
   aiLayerEnabled: boolean;
   onAiLayerEnabledChange?: (enabled: boolean) => void;
@@ -87,6 +93,7 @@ interface Props {
   onEdgeCreate?: (sourceId: string, targetId: string) => void;
   onNodeRename?: (nodeId: string) => void;
   onNodeHide?: (nodeId: string) => void;
+  onNodeDragStart?: () => void;
 
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
@@ -122,6 +129,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const {
     nodes: nodesProp,
     edges: edgesProp,
+    groups: groupsProp = [],
     userLayerEnabled,
     graphViewState,
     onGraphViewApplied,
@@ -131,6 +139,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     onEdgeCreate,
     onNodeRename,
       onNodeHide,
+    onNodeDragStart,
     onGroupCreate,
     groupCreateRequest,
     onMoveNodeToGroup,
@@ -146,6 +155,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const skipNextFitViewRef = useRef(false);
   const lastMissingLogRef = useRef<string | null>(null);
   const justAppliedGraphViewRef = useRef(false);
+  const layoutResetInFlightRef = useRef(false);
 
   const normalizePositions = useCallback((positions?: Record<string, { x: number; y: number }>) => {
     if (!positions) return {} as Record<string, { x: number; y: number }>;
@@ -157,11 +167,27 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const [groups, setGroups] = useState<GroupState[]>([]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const manualGroupSelectionRef = useRef<string | null>(null);
   const [groupBusy, setGroupBusy] = useState(false);
   const lastCreateNonceRef = useRef<number | null>(null);
   const [pendingGroupByNodeId, setPendingGroupByNodeId] = useState<
     Record<string, { groupId: string; label?: string | null }>
   >({});
+
+  // Optimistically remove a node from a group in local state
+  const removeMemberFromLocalGroups = useCallback((nodeId: string, groupId: string) => {
+    const nodeKey = String(nodeId).toLowerCase();
+    const groupKey = String(groupId).toLowerCase();
+    setGroups(prev =>
+      prev
+        .map(g => {
+          if (String(g.id).toLowerCase() !== groupKey) return g;
+          const nextMembers = g.memberIds.filter(id => String(id).toLowerCase() !== nodeKey);
+          return { ...g, memberIds: nextMembers };
+        })
+        .filter(g => g.memberIds.length >= 2)
+    );
+  }, []);
 
   // Filter nodes by importance
   const visibleNodes = useMemo(() => {
@@ -323,6 +349,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
     dagre.layout(g);
 
+    const snap = (value: number, grid: number): number => Math.round(value / grid) * grid;
+
     return rfNodes.map(node => {
       const pos = g.node(node.id);
       const saved = savedPositions[String(node.id).toLowerCase()];
@@ -335,10 +363,62 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       if (!pos) return { ...node, position: { x: 0, y: 0 } };
       return {
         ...node,
-        position: { x: pos.x - NODE_W / 2, y: pos.y - NODE_H / 2 },
+        position: {
+          x: snap(pos.x - NODE_W / 2, GRID_X),
+          y: snap(pos.y - NODE_H / 2, GRID_Y),
+        },
       };
     });
   }, [rfNodes, rfEdges, savedPositions]);
+
+  // Keep group members compact on refresh by seeding missing saved positions
+  useEffect(() => {
+    if (groups.length === 0 || layoutedNodes.length === 0) return;
+
+    const byId = new Map(layoutedNodes.map(n => [String(n.id).toLowerCase(), n] as const));
+
+    setSavedPositions(prev => {
+      let changed = false;
+      const next = { ...prev };
+
+      for (const group of groups) {
+        const memberIds = group.memberIds;
+        if (memberIds.length === 0) continue;
+
+        const positions = memberIds
+          .map(id => ({ id, node: byId.get(String(id).toLowerCase()) }))
+          .filter((x): x is { id: string; node: Node } => !!x.node)
+          .map(x => ({ id: x.id, pos: x.node.position }));
+
+        if (positions.length === 0) continue;
+
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        for (const { pos } of positions) {
+          minX = Math.min(minX, pos.x);
+          minY = Math.min(minY, pos.y);
+        }
+
+        const SPACING_X = NODE_W + GROUP_GAP_X;
+        const SPACING_Y = NODE_H + GROUP_GAP_Y;
+        const GRID_COLS = 3;
+
+        memberIds.forEach((memberId, index) => {
+          const key = String(memberId).toLowerCase();
+          if (next[key]) return;
+          const row = Math.floor(index / GRID_COLS);
+          const col = index % GRID_COLS;
+          next[key] = {
+            x: minX + col * SPACING_X,
+            y: minY + row * SPACING_Y,
+          };
+          changed = true;
+        });
+      }
+
+      return changed ? next : prev;
+    });
+  }, [groups, layoutedNodes]);
 
   // Add handle selection based on laid out node positions
   const edgesWithHandles: Edge[] = useMemo(() => {
@@ -360,35 +440,96 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
   }, [rfEdges, layoutedNodes]);
 
-  // Hydrate group containers based on node metadata.
+  // Memoize a stable key for group changes
+  const groupsKey = useMemo(() => {
+    const key = groupsProp.map(g => `${g.id}:${g.nodes.join(',')}`).join('|');
+    return key;
+  }, [groupsProp]);
+
+  // Load groups from prop
   useEffect(() => {
-    const membersByGroup = new Map<string, { label: string | null; memberIds: string[] }>();
-    for (const n of visibleNodes) {
-      const info = groupInfoByNodeId.get(n.id);
-      if (!info) continue;
-      if (!membersByGroup.has(info.groupId)) {
-        membersByGroup.set(info.groupId, { label: info.label, memberIds: [] });
-      }
-      const entry = membersByGroup.get(info.groupId)!;
-      entry.memberIds.push(n.id);
-      if (!entry.label && info.label) entry.label = info.label;
+    if (groupsProp.length === 0) {
+      setGroups(prev => {
+        const next = prev.filter(g => g.id.startsWith("local-"));
+        return next.length === prev.length ? prev : next;
+      });
+      return;
     }
 
-    const absPosById = new Map(layoutedNodes.map(n => [n.id, n.position] as const));
-
     setGroups(prev => {
-      const prevById = new Map(prev.map(g => [g.id, g] as const));
-      const next: GroupState[] = [];
+      const newGroups = groupsProp
+        .filter(g => g.nodes.length >= 2)
+        .map(g => {
+          const prevGroup = prev.find(pg => pg.id === g.id);
+          return {
+            id: g.id,
+            label: g.name,
+            memberIds: [...g.nodes], // Clone array to ensure new reference
+            collapsed: prevGroup?.collapsed ?? false,
+            rect: { x: 0, y: 0, width: 300, height: 300 },
+            childPositions: {},
+          };
+        });
 
-      for (const [gid, entry] of membersByGroup.entries()) {
-        if (entry.memberIds.length < 2) continue;
+      const localGroups = prev.filter(pg => pg.id.startsWith("local-"));
+      return [...newGroups, ...localGroups];
+    });
+  }, [groupsKey, groupsProp]);
 
-        const membersWithPos = entry.memberIds
-          .map(id => ({ id, pos: absPosById.get(id) }))
-          .filter((x): x is { id: string; pos: { x: number; y: number } } => !!x.pos);
+  const groupMembership = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groups) {
+      for (const id of g.memberIds) {
+        map.set(id, g.id);
+      }
+    }
+    return map;
+  }, [groups]);
 
-        if (membersWithPos.length < 2) continue;
+  const toggleGroupCollapsed = useCallback((groupId: string) => {
+    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, collapsed: !g.collapsed } : g)));
+  }, []);
 
+  const composedNodes = useMemo((): Node[] => {
+    const byId = new Map(layoutedNodes.map(n => [n.id, n] as const));
+
+    const memberOrderForGroup = (group: GroupState): string[] => {
+      const memberSet = new Set(group.memberIds);
+      const scoreById = new Map<string, number>();
+
+      for (const edge of rfEdges) {
+        const srcIn = memberSet.has(edge.source);
+        const tgtIn = memberSet.has(edge.target);
+        if (srcIn === tgtIn) continue;
+
+        const externalId = srcIn ? edge.target : edge.source;
+        const memberId = srcIn ? edge.source : edge.target;
+        const externalPos = byId.get(externalId)?.position;
+        if (!externalPos) continue;
+
+        const prev = scoreById.get(memberId);
+        scoreById.set(memberId, prev === undefined ? externalPos.x : (prev + externalPos.x) / 2);
+      }
+
+      return [...group.memberIds].sort((a, b) => {
+        const aScore = scoreById.get(a);
+        const bScore = scoreById.get(b);
+        if (aScore === undefined && bScore === undefined) return 0;
+        if (aScore === undefined) return 1;
+        if (bScore === undefined) return -1;
+        return aScore - bScore;
+      });
+    };
+
+    // Calculate proper bounds for each group from layoutedNodes positions
+    const groupBounds = new Map<string, { rect: GroupRect; childPositions: Record<string, { x: number; y: number }> }>();
+    for (const g of groups) {
+      const orderedMembers = memberOrderForGroup(g);
+      const membersWithPos = orderedMembers
+        .map(id => ({ id, pos: byId.get(id)?.position }))
+        .filter((x): x is { id: string; pos: { x: number; y: number } } => !!x.pos);
+
+      if (membersWithPos.length > 0) {
         let minX = Number.POSITIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
         let maxX = Number.NEGATIVE_INFINITY;
@@ -401,7 +542,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           maxY = Math.max(maxY, pos.y + NODE_H);
         }
 
-        const rect: GroupRect = {
+        const spreadW = maxX - minX + NODE_W;
+        const spreadH = maxY - minY + NODE_H;
+
+        let rect = {
           x: minX - GROUP_PAD,
           y: minY - GROUP_PAD,
           width: maxX - minX + GROUP_PAD * 2,
@@ -409,58 +553,72 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         };
 
         const childPositions: Record<string, { x: number; y: number }> = {};
-        for (const { id, pos } of membersWithPos) {
-          childPositions[id] = { x: pos.x - rect.x, y: pos.y - rect.y };
+
+        if (spreadW > MAX_GROUP_SPREAD || spreadH > MAX_GROUP_SPREAD) {
+          const count = orderedMembers.length;
+          const cols = Math.min(count, 3);
+          const rows = Math.ceil(count / 3);
+          const gridWidth = GROUP_PAD * 2 + cols * NODE_W + Math.max(0, cols - 1) * GROUP_GAP_X;
+          const gridHeight = GROUP_PAD * 2 + rows * NODE_H + Math.max(0, rows - 1) * GROUP_GAP_Y;
+
+          rect = {
+            x: minX - GROUP_PAD,
+            y: minY - GROUP_PAD,
+            width: gridWidth,
+            height: gridHeight,
+          };
+
+          orderedMembers.forEach((memberId, index) => {
+            const col = index % 3;
+            const row = Math.floor(index / 3);
+            childPositions[memberId] = {
+              x: GROUP_PAD + col * (NODE_W + GROUP_GAP_X),
+              y: GROUP_PAD + row * (NODE_H + GROUP_GAP_Y),
+            };
+          });
+        } else {
+          // Add childPositions for all members, whether or not they're in layoutedNodes
+          for (const memberId of orderedMembers) {
+            const nodeInLayout = byId.get(memberId);
+            if (nodeInLayout) {
+              childPositions[memberId] = { x: nodeInLayout.position.x - rect.x, y: nodeInLayout.position.y - rect.y };
+            } else {
+              const index = orderedMembers.indexOf(memberId);
+              const col = index % 3;
+              const row = Math.floor(index / 3);
+              childPositions[memberId] = {
+                x: GROUP_PAD + col * (NODE_W + GROUP_GAP_X),
+                y: GROUP_PAD + row * (NODE_H + GROUP_GAP_Y),
+              };
+            }
+          }
         }
 
-        const prevGroup = prevById.get(gid);
-        next.push({
-          id: gid,
-          label: entry.label ?? gid,
-          memberIds: [...entry.memberIds],
-          collapsed: prevGroup?.collapsed ?? false,
-          rect,
-          childPositions,
-        });
+        groupBounds.set(g.id, { rect, childPositions });
       }
-
-      // Keep locally-created groups that haven't been persisted yet.
-      for (const g of prev) {
-        if (membersByGroup.has(g.id)) continue;
-        if (g.id.startsWith("local-")) next.push(g);
-      }
-
-      return next;
-    });
-  }, [visibleNodes, groupInfoByNodeId, layoutedNodes]);
-
-  const groupMembership = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const g of groups) {
-      for (const id of g.memberIds) map.set(id, g.id);
     }
-    return map;
-  }, [groups]);
 
-  const toggleGroupCollapsed = useCallback((groupId: string) => {
-    setGroups(prev => prev.map(g => (g.id === groupId ? { ...g, collapsed: !g.collapsed } : g)));
-  }, []);
-
-  const composedNodes = useMemo((): Node[] => {
-    const byId = new Map(layoutedNodes.map(n => [n.id, n] as const));
-
-    const groupNodes: Node[] = groups.map(g => {
-      const w = g.collapsed ? COLLAPSED_GROUP_W : g.rect.width;
-      const h = g.collapsed ? COLLAPSED_GROUP_H : g.rect.height;
+    const groupNodes: Node[] = groups
+      .filter(g => groupBounds.has(g.id)) // Only include groups with visible members
+      .map(g => {
+      const bounds = groupBounds.get(g.id)!;
+      const rect = bounds.rect;
+      const w = g.collapsed ? COLLAPSED_GROUP_W : rect.width;
+      const h = g.collapsed ? COLLAPSED_GROUP_H : rect.height;
       return {
         id: g.id,
         type: "azureGroup",
-        position: { x: g.rect.x, y: g.rect.y },
+        position: { x: rect.x, y: rect.y },
         data: {
           label: g.label,
           count: g.memberIds.length,
           collapsed: g.collapsed,
           onToggleCollapsed: () => toggleGroupCollapsed(g.id),
+          onSelect: () => {
+            setSelectedNodeIds([]);
+            setSelectedGroupId(g.id);
+            manualGroupSelectionRef.current = g.id;
+          },
         },
         selectable: true,
         draggable: true,
@@ -472,20 +630,25 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
     const baseNodes: Node[] = layoutedNodes.map(n => {
       const groupId = groupMembership.get(n.id);
+      
       if (!groupId) {
         // For non-grouped nodes, check if position overlaps with any group
         // If it does, move it outside the group bounds
         let adjustedPos = n.position;
         for (const g of groups) {
+          const bounds = groupBounds.get(g.id);
+          if (!bounds) continue;
+          const { rect } = bounds;
+          
           const nodeLeft = n.position.x;
           const nodeTop = n.position.y;
           const nodeRight = nodeLeft + NODE_W;
           const nodeBottom = nodeTop + NODE_H;
           
-          const groupLeft = g.rect.x;
-          const groupTop = g.rect.y;
-          const groupRight = g.rect.x + g.rect.width;
-          const groupBottom = g.rect.y + g.rect.height;
+          const groupLeft = rect.x;
+          const groupTop = rect.y;
+          const groupRight = rect.x + rect.width;
+          const groupBottom = rect.y + rect.height;
           
           // Check if node overlaps with group
           if (nodeLeft < groupRight && nodeRight > groupLeft && 
@@ -501,9 +664,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       const g = groups.find(x => x.id === groupId);
       if (!g) return { ...n, zIndex: 10 };
 
-      const rel = g.childPositions[n.id] ?? {
-        x: n.position.x - g.rect.x,
-        y: n.position.y - g.rect.y,
+      const bounds = groupBounds.get(g.id);
+      const rect = bounds?.rect ?? g.rect;
+      const childPositions = bounds?.childPositions ?? {};
+
+      const rel = childPositions[n.id] ?? {
+        x: n.position.x - rect.x,
+        y: n.position.y - rect.y,
       };
 
       return {
@@ -515,7 +682,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         data: {
           ...(typeof n.data === 'object' ? n.data : {}),
           groupId: groupId,
-          onRemoveFromGroup: () => onNodeRemoveFromGroup?.({ nodeId: n.id, groupId }),
+          onRemoveFromGroup: () => {
+            removeMemberFromLocalGroups(n.id, groupId);
+            onNodeRemoveFromGroup?.({ nodeId: n.id, groupId });
+          },
         },
       };
     });
@@ -523,14 +693,24 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     const survivingGroups = groupNodes.filter(gn => {
       const state = groups.find(s => s.id === gn.id);
       if (!state) return false;
-      return state.memberIds.some(id => byId.has(id));
+      // Always show groups that exist in state - they have already been validated
+      // by groupsFromProp calculation which checks member positions
+      return true;
     });
 
     return [...survivingGroups, ...baseNodes];
-  }, [layoutedNodes, groups, groupMembership, toggleGroupCollapsed]);
+  }, [layoutedNodes, groups, rfEdges, groupMembership, toggleGroupCollapsed, removeMemberFromLocalGroups]);
 
   const composedEdges = useMemo((): Edge[] => {
-    if (groups.length === 0) return edgesWithHandles;
+    // Filter out edges targeting group IDs (groups are visual containers, not graph nodes)
+    const groupIdSet = new Set(groups.map(g => g.id.toLowerCase()));
+    const validEdges = edgesWithHandles.filter(e => {
+      const srcLower = e.source.toLowerCase();
+      const tgtLower = e.target.toLowerCase();
+      return !groupIdSet.has(srcLower) && !groupIdSet.has(tgtLower);
+    });
+
+    if (groups.length === 0) return validEdges;
 
     const collapsedGroupByMember = new Map<string, string>();
     const collapsedGroupIds = new Set<string>();
@@ -539,12 +719,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       collapsedGroupIds.add(g.id);
       for (const id of g.memberIds) collapsedGroupByMember.set(id, g.id);
     }
-    if (collapsedGroupIds.size === 0) return edgesWithHandles;
+    if (collapsedGroupIds.size === 0) return validEdges;
 
     const agg = new Map<string, { base: Edge; count: number }>();
     const mapEndpoint = (nodeId: string): string => collapsedGroupByMember.get(nodeId) ?? nodeId;
 
-    for (const e of edgesWithHandles) {
+    for (const e of validEdges) {
       const src = mapEndpoint(e.source);
       const tgt = mapEndpoint(e.target);
 
@@ -603,11 +783,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   // Expose fitView to parent via ref
   useImperativeHandle(ref, () => ({
     fitView: () => {
-      setTimeout(() => fitView(), 100);
+      setTimeout(() => fitView(), 500);
     },
     resetLayout: () => {
+      if (layoutResetInFlightRef.current) return;
+      layoutResetInFlightRef.current = true;
       setSavedPositions({});
-      setTimeout(() => fitView(), 150);
+      setTimeout(() => {
+        fitView();
+        layoutResetInFlightRef.current = false;
+      }, 500);
     },
     getViewState: () => {
       try {
@@ -701,8 +886,89 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
           change.dragging === false
       );
 
-      // Recompute edge handles if drag ended
+      // Recompute edge handles and group bounds if drag ended
       if (dragEnded) {
+        // Find which nodes were moved
+        const movedNodeIds = new Set<string>();
+        changes.forEach((change) => {
+          if (change.type === "position" && change.dragging === false) {
+            movedNodeIds.add(change.id);
+          }
+        });
+
+        // Build absolute positions for updated nodes (account for parent groups)
+        const absById = new Map<string, { x: number; y: number }>();
+        for (const fn of updatedNodes) {
+          if (!fn.parentNode) {
+            absById.set(fn.id, fn.position);
+          } else {
+            const parent = updatedNodes.find(x => x.id === fn.parentNode);
+            if (parent) {
+              absById.set(fn.id, {
+                x: parent.position.x + fn.position.x,
+                y: parent.position.y + fn.position.y,
+              });
+            }
+          }
+        }
+
+        if (movedNodeIds.size > 0) {
+          setSavedPositions(prev => {
+            const next = { ...prev };
+            for (const id of movedNodeIds) {
+              const abs = absById.get(id);
+              if (abs) {
+                next[String(id).toLowerCase()] = { x: abs.x, y: abs.y };
+              }
+            }
+            return next;
+          });
+        }
+
+        // Update groups if any moved nodes are members
+        setGroups(prev => {
+          return prev.map(g => {
+            const hasMovedMember = g.memberIds.some(id => movedNodeIds.has(id));
+            if (!hasMovedMember) return g;
+
+            // Recalculate group bounds
+            const membersWithAbs = g.memberIds
+              .map(id => ({ id, pos: absById.get(id) }))
+              .filter((x): x is { id: string; pos: { x: number; y: number } } => !!x.pos);
+
+            if (membersWithAbs.length < 2) return g;
+
+            let minX = Number.POSITIVE_INFINITY;
+            let minY = Number.POSITIVE_INFINITY;
+            let maxX = Number.NEGATIVE_INFINITY;
+            let maxY = Number.NEGATIVE_INFINITY;
+
+            for (const { pos } of membersWithAbs) {
+              minX = Math.min(minX, pos.x);
+              minY = Math.min(minY, pos.y);
+              maxX = Math.max(maxX, pos.x + NODE_W);
+              maxY = Math.max(maxY, pos.y + NODE_H);
+            }
+
+            const rect = {
+              x: minX - GROUP_PAD,
+              y: minY - GROUP_PAD,
+              width: maxX - minX + GROUP_PAD * 2,
+              height: maxY - minY + GROUP_PAD * 2,
+            };
+
+            const childPositions: Record<string, { x: number; y: number }> = {};
+            for (const { id, pos } of membersWithAbs) {
+              childPositions[id] = {
+                x: pos.x - rect.x,
+                y: pos.y - rect.y,
+              };
+            }
+
+            return { ...g, rect, childPositions };
+          });
+        });
+
         const updatedEdges = composedEdges.map((edge) => {
           const sourceNode = updatedNodes.find((n) => n.id === edge.source);
           const targetNode = updatedNodes.find((n) => n.id === edge.target);
@@ -732,10 +998,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     [flowNodes, composedEdges, setFlowNodes, setFlowEdges]
   );
 
-  // Sync composed nodes/edges on initial load
+  // Sync composed nodes when they change (new/deleted nodes or group membership changes)
   useEffect(() => {
     setFlowNodes(composedNodes);
-  }, [composedNodes, setFlowNodes, setViewport]);
+  }, [composedNodes, setFlowNodes]);
 
   useEffect(() => {
     setFlowEdges(composedEdges);
@@ -752,7 +1018,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
       event.stopPropagation();
-      if (node.type === "azureGroup") return;
+      if (node.type === "azureGroup") {
+        setSelectedNodeIds([]);
+        setSelectedGroupId(node.id);
+        manualGroupSelectionRef.current = node.id;
+        return;
+      }
       const graphNode = visibleNodes.find(n => n.id === node.id);
       if (graphNode) onNodeSelected?.(node.id);
     },
@@ -764,7 +1035,18 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     setSelectedNodeIds(ids);
 
     const selectedGroup = (params.nodes ?? []).find(n => n.type === "azureGroup");
-    setSelectedGroupId(selectedGroup ? selectedGroup.id : null);
+    if (selectedGroup) {
+      setSelectedGroupId(selectedGroup.id);
+      manualGroupSelectionRef.current = selectedGroup.id;
+      return;
+    }
+
+    if (manualGroupSelectionRef.current) {
+      setSelectedGroupId(manualGroupSelectionRef.current);
+      return;
+    }
+
+    setSelectedGroupId(null);
   }, []);
 
   const createGroupFromSelection = useCallback(
@@ -875,7 +1157,40 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
   const handleNodeDragStop = useCallback<NodeDragHandler>(
     async (_event, node) => {
-      if (node.type === "azureGroup") return;
+      if (node.type === "azureGroup") {
+        const group = groups.find(g => g.id === node.id);
+        if (!group) return;
+
+        const deltaX = node.position.x - group.rect.x;
+        const deltaY = node.position.y - group.rect.y;
+        if (deltaX === 0 && deltaY === 0) return;
+
+        const nextRect = {
+          x: group.rect.x + deltaX,
+          y: group.rect.y + deltaY,
+          width: group.rect.width,
+          height: group.rect.height,
+        };
+
+        setGroups(prev =>
+          prev.map(g => (g.id === group.id ? { ...g, rect: nextRect } : g))
+        );
+
+        setSavedPositions(prev => {
+          const next = { ...prev };
+          for (const memberId of group.memberIds) {
+            const rel = group.childPositions[memberId];
+            if (!rel) continue;
+            next[String(memberId).toLowerCase()] = {
+              x: nextRect.x + rel.x,
+              y: nextRect.y + rel.y,
+            };
+          }
+          return next;
+        });
+
+        return;
+      }
       if (groupBusy) return;
 
       const byId = new Map(flowNodes.map(n => [n.id, n] as const));
@@ -910,9 +1225,17 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         return cx >= left && cx <= left + w && cy >= top && cy <= top + h;
       });
 
+      const currentGroupId = groupMembership.get(node.id);
+
+      // If node was in a group but dropped outside all groups, remove it from the group
+      if (currentGroupId && !hit) {
+        removeMemberFromLocalGroups(node.id, currentGroupId);
+        await onRemoveNodeFromGroup?.({ nodeId: node.id, groupId: currentGroupId });
+        return;
+      }
+
       if (!hit) return;
       const targetGroupId = hit.id;
-      const currentGroupId = groupMembership.get(node.id);
       if (currentGroupId === targetGroupId) return;
 
       const targetLabel = groups.find(g => g.id === targetGroupId)?.label ?? null;
@@ -1002,13 +1325,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       try {
         setGroupBusy(true);
         await onMoveNodeToGroup?.({ nodeId: node.id, groupId: targetGroupId });
+        onNodeDragStart?.(); // Close drawer after successful move
       } catch (e) {
         console.error("Failed to move node into group", e);
       } finally {
         setGroupBusy(false);
       }
     },
-    [flowNodes, groupMembership, groupBusy, onMoveNodeToGroup, groups]
+    [flowNodes, groupMembership, groupBusy, onMoveNodeToGroup, groups, removeMemberFromLocalGroups]
   );
 
   const handleEdgeClick = useCallback(
@@ -1024,6 +1348,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const handlePaneClick = useCallback(() => {
     onNodeSelected?.(null);
     onEdgeSelected?.(null);
+    manualGroupSelectionRef.current = null;
+    setSelectedGroupId(null);
   }, [onNodeSelected, onEdgeSelected]);
 
   const handleConnect = useCallback(

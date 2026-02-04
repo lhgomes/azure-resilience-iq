@@ -45,7 +45,7 @@ export interface ResiliencyCheck {
   };
   criticality_weight: number;
   status: 'pass' | 'fail' | 'pending';
-  validation_source: string[];  // List of validation sources: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
+  validation_source: string;  // Top-level validation source: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
   impact_weight: number;
   contribution_percent: number;
   is_critical: boolean;

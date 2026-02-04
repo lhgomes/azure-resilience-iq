@@ -7,6 +7,7 @@ interface AzureGroupNodeProps {
     count: number;
     collapsed: boolean;
     onToggleCollapsed?: () => void;
+    onSelect?: () => void;
   };
   selected: boolean;
 }
@@ -24,9 +25,12 @@ const AzureGroupNode: React.FC<AzureGroupNodeProps> = ({ data, selected }) => {
         position: "relative",
         cursor: "pointer",
         overflow: "hidden",
-        pointerEvents: "none",
       }}
       title="Use the button to collapse/expand"
+      onMouseDown={e => {
+        e.stopPropagation();
+        data.onSelect?.();
+      }}
     >
       <Handle id="t" type="target" position={Position.Top} isConnectable={false} style={{ opacity: 0 }} />
       <Handle id="b" type="source" position={Position.Bottom} isConnectable={false} style={{ opacity: 0 }} />
