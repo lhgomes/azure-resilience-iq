@@ -1041,10 +1041,17 @@ class APRLEvaluator:
                         learn_more = dict(learn_more) if learn_more else {}
                         # Generic heuristic reasoning if none has been added
                         if "heuristic_reasoning" not in learn_more:
-                            learn_more["heuristic_reasoning"] = (
-                                "Based on heuristic analysis of the resource configuration and properties, "
-                                "this recommendation has been validated to provide appropriate guidance for this resource."
-                            )
+                            # Make reasoning reflect the actual status
+                            if is_failed:
+                                learn_more["heuristic_reasoning"] = (
+                                    "Based on heuristic analysis of the resource configuration and properties, "
+                                    "this resource does not meet the recommendation criteria and should be remediated."
+                                )
+                            else:
+                                learn_more["heuristic_reasoning"] = (
+                                    "Based on heuristic analysis of the resource configuration and properties, "
+                                    "this resource meets the recommendation criteria."
+                                )
                     
                     check_obj = {
                         "recommendation_id": rec.guid,
