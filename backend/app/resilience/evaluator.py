@@ -233,6 +233,11 @@ class ResiliencyEvaluator:
         
         properties = component.properties or {}
         
+        # Check for ASR (Azure Site Recovery) recommendations for stateful resources
+        # Only apply ASR recommendation if the VM has session affinity configured
+        if self._is_asr_recommendation(aprl_guid):
+            return self._evaluate_asr_recommendation(component)
+        
         # Mock evaluation: check if component has resilience-related properties
         if aprl_guid.startswith("ha-"):  # High availability checks
             return properties.get("has_redundancy", False)
@@ -245,6 +250,66 @@ class ResiliencyEvaluator:
         
         # Default: assume not passing unless explicitly configured
         return False
+    
+    def _is_asr_recommendation(self, aprl_guid: str) -> bool:
+        """
+        Check if a recommendation is related to Azure Site Recovery.
+        
+        ASR recommendations typically mention "Site Recovery", "ASR", or "replication"
+        in their GUID or description.
+        
+        Args:
+            aprl_guid: APRL recommendation GUID
+            
+        Returns:
+            True if this is an ASR-related recommendation
+        """
+        # Check if GUID contains ASR-related keywords
+        asr_keywords = ["asr", "siterecovery", "replicate", "dr-"]
+        guid_lower = (aprl_guid or "").lower()
+        return any(keyword in guid_lower for keyword in asr_keywords)
+    
+    def _evaluate_asr_recommendation(self, component: WorkloadComponent) -> bool:
+        """
+        Evaluate Azure Site Recovery recommendations with stateful session affinity check.
+        
+        ASR is most applicable to stateful resources. For VMs behind load balancers or
+        application gateways, check if session affinity/stickiness is configured.
+        
+        If the VMs are stateless (no session affinity), the ASR recommendation is not
+        applicable since load-balanced stateless workloads don't require per-VM replication.
+        
+        Args:
+            component: Component to evaluate
+            
+        Returns:
+            True if ASR is applicable (has session affinity or no load balancing)
+            False if behind stateless load balancer (ASR not applicable)
+        """
+        properties = component.properties or {}
+        resource_type = component.resource_type or ""
+        
+        # Only apply this logic to VMs and VMSS
+        if "virtualmachines" not in resource_type.lower() and "scaleset" not in resource_type.lower():
+            return False
+        
+        # If VM/VMSS is behind a load balancer or application gateway
+        backend_pool_ids = properties.get("backend_pool_ids", [])
+        if not backend_pool_ids:
+            # Not behind a load balancer - ASR is applicable (stateful by default)
+            return False  # But still checking if other conditions are met
+        
+        # Check if has session affinity configured
+        has_session_affinity = properties.get("has_session_affinity", False)
+        
+        if has_session_affinity:
+            # VMs are stateful (session affinity enabled) - ASR is applicable
+            return False  # Let other checks determine pass/fail
+        
+        # VMs are stateless (no session affinity) - ASR is NOT applicable
+        # Return True (pass) because ASR recommendation doesn't apply to stateless workloads
+        return True
+
     
     def _get_rules_file_for_type(self, resource_type: str) -> Optional[str]:
         """

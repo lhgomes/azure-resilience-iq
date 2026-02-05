@@ -152,11 +152,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   
   const { fitView, getViewport, setViewport, getNodes, setCenter } = useReactFlow();
   const flowNodesRef = useRef<Node[]>([]);
+  const composedNodesRef = useRef<Node[]>([]);
+  const prevMaxImportanceRef = useRef<number | undefined>(undefined);
   const [savedPositions, setSavedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const skipNextFitViewRef = useRef(false);
   const lastMissingLogRef = useRef<string | null>(null);
   const justAppliedGraphViewRef = useRef(false);
-  const layoutResetInFlightRef = useRef(false);
+  const composedNodesLengthRef = useRef(0);
 
   const normalizePositions = useCallback((positions?: Record<string, { x: number; y: number }>) => {
     if (!positions) return {} as Record<string, { x: number; y: number }>;
@@ -192,11 +194,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
   // Filter nodes by importance
   const visibleNodes = useMemo(() => {
-    return nodesProp.filter(n => {
+    const filtered = nodesProp.filter(n => {
       const meta = n.metadata ?? {};
       const importance = typeof meta["importance"] === "number" ? (meta["importance"] as number) : 3;
       return importance <= maxImportance;
     });
+    return filtered;
   }, [nodesProp, maxImportance]);
 
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map(n => n.id)), [visibleNodes]);
@@ -227,6 +230,27 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       setSavedPositions({});
     }
   }, [visibleNodes, savedPositions, graphViewState?.node_positions]);
+
+  // When view level changes, clear saved positions for nodes that changed visibility
+  useEffect(() => {
+    const prevMaxImp = prevMaxImportanceRef.current;
+    if (prevMaxImp !== undefined && prevMaxImp !== maxImportance) {
+      // View level changed - clear positions for nodes no longer visible
+      if (!graphViewState?.node_positions) {
+        const currentVisibleIds = new Set(visibleNodes.map(n => String(n.id).toLowerCase()));
+        setSavedPositions(prev => {
+          const next: Record<string, { x: number; y: number }> = {};
+          for (const [id, pos] of Object.entries(prev)) {
+            if (currentVisibleIds.has(id)) {
+              next[id] = pos;
+            }
+          }
+          return next;
+        });
+      }
+    }
+    prevMaxImportanceRef.current = maxImportance;
+  }, [maxImportance, visibleNodes, graphViewState?.node_positions]);
 
   // Merge backend-provided grouping with local pending moves (for immediate UX after drag/drop).
   const groupInfoByNodeId = useMemo(() => {
@@ -266,10 +290,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
   }, [nodesProp]);
 
-  const visibleEdges = useMemo(() => {
-    return edgesProp.filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target));
-  }, [edgesProp, visibleNodeIds]);
-
   // Convert to Reactflow format
   const rfNodes: Node[] = useMemo(() => {
     return visibleNodes.map(n => ({
@@ -305,26 +325,46 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   }, [visibleNodes, userLayerEnabled]);
 
   const rfEdges: Edge[] = useMemo(() => {
-    const edges = visibleEdges.map(e => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      type: "azure",
-      selected: selectedEdgeId ? e.id === selectedEdgeId : false,
-      data: {
-        label: e.relationship,
-        origin: e.origin,
-        status: e.status,
-        confidence: e.confidence,
-        user_customized:
-          userLayerEnabled &&
-          (e.origin === "manual" || e.status === "accepted" || e.status === "rejected"),
-      },
-      markerEnd: { type: MarkerType.ArrowClosed },
-    }));
+    const edges = edgesProp
+      .filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target))
+      .map(e => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: "azure",
+        selected: selectedEdgeId ? e.id === selectedEdgeId : false,
+        data: {
+          label: e.relationship,
+          origin: e.origin,
+          status: e.status,
+          confidence: e.confidence,
+          user_customized:
+            userLayerEnabled &&
+            (e.origin === "manual" || e.status === "accepted" || e.status === "rejected"),
+        },
+        markerEnd: { type: MarkerType.ArrowClosed },
+      }));
     
     return edges;
-  }, [visibleEdges, userLayerEnabled, selectedEdgeId]);
+  }, [edgesProp, visibleNodeIds, userLayerEnabled, selectedEdgeId]);
+
+  // Clear savedPositions when node count changes significantly
+  useEffect(() => {
+    setSavedPositions(prev => {
+      if (Object.keys(prev).length === 0) return prev;
+      const prevNodeIds = new Set(Object.keys(prev));
+      const currentNodeIds = new Set(rfNodes.map(n => String(n.id).toLowerCase()));
+      
+      // If node set changed significantly, clear cache to force fresh layout
+      const overlap = Array.from(currentNodeIds).filter(id => prevNodeIds.has(id)).length;
+      const changeThreshold = Math.max(prevNodeIds.size, currentNodeIds.size) * 0.5;
+      
+      if (overlap < currentNodeIds.size - changeThreshold || currentNodeIds.size !== prevNodeIds.size) {
+        return {};
+      }
+      return prev;
+    });
+  }, [rfNodes.length]);
 
   // Layout using Dagre
   const layoutedNodes = useMemo(() => {
@@ -352,9 +392,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
     const snap = (value: number, grid: number): number => Math.round(value / grid) * grid;
 
-    return rfNodes.map(node => {
+    const usingSavedCount = Object.keys(savedPositions).length;
+    const result = rfNodes.map(node => {
       const pos = g.node(node.id);
       const saved = savedPositions[String(node.id).toLowerCase()];
+      
       if (saved) {
         return {
           ...node,
@@ -370,6 +412,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         },
       };
     });
+    
+    return result;
   }, [rfNodes, rfEdges, savedPositions]);
 
   // Keep group members compact on refresh by seeding missing saved positions
@@ -787,13 +831,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       setTimeout(() => fitView(), 500);
     },
     resetLayout: () => {
-      if (layoutResetInFlightRef.current) return;
-      layoutResetInFlightRef.current = true;
-      setSavedPositions({});
-      setTimeout(() => {
-        fitView();
-        layoutResetInFlightRef.current = false;
-      }, 500);
+      // Simply fit all nodes in view - Dagre automatically uses fresh layout for new node sets
+      fitView({ duration: 500, padding: 0.2 });
     },
     getViewState: () => {
       try {
@@ -869,6 +908,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       return;
     }
     
+    // Skip if we just changed view level - fitView will handle viewport
+    if (prevMaxImportanceRef.current !== undefined && prevMaxImportanceRef.current !== maxImportance) {
+      return;
+    }
+    
     const hasPositions = !!graphViewState.node_positions && Object.keys(graphViewState.node_positions).length > 0;
 
     if (hasPositions && visibleNodes.length === 0) {
@@ -887,12 +931,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         lastMissingLogRef.current = logKey;
       }
       
-      setFlowNodes(prev => {
-        return prev.map(n => {
+      const baseNodes = composedNodesRef.current.length > 0 ? composedNodesRef.current : flowNodesRef.current;
+      setFlowNodes(
+        baseNodes.map(n => {
           const pos = normalized[String(n.id).toLowerCase()];
           return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n;
-        });
-      });
+        })
+      );
       
       // Mark that we just applied graphViewState positions
       justAppliedGraphViewRef.current = true;
@@ -1040,22 +1085,30 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     [flowNodes, composedEdges, setFlowNodes, setFlowEdges]
   );
 
-  // Sync composed nodes when they change (new/deleted nodes or group membership changes)
+  // Sync composed nodes when they change
   useEffect(() => {
+    composedNodesRef.current = composedNodes;
     setFlowNodes(composedNodes);
+    composedNodesLengthRef.current = composedNodes.length;
   }, [composedNodes, setFlowNodes]);
 
   useEffect(() => {
     setFlowEdges(composedEdges);
   }, [composedEdges, setFlowEdges]);
 
+  // Initial fitView on mount only
+  const mountedRef = useRef(false);
   useEffect(() => {
-    if (skipNextFitViewRef.current) {
-      skipNextFitViewRef.current = false;
-      return;
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      if (!skipNextFitViewRef.current) {
+        setTimeout(() => fitView(), 100);
+      } else {
+        skipNextFitViewRef.current = false;
+      }
     }
-    setTimeout(() => fitView(), 100);
-  }, [fitView]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleNodeClick = useCallback(
     (event: React.MouseEvent, node: Node) => {
@@ -1380,11 +1433,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   const handleEdgeClick = useCallback(
     (event: React.MouseEvent, edge: Edge) => {
       event.stopPropagation();
-      const graphEdge = visibleEdges.find(e => e.id === edge.id);
+      const graphEdge = edgesProp.find(e => e.id === edge.id);
       if (graphEdge) onEdgeSelected?.(graphEdge);
       else onEdgeSelected?.(null);
     },
-    [visibleEdges, onEdgeSelected]
+    [edgesProp, onEdgeSelected]
   );
 
   const handlePaneClick = useCallback(() => {
