@@ -527,7 +527,8 @@ class APRLEvaluator:
         validator = HeuristicValidator(aoai_client=self.aoai_client)
         
         # Analyze recommendation to build validation strategy
-        # If LLM is available, it will be used as fallback if heuristic confidence is low
+        # Use heuristics only - LLM escalation is handled separately below
+        # to minimize API costs and latency
         strategy = validator.analyze_recommendation(
             recommendation_id=aprl_guid,
             aprl_guid=aprl_guid,
@@ -535,7 +536,7 @@ class APRLEvaluator:
             description=description,
             long_description=long_description,
             potential_benefits=potential_benefits,
-            use_llm=(self.aoai_client is not None),  # Enable LLM if client available
+            use_llm=False,  # Disabled here - LLM only used for explicit escalation below
         )
         
         if not strategy:
@@ -561,31 +562,31 @@ class APRLEvaluator:
         )
         
         # Apply strategy to this specific resource
-        is_failing, reason = validator.apply_strategy(strategy, resource)
+        is_failing, detailed_reason = validator.apply_strategy(strategy, resource)
+        
+        # Store the detailed reason in the strategy for later use in output
+        strategy.detailed_validation_reason = detailed_reason
         
         if is_failing:
             LOGGER.debug(
-                f"Strategy validation flagged resource {resource.get('id')}: {reason}"
+                f"Strategy validation flagged resource {resource.get('id')}: {detailed_reason}"
             )
         
-        # INTELLIGENT ESCALATION: Use full LLM analysis for critical cases
-        # Triggers when:
-        # 1. High impact recommendation (critical/important)
-        # 2. Property checks failed (need detailed reasoning)
-        # 3. Very low confidence (<40%)
+        # MINIMAL ESCALATION: Only use LLM for truly exceptional cases
+        # Heuristics are designed to be sufficient; LLM escalation is avoided to reduce API costs
+        # Only escalate when:
+        # 1. Strategy confidence is extremely low (<25%)
+        # 
+        # DO NOT escalate for:
+        # - High/critical impact (heuristics handle this)
+        # - Failed checks (that's what heuristics are for)
         should_escalate = False
         escalation_reason = None
         
-        if self.aoai_client:
-            if impact and impact.lower() in ['high', 'critical']:
-                should_escalate = True
-                escalation_reason = "high impact recommendation"
-            elif is_failing and strategy.strategy_type in ['heuristic', 'llm']:
-                should_escalate = True
-                escalation_reason = "property checks failed"
-            elif strategy.confidence < 0.4:
-                should_escalate = True
-                escalation_reason = f"low confidence ({strategy.confidence:.0%})"
+        if self.aoai_client and strategy.confidence < 0.25:
+            # Extremely low confidence - may need expert analysis
+            should_escalate = True
+            escalation_reason = f"extremely low confidence ({strategy.confidence:.0%})"
         
         if should_escalate:
             LOGGER.debug(
@@ -1039,19 +1040,24 @@ class APRLEvaluator:
                     # Add reasoning for any Heuristic validation that doesn't have it yet
                     if validation_source == "Heuristic" and not (learn_more and learn_more.get("heuristic_reasoning")):
                         learn_more = dict(learn_more) if learn_more else {}
-                        # Generic heuristic reasoning if none has been added
+                        # Get detailed reasoning from the strategy if available
                         if "heuristic_reasoning" not in learn_more:
-                            # Make reasoning reflect the actual status
-                            if is_failed:
-                                learn_more["heuristic_reasoning"] = (
-                                    "Based on heuristic analysis of the resource configuration and properties, "
-                                    "this resource does not meet the recommendation criteria and should be remediated."
-                                )
+                            _, strategy = strategy_map.get((rid, rec.guid), (False, None))
+                            if strategy and hasattr(strategy, 'detailed_validation_reason'):
+                                # Use the detailed reason from the validation
+                                learn_more["heuristic_reasoning"] = strategy.detailed_validation_reason
                             else:
-                                learn_more["heuristic_reasoning"] = (
-                                    "Based on heuristic analysis of the resource configuration and properties, "
-                                    "this resource meets the recommendation criteria."
-                                )
+                                # Fallback: Build reasoning from what we know
+                                if is_failed:
+                                    learn_more["heuristic_reasoning"] = (
+                                        "Based on heuristic analysis of the resource configuration and properties, "
+                                        "this resource does not meet the recommendation criteria and should be remediated."
+                                    )
+                                else:
+                                    learn_more["heuristic_reasoning"] = (
+                                        "Based on heuristic analysis of the resource configuration and properties, "
+                                        "this resource meets the recommendation criteria."
+                                    )
                     
                     check_obj = {
                         "recommendation_id": rec.guid,

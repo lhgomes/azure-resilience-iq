@@ -9,9 +9,9 @@ This script helps maintain the zone_support.yaml file by:
 4. Providing statistics about zone support coverage
 
 Usage:
-    python validate_zone_config.py
-    python validate_zone_config.py --check-subscription <subscription-id>
-    python validate_zone_config.py --add-type <resource-type> --category <category>
+    python backend/tools/validate_zone_config.py
+    python backend/tools/validate_zone_config.py --check-subscription <subscription-id>
+    python backend/tools/validate_zone_config.py --add-type <resource-type> --category <category>
 """
 
 import sys
@@ -22,7 +22,7 @@ from typing import Set, Dict, List
 from collections import defaultdict
 
 # Add backend to path
-backend_dir = Path(__file__).parent
+backend_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(backend_dir))
 
 config_path = backend_dir / "config" / "zone_support.yaml"

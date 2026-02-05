@@ -4,6 +4,12 @@ Quick test to verify region-aware zone detection.
 Tests that resources in non-zone regions are properly marked as NOT_APPLICABLE.
 """
 
+import sys
+from pathlib import Path
+
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
+
 from app.resilience.zonal_analyzer import ZonalAnalyzer, DeploymentPattern
 
 # Test resource in a zone-enabled region (East US)

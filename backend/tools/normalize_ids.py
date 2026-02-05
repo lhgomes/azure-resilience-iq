@@ -7,7 +7,6 @@ import json
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List
-import sys
 
 def norm_id(resource_id: str) -> str:
     """Normalize resource ID to lowercase."""
@@ -113,7 +112,8 @@ def normalize_edges(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def main():
     subscription_id = "59e12ca5-d654-418e-bc74-ef6f56c92836"
-    data_dir = Path(f"backend/data/{subscription_id}")
+    backend_dir = Path(__file__).resolve().parents[1]
+    data_dir = backend_dir / "data" / subscription_id
     resources_file = data_dir / "resources.json"
     edges_file = data_dir / "edges.json"
     

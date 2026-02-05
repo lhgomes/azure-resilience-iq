@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, str(Path(__file__).parent))
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
 
 from app.relationships.multi_source import MultiSourceAggregator
 from app.graph.builder import edge_id
@@ -17,7 +18,7 @@ from app.graph.builder import edge_id
 def regenerate_edges(subscription_id: str):
     """Regenerate edges from resources.json"""
     
-    data_dir = Path(__file__).parent / "data" / subscription_id
+    data_dir = backend_dir / "data" / subscription_id
     resources_file = data_dir / "resources.json"
     edges_file = data_dir / "edges.json"
     
