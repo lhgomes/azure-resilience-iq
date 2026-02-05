@@ -7,10 +7,20 @@ interface TabsProps {
     icon?: string;
   }>;
   defaultTab?: number;
+  activeTab?: number;
+  onActiveTabChange?: (tabIndex: number) => void;
 }
 
-const TabbedView: React.FC<TabsProps> = ({ tabs, defaultTab = 0 }) => {
-  const [activeTab, setActiveTab] = useState(defaultTab);
+const TabbedView: React.FC<TabsProps> = ({ tabs, defaultTab = 0, activeTab: controlledTab, onActiveTabChange }) => {
+  const [internalActiveTab, setInternalActiveTab] = useState(defaultTab);
+  const activeTab = controlledTab !== undefined ? controlledTab : internalActiveTab;
+
+  const handleTabChange = (tabIndex: number) => {
+    if (controlledTab === undefined) {
+      setInternalActiveTab(tabIndex);
+    }
+    onActiveTabChange?.(tabIndex);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%" }}>
@@ -27,7 +37,7 @@ const TabbedView: React.FC<TabsProps> = ({ tabs, defaultTab = 0 }) => {
         {tabs.map((tab, idx) => (
           <button
             key={idx}
-            onClick={() => setActiveTab(idx)}
+            onClick={() => handleTabChange(idx)}
             style={{
               padding: "12px 20px",
               border: "none",

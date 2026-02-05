@@ -123,6 +123,7 @@ export interface GraphCanvasHandle {
     viewport?: { x: number; y: number; zoom: number };
     node_positions?: Record<string, { x: number; y: number }>;
   } | null) => void;
+  selectNode: (nodeId: string) => void;
 }
 
 const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
@@ -149,7 +150,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     selectedEdgeId = null,
   } = props;
   
-  const { fitView, getViewport, setViewport } = useReactFlow();
+  const { fitView, getViewport, setViewport, getNodes, setCenter } = useReactFlow();
   const flowNodesRef = useRef<Node[]>([]);
   const [savedPositions, setSavedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const skipNextFitViewRef = useRef(false);
@@ -815,8 +816,49 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         skipNextFitViewRef.current = true;
         setTimeout(() => setViewport(state.viewport!), 0);
       }
+    },
+    selectNode: (nodeId: string) => {
+      // Update ReactFlow nodes to mark the target node as selected
+      setFlowNodes(nodes => 
+        nodes.map(node => ({
+          ...node,
+          selected: node.id === nodeId
+        }))
+      );
+      
+      // Center the view on the selected node after state update
+      setTimeout(() => {
+        const nodes = flowNodesRef.current;
+        const targetNode = nodes.find(n => n.id === nodeId);
+        
+        if (targetNode) {
+          // Calculate absolute position (accounting for parent groups)
+          let absoluteX = targetNode.position.x;
+          let absoluteY = targetNode.position.y;
+          
+          // If node has a parentNode (is inside a group), add the group's position
+          if (targetNode.parentNode) {
+            const parentNode = nodes.find(n => n.id === targetNode.parentNode);
+            if (parentNode) {
+              absoluteX += parentNode.position.x;
+              absoluteY += parentNode.position.y;
+            }
+          }
+          
+          // Calculate center of the node
+          const nodeWidth = targetNode.width || 180;
+          const nodeHeight = targetNode.height || 200;
+          const centerX = absoluteX + nodeWidth / 2;
+          const centerY = absoluteY + nodeHeight / 2;
+          
+          setCenter(centerX, centerY, { zoom: 1.2, duration: 800 });
+        }
+      }, 200);
+      
+      // Also trigger the node selected callback to open the drawer
+      onNodeSelected?.(nodeId);
     }
-  }), [fitView, getViewport, setViewport, setSavedPositions, normalizePositions]);
+  }), [fitView, getViewport, setViewport, setSavedPositions, normalizePositions, onNodeSelected, setFlowNodes, setCenter]);
 
   useEffect(() => {
     flowNodesRef.current = flowNodes;

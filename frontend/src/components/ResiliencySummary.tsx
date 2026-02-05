@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
-import { canonicalTypeForNode, normalizeTypeString, type ViewLevel } from "../domain/graphView";
-import { saveOverride, getOverrides, deleteOverride, type ResiliencyCheck } from "../api/resilience";
+import { canonicalTypeForNode, normalizeTypeString, LEVEL_TO_MAX_IMPORTANCE, type ViewLevel } from "../domain/graphView";
+import { saveOverride, getOverrides, deleteOverride, saveBatchOverrides, type ResiliencyCheck, type BatchOverrideItem } from "../api/resilience";
 import { calculateResiliencyScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 
 interface ResiliencyEvaluation {
@@ -29,6 +29,7 @@ interface LLMAnnotation {
   criticality_score?: number;
   confidence?: number;
   hide_by_default?: boolean;
+  layer?: number;
 }
 
 interface ResiliencySummaryProps {
@@ -53,6 +54,7 @@ interface ResiliencySummaryProps {
   validationSourceFilter?: Set<string>;
   onOverrideSaved?: (override: ResiliencyOverride) => void;
   onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
+  onShowInGraph?: (resourceId: string) => void;
 }
 
 const buildOverrideMap = (overrides?: Record<string, ResiliencyOverride>) => {
@@ -228,6 +230,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   validationSourceFilter,
   onOverrideSaved,
   onOverrideDeleted,
+  onShowInGraph,
 }) => {
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail" | "pending">("fail");
@@ -241,6 +244,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   const [resourceFilter, setResourceFilter] = useState("");
   const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }>>({});
   const [visibleTooltip, setVisibleTooltip] = useState<string | null>(null);
+  const [resourceModalOpen, setResourceModalOpen] = useState(false);
+  const [selectedResource, setSelectedResource] = useState<{ resourceId: string; resourceName: string; finding: any } | null>(null);
 
   // Fetch weights from backend once and reuse across all calculations
   const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
@@ -427,6 +432,30 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   }, [evaluations, resourceIdToServiceKey]);
 
   const resourceMatchesFilters = (resourceId: string, evaluation?: any): boolean => {
+    // Check viewLevel (importance/layer) filter
+    if (viewLevel && graphData?.nodes) {
+      const node = graphData.nodes.find(n => String(n.id).toLowerCase() === resourceId.toLowerCase());
+      if (node) {
+        const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
+        const baseImportance = (node.metadata as any)?.importance ?? 3;
+        let importance = baseImportance;
+        
+        // Check AI annotations
+        const annotation = annotationMap.get(resourceId);
+        if (annotation?.layer !== undefined) {
+          importance = annotation.layer;
+        }
+        
+        // Check user overrides
+        const nodeOverride = graphData?.node_overrides?.[resourceId];
+        if (nodeOverride && typeof (nodeOverride as any)?.layer === "number") {
+          importance = (nodeOverride as any).layer;
+        }
+        
+        if (importance > maxImportance) return false;
+      }
+    }
+    
     // If resourceGroupFilter is defined and empty, exclude everything
     if (resourceGroupFilter !== undefined && resourceGroupFilter.size === 0) {
       return false;
@@ -500,7 +529,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     return Object.entries(evaluations).filter(([resourceId, evaluation]) =>
       resourceMatchesFilters(resourceId, evaluation)
     );
-  }, [evaluations, resourceGroupFilter, serviceFilter, resourceIdToServiceKey]);
+  }, [evaluations, resourceGroupFilter, serviceFilter, resourceIdToServiceKey, viewLevel, graphData, annotationMap]);
 
   const getResourceDisplayName = (resourceId: string, defaultName: string): string => {
     // Check if this is a subscription-level resource (/subscriptions/{id})
@@ -954,7 +983,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
 
   const filteredFindings = useMemo(() => {
     const normalizedResourceFilter = resourceFilter.trim().toLowerCase();
-    // evaluationsWithOverrides already has overrides applied - no need to apply again
+    
+    // evaluationsWithOverrides already has overrides and filters applied
     let findings = Object.entries(evaluationsWithOverrides).flatMap(([resourceId, evaluation]) => {
       const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
       return checksOrFindings
@@ -1066,7 +1096,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     });
 
     return findings;
-  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, filterSubscription, showSubscriptionColumn, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights, subscriptionNameMap, validationSourceFilter]);
+  }, [evaluationsWithOverrides, filterStatus, filterCategory, filterImpact, filterValidationSource, filterSubscription, showSubscriptionColumn, resourceFilter, sortColumn, sortDirection, annotationMap, getElementWeight, impactWeights, categoryWeights, subscriptionNameMap, validationSourceFilter, viewLevel, serviceFilter, resourceGroupFilter, graphData]);
 
   // Calculate total weight based ONLY on left-side drawer filters (resource group, service)
   // NOT affected by right-side "Findings Details" filters (status, category, impact, validation_source)
@@ -1116,6 +1146,87 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       };
     });
   }, [filteredFindings, totalWeightForDrawerFilters, evaluationsWithOverrides, impactWeights, categoryWeights, getElementWeight]);
+
+  // Group findings by recommendation
+  const groupedRecommendations = useMemo(() => {
+    const groups = new Map<string, {
+      recommendation_id: string;
+      description: string;
+      category: string;
+      impact: string;
+      potential_benefits: string;
+      learn_more: any;
+      resources: Array<any>;
+      totalContribution: number;
+      failedCount: number;
+      passedCount: number;
+      pendingCount: number;
+    }>();
+
+    findingsWithContribution.forEach(finding => {
+      const key = finding.recommendation_id;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          recommendation_id: finding.recommendation_id,
+          description: finding.description,
+          category: finding.category,
+          impact: finding.impact,
+          potential_benefits: finding.potential_benefits,
+          learn_more: finding.learn_more,
+          resources: [],
+          totalContribution: 0,
+          failedCount: 0,
+          passedCount: 0,
+          pendingCount: 0,
+        });
+      }
+
+      const group = groups.get(key)!;
+      group.resources.push(finding);
+      group.totalContribution += finding.contribution_percent || 0;
+      
+      if (finding.status === "fail") group.failedCount++;
+      else if (finding.status === "pass") group.passedCount++;
+      else if (finding.status === "pending") group.pendingCount++;
+    });
+
+    // Convert to array and sort
+    return Array.from(groups.values()).sort((a, b) => {
+      if (sortColumn === "weight") {
+        return sortDirection === "asc" 
+          ? a.totalContribution - b.totalContribution
+          : b.totalContribution - a.totalContribution;
+      }
+      if (sortColumn === "recommendation") {
+        return sortDirection === "asc"
+          ? a.description.localeCompare(b.description)
+          : b.description.localeCompare(a.description);
+      }
+      if (sortColumn === "category") {
+        return sortDirection === "asc"
+          ? a.category.localeCompare(b.category)
+          : b.category.localeCompare(a.category);
+      }
+      if (sortColumn === "impact") {
+        const impactOrder = { "High": 3, "Medium": 2, "Low": 1 };
+        const aVal = impactOrder[a.impact as keyof typeof impactOrder] || 0;
+        const bVal = impactOrder[b.impact as keyof typeof impactOrder] || 0;
+        return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
+      }
+      return 0;
+    });
+  }, [findingsWithContribution, sortColumn, sortDirection]);
+
+  // Handler to open resource modal
+  const handleResourceClick = (finding: any) => {
+    const effectiveName = getEffectiveResourceName(finding.resourceId, finding.resourceName || "");
+    setSelectedResource({
+      resourceId: finding.resourceId,
+      resourceName: effectiveName,
+      finding: finding,
+    });
+    setResourceModalOpen(true);
+  };
 
   const handleStatusOverride = async (
     resourceId: string,
@@ -1251,6 +1362,117 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     } catch (e) {
       console.error("deleteOverride failed", e);
       alert("Failed to delete override. Please try again.");
+    }
+  };
+
+  const handleBatchOverride = async (
+    resources: Array<any>,
+    newStatus: "pass" | "fail"
+  ) => {
+    if (resources.length === 0) return;
+    
+    const targetSubscriptionId = subscriptionId ?? extractSubscriptionId(resources[0].resourceId);
+    if (!targetSubscriptionId) {
+      console.error("Cannot save batch override: subscription ID not available");
+      return;
+    }
+
+    // Prepare batch items
+    const items: BatchOverrideItem[] = resources.map(resource => ({
+      resource_id: resource.resourceId,
+      recommendation_id: resource.recommendation_id,
+      resilience_check_id: resource.resilience_check_id,
+    }));
+
+    // Optimistically update UI for all items
+    const optimisticUpdates: Record<string, any> = {};
+    items.forEach(item => {
+      optimisticUpdates[item.resilience_check_id] = {
+        status: newStatus,
+        validation_source: "User",
+        resilience_check_id: item.resilience_check_id,
+      };
+    });
+
+    setUserOverrides(prev => ({
+      ...prev,
+      ...optimisticUpdates,
+    }));
+
+    try {
+      const result = await saveBatchOverrides(
+        targetSubscriptionId,
+        items,
+        newStatus,
+        "user"
+      );
+
+      // Update local state with backend confirmation
+      const confirmedUpdates: Record<string, any> = {};
+      result.overrides.forEach((override: any) => {
+        const savedCheckId = override?.check_uuid || override?.resilience_check_id;
+        if (savedCheckId) {
+          confirmedUpdates[savedCheckId] = {
+            status: newStatus as "pass" | "fail" | "pending",
+            validation_source: "User",
+            resilience_check_id: savedCheckId,
+          };
+        }
+      });
+
+      setUserOverrides(prev => ({
+        ...prev,
+        ...confirmedUpdates,
+      }));
+
+      // Save to localStorage
+      if (targetSubscriptionId) {
+        const storageKey = `resilience_${targetSubscriptionId}`;
+        const stored = localStorage.getItem(storageKey) || '{}';
+        const data = JSON.parse(stored);
+        data.overrides = data.overrides || {};
+        
+        result.overrides.forEach((override: any, idx: number) => {
+          const savedCheckId = override?.check_uuid || override?.resilience_check_id;
+          if (savedCheckId) {
+            data.overrides[savedCheckId] = {
+              resource_id: items[idx].resource_id,
+              recommendation_id: items[idx].recommendation_id,
+              status: newStatus,
+              overridden_by: "user",
+              resilience_check_id: savedCheckId,
+            };
+          }
+        });
+        
+        data.timestamp = new Date().toISOString();
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+
+     // Call onOverrideSaved for each item
+      result.overrides.forEach((override: any, idx: number) => {
+        const savedCheckId = override?.check_uuid || override?.resilience_check_id;
+        if (savedCheckId && onOverrideSaved) {
+          onOverrideSaved({
+            resource_id: items[idx].resource_id,
+            recommendation_id: items[idx].recommendation_id,
+            status: newStatus,
+            overridden_by: "user",
+            resilience_check_id: savedCheckId,
+          });
+        }
+      });
+    } catch (error) {
+      console.error("Failed to save batch overrides:", error);
+      // Revert optimistic updates on error
+      setUserOverrides(prev => {
+        const updated = { ...prev };
+        items.forEach(item => {
+          delete updated[item.resilience_check_id];
+        });
+        return updated;
+      });
+      alert("Failed to save batch overrides. Please try again.");
     }
   };
 
@@ -2042,35 +2264,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                 >
                   <button
                     type="button"
-                    onClick={() => toggleSort("resource")}
-                    style={{
-                      width: "100%",
-                      border: "none",
-                      background: "transparent",
-                      padding: 0,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      fontWeight: 600,
-                      fontSize: "12px",
-                      color: "inherit",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <span>Resource</span>
-                    <span style={{ fontSize: "10px", color: "#6b7280" }}>{sortIndicator("resource")}</span>
-                  </button>
-                </th>
-                <th
-                  style={{
-                    padding: "12px",
-                    textAlign: "left",
-                    fontWeight: 600,
-                    color: "#374151",
-                  }}
-                >
-                  <button
-                    type="button"
                     onClick={() => toggleSort("recommendation")}
                     style={{
                       width: "100%",
@@ -2271,9 +2464,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
               </tr>
             </thead>
             <tbody>
-              {findingsWithContribution.map((finding, idx) => (
+              {groupedRecommendations.map((group, idx) => (
                 <tr
-                  key={idx}
+                  key={group.recommendation_id}
                   style={{
                     borderBottom: "1px solid #e5e7eb",
                     background: idx % 2 === 0 ? "#fff" : "#f9fafb",
@@ -2281,166 +2474,155 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                 >
                   {showSubscriptionColumn && (
                     <td style={{ padding: "12px", color: "#374151", fontWeight: 600 }}>
-                      {subscriptionNameMap.get(extractSubscriptionId(finding.resourceId) || "")
-                        || extractSubscriptionId(finding.resourceId)
-                        || "Unknown"}
+                      {(() => {
+                        // Get subscription from first resource
+                        const firstResource = group.resources[0];
+                        return subscriptionNameMap.get(extractSubscriptionId(firstResource.resourceId) || "")
+                          || extractSubscriptionId(firstResource.resourceId)
+                          || "Unknown";
+                      })()}
                     </td>
                   )}
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    <div style={{ fontWeight: 600 }}>
-                      {(() => {
-                        const node = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === finding.resourceId.toLowerCase());
-                        const isValidAzureResource = finding.resourceId.startsWith("/subscriptions/");
-                        
-                        // Default: no link for virtual resources
-                        let showLink = false;
-                        
-                        if (node && isValidAzureResource) {
-                          // Check metadata in different possible locations
-                          const meta1 = (node as any)?.metadata;
-                          const meta2 = (node as any)?.raw?.metadata;
-                          const isVirtual = meta1?.virtual || meta2?.virtual;
-                          
-                          // Only show link if we found the node AND confirmed it's NOT virtual
-                          showLink = isVirtual !== true;
-                        }
-                        
-                        if (showLink) {
-                          const node2 = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === finding.resourceId.toLowerCase());
-                          const tenantId = ((node2 as any)?.metadata?.tenant_id ?? (node2 as any)?.metadata?.tenantId ?? (node2 as any)?.metadata?.tenant) || ((node2 as any)?.raw?.metadata?.tenant_id ?? (node2 as any)?.raw?.metadata?.tenantId ?? (node2 as any)?.raw?.metadata?.tenant);
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                      {/* Recommendation Text */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span style={{ fontWeight: 500 }}>{group.description}</span>
+                        {(group.learn_more as any)?.llm_reasoning && (() => {
+                          const tooltipId = `tooltip-${group.recommendation_id}`;
+                          const isTooltipVisible = visibleTooltip === tooltipId;
+                          const learnMore = group.learn_more as any;
                           return (
-                            <a
-                              href={`https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${finding.resourceId}/overview`}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
-                              title={finding.resourceId}
-                            >
-                              {getResourceDisplayName(
-                                finding.resourceId,
-                                getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
-                              )}
-                            </a>
-                          );
-                        }
-                        
-                        return getResourceDisplayName(
-                          finding.resourceId,
-                          getEffectiveResourceName(finding.resourceId, finding.resourceName || "")
-                        );
-                      })()}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        color: "#6b7280",
-                        marginTop: "2px",
-                      }}
-                    >
-                      {annotationMap.get(finding.resourceId)?.azure_service_category || finding.resourceId.split("/")[7]}
-                    </div>
-                  </td>
-                  <td style={{ padding: "12px", color: "#374151" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span>{finding.description}</span>
-                      {(finding.learn_more as any)?.llm_reasoning && (() => {
-                        const tooltipId = `tooltip-${finding.resourceId}-${finding.resilience_check_id}`;
-                        const isTooltipVisible = visibleTooltip === tooltipId;
-                        const learnMore = finding.learn_more as any;
-                        return (
-                          <div
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              width: "20px",
-                              height: "20px",
-                              minWidth: "20px",
-                              borderRadius: "50%",
-                              background: "#dbeafe",
-                              color: "#1e40af",
-                              cursor: "help",
-                              fontSize: "13px",
-                              fontWeight: 700,
-                              border: "1px solid #93c5fd",
-                              position: "relative",
-                            }}
-                            onMouseEnter={() => setVisibleTooltip(tooltipId)}
-                            onMouseLeave={() => setVisibleTooltip(null)}
-                          >
-                            ?
                             <div
                               style={{
-                                position: "absolute",
-                                top: "calc(100% + 8px)",
-                                left: "0",
-                                right: "auto",
-                                background: "#0f172a",
-                                color: "#e5e7eb",
-                                padding: "12px 14px",
-                                borderRadius: "10px",
-                                fontSize: "13px",
-                                whiteSpace: "normal",
-                                width: "min(400px, 80vw)",
-                                maxWidth: "80vw",
-                                zIndex: 10000,
-                                opacity: isTooltipVisible ? 1 : 0,
-                                pointerEvents: isTooltipVisible ? "auto" : "none",
-                                transition: "opacity 0.18s ease",
-                                boxShadow: "0 18px 38px -12px rgba(15, 23, 42, 0.45)",
-                                lineHeight: "1.5",
-                                border: "1px solid rgba(148, 163, 184, 0.35)",
-                                textAlign: "left",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                width: "18px",
+                                height: "18px",
+                                minWidth: "18px",
+                                borderRadius: "50%",
+                                background: "#dbeafe",
+                                color: "#1e40af",
+                                cursor: "help",
+                                fontSize: "11px",
+                                fontWeight: 700,
+                                border: "1px solid #93c5fd",
+                                position: "relative",
                               }}
-                              className="tooltip-content"
+                              onMouseEnter={() => setVisibleTooltip(tooltipId)}
+                              onMouseLeave={() => setVisibleTooltip(null)}
                             >
-                              {learnMore?.name && (
-                                <div style={{ fontWeight: 700, marginBottom: "8px", color: "#fff", fontSize: "14px" }}>
-                                  {learnMore.name}
-                                </div>
-                              )}
-                              {learnMore?.llm_reasoning && (
-                                <div style={{ fontSize: "13px", color: "#e5e7eb" }}>
-                                  {learnMore.llm_reasoning}
-                                </div>
-                              )}
+                              ?
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: "calc(100% + 8px)",
+                                  left: "0",
+                                  right: "auto",
+                                  background: "#0f172a",
+                                  color: "#e5e7eb",
+                                  padding: "12px 14px",
+                                  borderRadius: "10px",
+                                  fontSize: "12px",
+                                  whiteSpace: "normal",
+                                  width: "min(350px, 80vw)",
+                                  maxWidth: "80vw",
+                                  zIndex: 10000,
+                                  opacity: isTooltipVisible ? 1 : 0,
+                                  pointerEvents: isTooltipVisible ? "auto" : "none",
+                                  transition: "opacity 0.18s ease",
+                                  boxShadow: "0 18px 38px -12px rgba(15, 23, 42, 0.45)",
+                                  lineHeight: "1.5",
+                                  border: "1px solid rgba(148, 163, 184, 0.35)",
+                                  textAlign: "left",
+                                }}
+                              >
+                                {learnMore?.name && (
+                                  <div style={{ fontWeight: 700, marginBottom: "6px", color: "#fff", fontSize: "13px" }}>
+                                    {learnMore.name}
+                                  </div>
+                                )}
+                                {learnMore?.llm_reasoning && (
+                                  <div style={{ fontSize: "12px", color: "#e5e7eb" }}>
+                                    {learnMore.llm_reasoning}
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })()}
+                          );
+                        })()}
+                      </div>
+                      {/* Resource Badges */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px", marginTop: "2px" }}>
+                        {group.resources.map((resource, rIdx) => (
+                          <button
+                            key={rIdx}
+                            onClick={() => handleResourceClick(resource)}
+                            style={{
+                              padding: "2px 8px",
+                              borderRadius: "4px",
+                              border: "1px solid #d1d5db",
+                              background: resource.status === "fail" ? "#fee2e2" : resource.status === "pass" ? "#ecfdf5" : "#f3f4f6",
+                              color: resource.status === "fail" ? "#991b1b" : resource.status === "pass" ? "#065f46" : "#4b5563",
+                              cursor: "pointer",
+                              fontSize: "10px",
+                              fontWeight: 500,
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.transform = "translateY(-1px)";
+                              e.currentTarget.style.boxShadow = "0 2px 4px 0 rgba(0,0,0,0.1)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.transform = "translateY(0)";
+                              e.currentTarget.style.boxShadow = "none";
+                            }}
+                            title={resource.resourceId}
+                          >
+                            {getResourceDisplayName(
+                              resource.resourceId,
+                              getEffectiveResourceName(resource.resourceId, resource.resourceName || "")
+                            )}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    {finding.potential_benefits ? (
-                      (finding.learn_more as any)?.url ? (
+                    {group.potential_benefits ? (
+                      (group.learn_more as any)?.url ? (
                         <a
-                          href={(finding.learn_more as any).url}
+                          href={(group.learn_more as any).url}
                           target="_blank"
                           rel="noreferrer"
                           style={{ color: "#2563eb", textDecoration: "none", fontWeight: 600 }}
-                          title={(finding.learn_more as any).name || "Learn more"}
+                          title={(group.learn_more as any).name || "Learn more"}
                         >
-                          {finding.potential_benefits}
+                          {group.potential_benefits}
                         </a>
                       ) : (
-                        finding.potential_benefits
+                        group.potential_benefits
                       )
                     ) : (
                       "—"
                     )}
                   </td>
                   <td style={{ padding: "12px", color: "#374151" }}>
-                    {finding.category}
+                    {group.category}
                   </td>
                   <td
                     style={{
                       padding: "12px",
                       textAlign: "center",
-                      color: getImpactColor(finding.impact),
+                      color: getImpactColor(group.impact),
                       fontWeight: 600,
                     }}
                   >
-                    {finding.impact}
+                    {group.impact}
                   </td>
                   <td
                     style={{
@@ -2450,9 +2632,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                       color: "#6b7280",
                       fontWeight: 500,
                     }}
-                    title={`Contributes ${finding.contribution_percent?.toFixed(2)}% to current filtered view`}
+                    title={`Total contribution: ${group.totalContribution.toFixed(2)}%`}
                   >
-                    {finding.contribution_percent ? `${finding.contribution_percent.toFixed(1)}%` : "—"}
+                    {group.totalContribution.toFixed(1)}%
                   </td>
                   <td
                     style={{
@@ -2460,78 +2642,125 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                       textAlign: "center",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <div style={{ position: "relative", display: "inline-block" }}>
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "4px 8px",
-                            borderRadius: "4px",
-                            background: finding.status === "pass" ? "#ecfdf5" : finding.status === "pending" ? "#f3f4f6" : "#fee2e2",
-                            color: getStatusColor(finding.status),
-                            fontWeight: 600,
-                            fontSize: "11px",
-                          }}
-                        >
-                          {finding.status.toUpperCase()}
-                        </span>
-                        {(finding.status === "fail" || finding.status === "pending") && (
-                          <button
-                            type="button"
-                            onClick={() => handleStatusOverride(finding.resourceId, finding.recommendation_id, finding.resilience_check_id, finding.status)}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "center" }}>
+                      {group.failedCount > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px", justifyContent: "center" }}>
+                          <span
                             style={{
-                              position: "absolute",
-                              top: "-10px",
-                              right: "-10px",
-                              width: "22px",
-                              height: "22px",
-                              borderRadius: "50%",
+                              display: "inline-block",
+                              padding: "3px 8px",
+                              borderRadius: "4px",
+                              background: "#fee2e2",
+                              color: "#991b1b",
+                              fontWeight: 600,
+                              fontSize: "10px",
+                            }}
+                          >
+                            {group.failedCount} FAIL
+                          </span>
+                          <button
+                            onClick={() => {
+                              const failedResources = group.resources.filter(r => r.status === "fail");
+                              handleBatchOverride(failedResources, "pass");
+                            }}
+                            style={{
+                              padding: "2px 2px",
+                              borderRadius: "3px",
+                              border: "1px solid #10b981",
                               background: "#10b981",
-                              border: "2px solid #fff",
-                              color: "#fff",
                               cursor: "pointer",
-                              display: "flex",
+                              display: "inline-flex",
                               alignItems: "center",
-                              justifyContent: "center",
-                              fontSize: "12px",
-                              padding: "0",
-                              fontWeight: "bold",
-                            }}
-                            title="Override to pass"
-                          >
-                            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "12px", height: "12px" }} />
-                          </button>
-                        )}
-                        {finding.status === "pass" && (finding.validation_source?.toLowerCase() === "user") && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteOverride(finding.resourceId, finding.recommendation_id, finding.resilience_check_id)}
-                            style={{
-                              position: "absolute",
+                              position: "relative",
                               top: "-10px",
-                              right: "-10px",
-                              width: "22px",
-                              height: "22px",
-                              borderRadius: "50%",
-                              background: "#ef4444",
-                              border: "2px solid #fff",
-                              color: "#fff",
-                              cursor: "pointer",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              padding: 0,
-                              zIndex: 1,
+                              left: "-10px", 
                             }}
-                            title="Remove override"
+                            title={`Override all ${group.failedCount} failed to pass`}
                           >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                              <line x1="6" y1="6" x2="18" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
-                              <line x1="18" y1="6" x2="6" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
-                            </svg>
+                            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "10px", height: "10px" }} />
                           </button>
-                        )}
-                      </div>
+                        </div>
+                      )}
+                      {group.passedCount > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px", justifyContent: "center" }}>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "3px 8px",
+                              borderRadius: "4px",
+                              background: "#ecfdf5",
+                              color: "#065f46",
+                              fontWeight: 600,
+                              fontSize: "10px",
+                            }}
+                          >
+                            {group.passedCount} PASS
+                          </span>
+                          {group.resources.filter(r => r.status === "pass" && r.validation_source?.toLowerCase() === "user").length > 0 && (
+                            <button
+                              onClick={() => {
+                                const userPassedResources = group.resources.filter(r => 
+                                  r.status === "pass" && r.validation_source?.toLowerCase() === "user"
+                                );
+                                handleBatchOverride(userPassedResources, "fail");
+                              }}
+                              style={{
+                                padding: "2px 2px",
+                                borderRadius: "3px",
+                                border: "1px solid #ef4444",
+                                background: "#ef4444",
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                position: "relative",
+                                top: "-10px",
+                                left: "-10px", 
+                              }}
+                              title={`Revert ${group.resources.filter(r => r.status === "pass" && r.validation_source?.toLowerCase() === "user").length} user overrides`}
+                            >
+                              <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "10px", height: "10px" }} />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      {group.pendingCount > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: "4px", justifyContent: "center" }}>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "3px 8px",
+                              borderRadius: "4px",
+                              background: "#f3f4f6",
+                              color: "#4b5563",
+                              fontWeight: 600,
+                              fontSize: "10px",
+                            }}
+                          >
+                            {group.pendingCount} PENDING
+                          </span>
+                          <button
+                            onClick={() => {
+                              const pendingResources = group.resources.filter(r => r.status === "pending");
+                              handleBatchOverride(pendingResources, "pass");
+                            }}
+                            style={{
+                              padding: "2px 2px",
+                              borderRadius: "3px",
+                              border: "1px solid #10b981",
+                              background: "#10b981",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              position: "relative",
+                              top: "-10px",
+                              left: "-10px", 
+                            }}
+                            title={`Override all ${group.pendingCount} pending to pass`}
+                          >
+                            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='white' d='M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z'/%3E%3C/svg%3E" alt="Override" style={{ width: "10px", height: "10px" }} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </td>
                   <td
@@ -2540,96 +2769,339 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                       textAlign: "center",
                     }}
                   >
-                    {finding.validation_source ? (
-                      (() => {
-                        const src = (finding.validation_source || '').toLowerCase();
-                        const label = src === 'aprl' ? 'APRL' : src === 'llm' ? 'LLM' : src === 'heuristic' ? 'Heuristic' : src === 'pendingreview' ? 'PendingReview' : src === 'user' ? 'User' : finding.validation_source;
+                    {(() => {
+                      // Show all unique validation sources
+                      const sources = new Set(group.resources.map(r => r.validation_source).filter(Boolean));
+                      return Array.from(sources).map((source, sIdx) => {
+                        const src = (source || '').toLowerCase();
+                        const label = src === 'aprl' ? 'APRL' : src === 'llm' ? 'LLM' : src === 'heuristic' ? 'Heuristic' : src === 'pendingreview' ? 'PendingReview' : src === 'user' ? 'User' : source;
                         const bg = src === 'aprl' ? '#dbeafe' : src === 'llm' ? '#fef3c7' : src === 'heuristic' ? '#e0e7ff' : src === 'user' ? '#dcfce7' : src === 'pendingreview' ? '#f3e8ff' : '#e5e7eb';
                         const fg = src === 'aprl' ? '#1e40af' : src === 'llm' ? '#92400e' : src === 'heuristic' ? '#3730a3' : src === 'user' ? '#166534' : src === 'pendingreview' ? '#6b21a8' : '#374151';
                         const bd = src === 'aprl' ? '#bfdbfe' : src === 'llm' ? '#fde68a' : src === 'heuristic' ? '#c7d2fe' : src === 'user' ? '#bbf7d0' : src === 'pendingreview' ? '#e9d5ff' : '#d1d5db';
                         
-                        // Get reasoning from learn_more object
-                        const heuristicReasoning = (finding.learn_more as any)?.heuristic_reasoning;
-                        const llmReasoning = (finding.learn_more as any)?.llm_reasoning;
-                        const reasoning = heuristicReasoning || llmReasoning;
-                        
                         return (
-                          <div style={{ position: "relative", display: "inline-block" }}>
-                            <span
-                              style={{
-                                display: 'inline-block',
-                                padding: '2px 6px',
-                                borderRadius: '3px',
-                                fontSize: '10px',
-                                fontWeight: 600,
-                                background: bg,
-                                color: fg,
-                                border: `1px solid ${bd}`,
-                                cursor: reasoning ? 'help' : 'default',
-                              }}
-                              title={reasoning ? undefined : `Confirmed by ${label}`}
-                              className={reasoning ? "tooltip-trigger" : ""}
-                            >
-                              {label}
-                            </span>
-                            {reasoning && (
-                              <div
-                                style={{
-                                  position: "absolute",
-                                  bottom: "calc(100% + 8px)",
-                                  left: "auto",
-                                  right: "0",
-                                  padding: "12px",
-                                  background: "rgba(17, 24, 39, 0.96)",
-                                  color: "#e5e7eb",
-                                  borderRadius: "6px",
-                                  fontSize: "12px",
-                                  lineHeight: "1.5",
-                                  minWidth: "200px",
-                                  maxWidth: "min(400px, 80vw)",
-                                  width: "max-content",
-                                  zIndex: 10000,
-                                  pointerEvents: "none",
-                                  opacity: 0,
-                                  visibility: "hidden",
-                                  transition: "opacity 0.2s, visibility 0.2s",
-                                  boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
-                                  border: "1px solid rgba(148, 163, 184, 0.35)",
-                                  textAlign: "left",
-                                  whiteSpace: "normal",
-                                }}
-                                className="tooltip-content"
-                              >
-                                <div style={{ fontWeight: 700, marginBottom: "6px", color: "#fff", fontSize: "11px" }}>
-                                  {label} Validation
-                                </div>
-                                <div style={{ fontSize: "11px", color: "#e5e7eb" }}>
-                                  {reasoning}
-                                </div>
-                              </div>
-                            )}
-                          </div>
+                          <span
+                            key={sIdx}
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '10px',
+                              fontWeight: 600,
+                              background: bg,
+                              color: fg,
+                              border: `1px solid ${bd}`,
+                              marginBottom: sIdx < sources.size - 1 ? '4px' : '0',
+                            }}
+                          >
+                            {label}
+                          </span>
                         );
-                      })()
-                    ) : (
-                      <span style={{ color: "#9ca3af", fontSize: "11px" }}>—</span>
-                    )}
+                      });
+                    })()}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+
+          {groupedRecommendations.length === 0 && (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "32px",
+                color: "#6b7280",
+              }}
+            >
+              No findings match the selected filter.
+            </div>
+          )}
         </div>
 
-        {findingsWithContribution.length === 0 && (
+        {/* Resource Detail Modal */}
+        {resourceModalOpen && selectedResource && (
           <div
             style={{
-              textAlign: "center",
-              padding: "32px",
-              color: "#6b7280",
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: "rgba(0, 0, 0, 0.5)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 10000,
+              padding: "20px",
             }}
+            onClick={() => setResourceModalOpen(false)}
           >
-            No findings match the selected filter.
+            <div
+              style={{
+                background: "#fff",
+                borderRadius: "12px",
+                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+                maxWidth: "600px",
+                width: "100%",
+                maxHeight: "80vh",
+                overflow: "auto",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div
+                style={{
+                  padding: "24px",
+                  borderBottom: "1px solid #e5e7eb",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  gap: "16px",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: "18px", fontWeight: 700, color: "#111827", marginBottom: "8px" }}>
+                    Resource Details
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "13px",
+                      color: "#6b7280",
+                      wordBreak: "break-all",
+                      fontFamily: "monospace",
+                      background: "#f9fafb",
+                      padding: "8px 12px",
+                      borderRadius: "6px",
+                      marginTop: "8px",
+                    }}
+                  >
+                    {selectedResource.resourceId}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setResourceModalOpen(false)}
+                  style={{
+                    width: "32px",
+                    height: "32px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    background: "#fff",
+                    color: "#6b7280",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                  title="Close"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div style={{ padding: "24px" }}>
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
+                    Resource Name
+                  </div>
+                  <div style={{ fontSize: "15px", color: "#111827", fontWeight: 500 }}>
+                    {selectedResource.resourceName}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
+                    Service Category
+                  </div>
+                  <div style={{ fontSize: "14px", color: "#111827" }}>
+                    {annotationMap.get(selectedResource.resourceId)?.azure_service_category || selectedResource.resourceId.split("/")[7] || "Unknown"}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: "24px" }}>
+                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
+                    Status for this Recommendation
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                    <span
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        background: selectedResource.finding.status === "pass" ? "#ecfdf5" : selectedResource.finding.status === "pending" ? "#f3f4f6" : "#fee2e2",
+                        color: getStatusColor(selectedResource.finding.status),
+                        fontWeight: 600,
+                        fontSize: "13px",
+                      }}
+                    >
+                      {selectedResource.finding.status.toUpperCase()}
+                    </span>
+                    {(selectedResource.finding.status === "fail" || selectedResource.finding.status === "pending") && (
+                      <button
+                        onClick={() => {
+                          handleStatusOverride(
+                            selectedResource.resourceId,
+                            selectedResource.finding.recommendation_id,
+                            selectedResource.finding.resilience_check_id,
+                            selectedResource.finding.status
+                          );
+                          setResourceModalOpen(false);
+                        }}
+                        style={{
+                          padding: "6px 16px",
+                          borderRadius: "6px",
+                          border: "1px solid #10b981",
+                          background: "#10b981",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        Override to Pass
+                      </button>
+                    )}
+                    {selectedResource.finding.status === "pass" && selectedResource.finding.validation_source?.toLowerCase() === "user" && (
+                      <button
+                        onClick={() => {
+                          handleDeleteOverride(
+                            selectedResource.resourceId,
+                            selectedResource.finding.recommendation_id,
+                            selectedResource.finding.resilience_check_id
+                          );
+                          setResourceModalOpen(false);
+                        }}
+                        style={{
+                          padding: "6px 16px",
+                          borderRadius: "6px",
+                          border: "1px solid #ef4444",
+                          background: "#ef4444",
+                          color: "#fff",
+                          cursor: "pointer",
+                          fontSize: "12px",
+                          fontWeight: 600,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <line x1="18" y1="6" x2="6" y2="18" />
+                          <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                        Remove Override
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Azure Portal Link & Show in Graph */}
+                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+                  {(() => {
+                    const node = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === selectedResource.resourceId.toLowerCase());
+                    const isValidAzureResource = selectedResource.resourceId.startsWith("/subscriptions/");
+                    
+                    if (node && isValidAzureResource) {
+                      const meta1 = (node as any)?.metadata;
+                      const meta2 = (node as any)?.raw?.metadata;
+                      const isVirtual = meta1?.virtual || meta2?.virtual;
+                      
+                      if (isVirtual !== true) {
+                        const tenantId = ((node as any)?.metadata?.tenant_id ?? (node as any)?.metadata?.tenantId ?? (node as any)?.metadata?.tenant) || ((node as any)?.raw?.metadata?.tenant_id ?? (node as any)?.raw?.metadata?.tenantId ?? (node as any)?.raw?.metadata?.tenant);
+                        const portalUrl = `https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${selectedResource.resourceId}/overview`;
+                        
+                        return (
+                          <a
+                            href={portalUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "8px",
+                              padding: "10px 18px",
+                              borderRadius: "6px",
+                              border: "1px solid #0078d4",
+                              background: "#0078d4",
+                              color: "#fff",
+                              textDecoration: "none",
+                              fontSize: "14px",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = "#005a9e";
+                              e.currentTarget.style.borderColor = "#005a9e";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "#0078d4";
+                              e.currentTarget.style.borderColor = "#0078d4";
+                            }}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                              <polyline points="15 3 21 3 21 9" />
+                              <line x1="10" y1="14" x2="21" y2="3" />
+                            </svg>
+                            Open in Azure Portal
+                          </a>
+                        );
+                      }
+                    }
+                    return null;
+                  })()}
+                  
+                  {/* Show in Graph Button */}
+                  {onShowInGraph && (
+                    <button
+                      onClick={() => {
+                        onShowInGraph(selectedResource.resourceId);
+                        setResourceModalOpen(false);
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "10px 18px",
+                        borderRadius: "6px",
+                        border: "1px solid #8b5cf6",
+                        background: "#8b5cf6",
+                        color: "#fff",
+                        cursor: "pointer",
+                        fontSize: "14px",
+                        fontWeight: 600,
+                        transition: "all 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = "#7c3aed";
+                        e.currentTarget.style.borderColor = "#7c3aed";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "#8b5cf6";
+                        e.currentTarget.style.borderColor = "#8b5cf6";
+                      }}
+                      title="Show this resource in the workload graph"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 3C7.58 3 3.75 5.68 2.12 9.59c-.77 1.77-.77 4.05 0 5.82 1.63 3.91 5.46 6.59 9.88 6.59s8.25-2.68 9.88-6.59c.77-1.77.77-4.05 0-5.82C20.25 5.68 16.42 3 12 3" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                      Show in Graph
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>

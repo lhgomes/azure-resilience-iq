@@ -226,6 +226,32 @@ export async function deleteOverride(
   });
 }
 
+export interface BatchOverrideItem {
+  resource_id: string;
+  recommendation_id: string;
+  resilience_check_id: string;
+}
+
+/**
+ * Create or update multiple overrides in a single batch operation
+ */
+export async function saveBatchOverrides(
+  subscriptionId: string,
+  items: BatchOverrideItem[],
+  newStatus: 'pass' | 'fail',
+  userIdentifier: string = 'user'
+): Promise<{ overrides: OverrideData[]; count: number }> {
+  return apiJson(`/api/resilience/${encodeURIComponent(subscriptionId)}/overrides/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items,
+      new_status: newStatus,
+      user_identifier: userIdentifier,
+    }),
+  });
+}
+
 /**
  * Get override for a specific check
  */
