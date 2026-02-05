@@ -571,12 +571,24 @@ const WorkloadView: React.FC = () => {
     loadWeights();
   }, []);
 
-  // Fit view when filters change
+  const prevViewLevelRef = useRef<ViewLevel>("overview");
+
+  // Fit view when filters change (but NOT when view level changes - resetLayout handles that)
   useEffect(() => {
+    const viewLevelChanged = prevViewLevelRef.current !== viewLevel;
+    prevViewLevelRef.current = viewLevel;
+
     if (skipNextFitViewRef.current) {
       skipNextFitViewRef.current = false;
       return;
     }
+    
+    // Skip if view level just changed - resetLayout will handle viewport
+    if (viewLevelChanged) {
+      return;
+    }
+    
+    // Only fitView when filters change, not when view level changes
     graphCanvasRef.current?.fitView();
   }, [viewLevel, serviceFilter, resourceGroupFilter]);
 
@@ -760,35 +772,22 @@ const WorkloadView: React.FC = () => {
   const edgesForView = viewGraph?.edges ?? graph?.edges ?? [];
   const hasSelection = selectedSubscriptionIds.length > 0;
 
-  // Auto layout when view level or service filter changes (debounced to avoid transient states)
-  const layoutResetTimerRef = useRef<number | null>(null);
+  // Auto layout once when the view graph is recomputed
   const layoutResetKeyRef = useRef<string>("");
   useEffect(() => {
-    if (!nodesForView || nodesForView.length === 0) return;
+    if (!viewGraph || nodesForView.length === 0) return;
 
-    const key = JSON.stringify({
-      viewLevel,
-      services: Array.from(serviceFilter).sort(),
-      count: nodesForView.length,
-    });
-
+    const key = `${viewLevel}:${viewGraph.nodes.length}:${viewGraph.edges.length}`;
+    if (layoutResetKeyRef.current === key) return;
     layoutResetKeyRef.current = key;
 
-    if (layoutResetTimerRef.current) {
-      window.clearTimeout(layoutResetTimerRef.current);
-    }
-
-    layoutResetTimerRef.current = window.setTimeout(() => {
-      if (layoutResetKeyRef.current !== key) return;
-      graphCanvasRef.current?.resetLayout();
-    }, 200);
-
-    return () => {
-      if (layoutResetTimerRef.current) {
-        window.clearTimeout(layoutResetTimerRef.current);
-      }
-    };
-  }, [viewLevel, serviceFilter, nodesForView]);
+    // Run after the current render cycle to ensure nodes/edges/groups are mounted
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        graphCanvasRef.current?.resetLayout();
+      });
+    });
+  }, [viewGraph, viewLevel, nodesForView.length]);
 
   const resolveSubscriptionIdForEdge = useCallback((edgeId: string): string | null => {
     // Edges are always stored in the source node's subscription
