@@ -148,6 +148,7 @@ const WorkloadView: React.FC = () => {
   const pendingWorkloadApplyRef = useRef(false);
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
+  const [activeTabIndex, setActiveTabIndex] = useState(0);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
@@ -480,6 +481,15 @@ const WorkloadView: React.FC = () => {
     applyOptimisticOverrideRemoval(resilienceCheckId, resourceId);
     // Validation overrides should not trigger Refresh Annotations & Scores
   }, [removeResiliencyOverride, applyOptimisticOverrideRemoval]);
+
+  const handleShowInGraph = useCallback((resourceId: string) => {
+    // Switch to the Graph tab
+    setActiveTabIndex(0);
+    // Select the node in the graph to highlight it and open the node drawer
+    setTimeout(() => {
+      graphCanvasRef.current?.selectNode(resourceId);
+    }, 100);
+  }, []);
 
   const fetchZonalResiliency = useCallback(async () => {
     if (selectedSubscriptionIds.length === 0) return;
@@ -1697,6 +1707,12 @@ const WorkloadView: React.FC = () => {
     validationSourceFilterUserTouchedRef.current = false;
   }, []);
 
+  // Reset service filter when view level changes to show all available services at the new level
+  useEffect(() => {
+    setServiceFilter(new Set());
+    serviceFilterUserTouchedRef.current = false;
+  }, [viewLevel]);
+
   const handleSelectedSubscriptionsChange = useCallback((next: Set<string>) => {
     setSelectedSubscriptions(next);
     resetFiltersToAll();
@@ -2287,6 +2303,8 @@ const WorkloadView: React.FC = () => {
         {/* Tabbed View: Graph and Resiliency */}
         <div style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column" }}>
           <TabbedView
+            activeTab={activeTabIndex}
+            onActiveTabChange={setActiveTabIndex}
             tabs={[
               {
                 label: "Graph",
@@ -2397,6 +2415,7 @@ const WorkloadView: React.FC = () => {
                     validationSourceFilter={validationSourceFilter}
                     onOverrideSaved={handleOverrideSaved}
                     onOverrideDeleted={handleOverrideDeleted}
+                    onShowInGraph={handleShowInGraph}
                   />
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>

@@ -40,7 +40,17 @@ class OverrideRequest(BaseModel):
 
 
 class DeleteOverrideRequest(BaseModel):
-    resilience_check_id: str  # Can also accept check_uuid for backward compatibility
+    resilience_check_id: str
+
+class BatchOverrideItem(BaseModel):
+    resource_id: str
+    recommendation_id: str
+    resilience_check_id: str
+
+class BatchOverrideRequest(BaseModel):
+    items: list[BatchOverrideItem]
+    new_status: str
+    user_identifier: str = "user"  # Can also accept check_uuid for backward compatibility
 
 
 def get_aprl_catalog() -> APRLCatalog:
@@ -350,6 +360,41 @@ def create_override(subscription_id: str, request: OverrideRequest):
         LOGGER.error(f"Failed to save override for {subscription_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/{subscription_id}/overrides/batch")
+def create_batch_overrides(subscription_id: str, request: BatchOverrideRequest):
+    """
+    Create or update multiple user overrides in a single batch operation.
+    
+    Body:
+        - items: Array of items to override (resource_id, recommendation_id, resilience_check_id)
+        - new_status: "pass" or "fail" to apply to all items
+        - user_identifier: Optional user identifier (default: "user")
+    
+    Returns:
+        Array of created/updated overrides including check_uuid for each
+    """
+    if request.new_status not in ["pass", "fail"]:
+        raise HTTPException(
+            status_code=400,
+            detail="new_status must be either 'pass' or 'fail'"
+        )
+    
+    try:
+        results = []
+        for item in request.items:
+            result = save_override(
+                subscription_id=subscription_id,
+                resource_id=item.resource_id,
+                recommendation_id=item.recommendation_id,
+                new_status=request.new_status,
+                user_identifier=request.user_identifier
+            )
+            results.append(result)
+        return {"overrides": results, "count": len(results)}
+    except Exception as e:
+        LOGGER.error(f"Failed to save batch overrides for {subscription_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{subscription_id}/overrides")
 def remove_override(subscription_id: str, request: DeleteOverrideRequest):
