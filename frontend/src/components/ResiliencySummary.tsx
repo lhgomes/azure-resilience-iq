@@ -1476,6 +1476,70 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     }
   };
 
+  const handleBatchDeleteOverrides = async (
+    resources: Array<any>,
+  ) => {
+    if (resources.length === 0) return;
+    
+    const targetSubscriptionId = subscriptionId ?? extractSubscriptionId(resources[0].resourceId);
+    if (!targetSubscriptionId) {
+      console.error("Cannot delete batch overrides: subscription ID not available");
+      return;
+    }
+
+    // Optimistically update UI for all items
+    const optimisticAdditions: Record<string, any> = {};
+    resources.forEach(resource => {
+      optimisticAdditions[resource.resilience_check_id] = {
+        status: "deleted",  // Mark as deleted locally first
+        validation_source: resource.validation_source,
+        resilience_check_id: resource.resilience_check_id,
+      };
+    });
+
+    setUserOverrides(prev => {
+      const updated = { ...prev };
+      resources.forEach(resource => {
+        delete updated[resource.resilience_check_id];
+      });
+      return updated;
+    });
+
+    try {
+      // Delete each override individually
+      for (const resource of resources) {
+        if (resource.resilience_check_id) {
+          await deleteOverride(targetSubscriptionId, resource.resilience_check_id);
+        }
+      }
+
+      // Update localStorage after all deletions
+      if (targetSubscriptionId) {
+        const storageKey = `resilience_${targetSubscriptionId}`;
+        const stored = localStorage.getItem(storageKey) || '{}';
+        const data = JSON.parse(stored);
+        if (data.overrides) {
+          resources.forEach(resource => {
+            if (resource.resilience_check_id in data.overrides) {
+              delete data.overrides[resource.resilience_check_id];
+            }
+          });
+        }
+        data.timestamp = new Date().toISOString();
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
+
+      // Call onOverrideDeleted for each deleted item
+      resources.forEach(resource => {
+        onOverrideDeleted?.(resource.resilience_check_id, resource.resourceId);
+      });
+    } catch (e) {
+      console.error("Failed to delete batch overrides:", e);
+      // Revert optimistic updates on error - need to refetch
+      alert("Failed to delete overrides. Please try again.");
+    }
+  };
+
   const getStatusColor = (status: string) => {
     if (status === "pass") return "#10b981";
     if (status === "pending") return "#6b7280";
@@ -2488,10 +2552,13 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                       {/* Recommendation Text */}
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <span style={{ fontWeight: 500 }}>{group.description}</span>
-                        {(group.learn_more as any)?.llm_reasoning && (() => {
+                        {((group.learn_more as any)?.llm_reasoning || (group.learn_more as any)?.heuristic_reasoning) && (() => {
                           const tooltipId = `tooltip-${group.recommendation_id}`;
                           const isTooltipVisible = visibleTooltip === tooltipId;
                           const learnMore = group.learn_more as any;
+                          const reasoning = learnMore?.llm_reasoning || learnMore?.heuristic_reasoning;
+                          const reasoningType = learnMore?.llm_reasoning ? "LLM Analysis" : "Heuristic Analysis";
+                          
                           return (
                             <div
                               style={{
@@ -2543,10 +2610,15 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                                     {learnMore.name}
                                   </div>
                                 )}
-                                {learnMore?.llm_reasoning && (
-                                  <div style={{ fontSize: "12px", color: "#e5e7eb" }}>
-                                    {learnMore.llm_reasoning}
-                                  </div>
+                                {reasoning && (
+                                  <>
+                                    <div style={{ fontSize: "10px", color: "#94a3b8", marginBottom: "4px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                                      {reasoningType}
+                                    </div>
+                                    <div style={{ fontSize: "12px", color: "#e5e7eb" }}>
+                                      {reasoning}
+                                    </div>
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -2702,7 +2774,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                                 const userPassedResources = group.resources.filter(r => 
                                   r.status === "pass" && r.validation_source?.toLowerCase() === "user"
                                 );
-                                handleBatchOverride(userPassedResources, "fail");
+                                handleBatchDeleteOverrides(userPassedResources);
                               }}
                               style={{
                                 padding: "2px 2px",
