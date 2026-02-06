@@ -16,6 +16,8 @@ from enum import Enum
 from typing import Dict, List, Any, Optional, Set
 import logging
 
+from app.relationships.utils import norm_id, short_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,53 +192,76 @@ class ResourceCorrelator:
             logger.debug(f"Found VMSS group: {vmss_name} with {len(members)} instances")
     
     def _identify_load_balancer_backend_groups(self) -> None:
-        """Find resources behind Load Balancers and group them"""
+        """Find resources behind Load Balancers and group them by backend pool."""
+        # Build pool membership map from resources
+        pool_members: Dict[str, List[Dict[str, Any]]] = {}
+        for resource in self.all_resources:
+            backend_pool_ids = resource.get('backend_pool_ids', [])
+            if not backend_pool_ids or not isinstance(backend_pool_ids, list):
+                continue
+
+            rtype = resource.get('type', '').lower()
+            if 'virtualmachine' not in rtype and 'networkinterface' not in rtype:
+                continue
+
+            for pool_id in backend_pool_ids:
+                if not isinstance(pool_id, str):
+                    continue
+                pool_id_norm = norm_id(pool_id)
+                if not pool_id_norm:
+                    continue
+                pool_members.setdefault(pool_id_norm, []).append(resource)
+
         # Find all Load Balancers
         load_balancers = [
             r for r in self.all_resources
             if 'loadbalancer' in r.get('type', '').lower()
         ]
-        
+
         for lb in load_balancers:
             lb_id = lb.get('id')
+            if not lb_id:
+                continue
+            lb_id_norm = norm_id(lb_id)
             lb_name = lb.get('name')
-            
-            # Find resources that reference this LB's backend pools
-            backend_members = []
-            for resource in self.all_resources:
-                # Check if resource has backend pool IDs that belong to this LB
-                backend_pool_ids = resource.get('backend_pool_ids', [])
-                if backend_pool_ids and isinstance(backend_pool_ids, list):
-                    # Check if any backend pool ID belongs to this load balancer
-                    for pool_id in backend_pool_ids:
-                        if isinstance(pool_id, str) and lb_id.lower() in pool_id.lower():
-                            # This resource is in a backend pool of this LB
-                            # Look for VMs or NICs
-                            rtype = resource.get('type', '').lower()
-                            if 'virtualmachine' in rtype or 'networkinterface' in rtype:
-                                if resource not in backend_members:
-                                    backend_members.append(resource)
-                            break
-                # Also check via parent LB (some resources might reference via properties)
-                elif resource.get('parent_resource_id') == lb_id:
-                    backend_members.append(resource)
-            
-            if backend_members:
+
+            pools = lb.get('properties', {}).get('backendAddressPools', [])
+            if not isinstance(pools, list):
+                continue
+
+            for pool in pools:
+                if not isinstance(pool, dict):
+                    continue
+
+                pool_id = pool.get('id')
+                if not isinstance(pool_id, str):
+                    continue
+                pool_id_norm = norm_id(pool_id)
+                pool_name = pool.get('name')
+
+                backend_members = pool_members.get(pool_id_norm, [])
+                if not backend_members:
+                    continue
+
                 group = ResiliencyGroup(
-                    id=f"{lb_id}:backend",
-                    name=f"Load Balancer Backend: {lb_name}",
+                    id=short_id(pool_id_norm),
+                    name=f"Load Balancer Backend Pool: {lb_name}/{pool_name}" if pool_name else f"Load Balancer Backend: {lb_name}",
                     type=ResiliencyGroupType.LOAD_BALANCER_BACKEND,
                     member_ids=[m.get('id') for m in backend_members if m.get('id')],
                     member_types=[m.get('type', 'Unknown') for m in backend_members],
                     metadata={
-                        'load_balancer_id': lb_id,
+                        'load_balancer_id': lb_id_norm,
                         'load_balancer_name': lb_name,
+                        'backend_pool_id': pool_id_norm,
+                        'backend_pool_name': pool_name,
                         'is_zone_redundant': lb.get('is_zone_redundant', False),
                         'member_count': len(backend_members),
                     }
                 )
                 self.groups.append(group)
-                logger.debug(f"Found LB backend group: {lb_name} with {len(backend_members)} members")
+                logger.debug(
+                    f"Found LB backend pool group: {lb_name}/{pool_name} with {len(backend_members)} members"
+                )
 
     def _identify_application_gateway_backend_groups(self) -> None:
         """Find resources behind Application Gateways and group them"""

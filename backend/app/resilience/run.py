@@ -341,6 +341,81 @@ def _apply_lb_zone_redundancy_heuristic(
     return updated
 
 
+def _override_site_recovery_for_stateless_lbs(
+    evaluations: Dict[str, Any],
+    resources: List[Dict[str, Any]]
+) -> int:
+    """
+    Override Site Recovery check for VMs in stateless LB backend pools.
+    
+    VMs in Load Balancer backend pools without session affinity (stateless) don't need
+    Site Recovery protection for disaster recovery as they maintain no state and are
+    part of a multi-zone load-balanced architecture providing inherent redundancy.
+    
+    Args:
+        evaluations: Resources evaluations dict
+        resources: List of all resources with backend_pool_ids info
+        
+    Returns:
+        Number of checks overridden
+    """
+    # Build VM resource map with backend pool and session affinity info
+    vm_info: Dict[str, Dict[str, Any]] = {}
+    for resource in resources:
+        resource_type = str(resource.get("type", "")).lower()
+        if "virtualmachine" in resource_type and "/extensions" not in resource_type:
+            resource_id = resource.get("id", "").lower()
+            vm_info[resource_id] = {
+                "has_session_affinity": resource.get("has_session_affinity", False),
+                "backend_pool_ids": resource.get("backend_pool_ids", [])
+            }
+    
+    # Target recommendation: "Use Azure Site Recovery to protect stateful session hosts"
+    target_rec_id = "38721758-2cc2-4d6b-b7b7-8b47dadbf7df"
+    updated = 0
+    
+    for resource_id, evaluation in evaluations.items():
+        resource_type = str(evaluation.get("resource_type", "")).lower()
+        if "virtualmachine" not in resource_type or "/extensions" in resource_type:
+            continue
+        
+        # Get VM info from resources
+        resource_id_lower = resource_id.lower()
+        vm_data = vm_info.get(resource_id_lower)
+        if not vm_data:
+            continue
+        
+        # Check if this VM is in a backend pool
+        backend_pool_ids = vm_data.get("backend_pool_ids", [])
+        if not backend_pool_ids or not isinstance(backend_pool_ids, list) or len(backend_pool_ids) == 0:
+            continue
+        
+        # Check if VM is stateless (no session affinity)
+        has_session_affinity = vm_data.get("has_session_affinity", False)
+        
+        if has_session_affinity:
+            continue  # Skip stateful VMs - they need Site Recovery
+        
+        # This is a stateless VM in an LB backend pool - override the Site Recovery check
+        for check in evaluation.get("checks", []):
+            if check.get("recommendation_id") != target_rec_id:
+                continue
+            
+            check["status"] = "pass"
+            check["validation_source"] = "Heuristic"
+            
+            learn_more = check.get("learn_more") or {}
+            learn_more["heuristic_reasoning"] = (
+                "VM is not a stateful session host. Load Balancer backend pool has no session affinity enabled "
+                "(has_session_affinity: false). VM is stateless and part of a multi-zone load-balanced architecture "
+                "providing inherent redundancy."
+            )
+            check["learn_more"] = learn_more
+            updated += 1
+    
+    return updated
+
+
 def analyze_and_save_zonal_resilience(
     subscription_id: str,
     resources: List[Dict[str, Any]],
@@ -775,6 +850,15 @@ def main():
         except Exception as e:
             LOGGER.error(f"Zonal analysis failed: {e}", exc_info=True)
             # Don't fail the whole process if zonal analysis fails
+
+        # Apply custom heuristic: override Site Recovery check for stateless VMs in LB backend pools
+        try:
+            updated = _override_site_recovery_for_stateless_lbs(evaluations, resources)
+            if updated:
+                LOGGER.info("Applied heuristic Site Recovery overrides for stateless LB members: %s checks", updated)
+        except Exception as e:
+            LOGGER.error(f"Site Recovery heuristic failed: {e}", exc_info=True)
+            # Don't fail the whole process if heuristic fails
 
         # NOW SAVE evaluations after zone recommendations have been injected
         LOGGER.debug("Saving evaluation results with zone recommendations...")
