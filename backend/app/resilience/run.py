@@ -290,6 +290,57 @@ def _generate_zone_recommendation_checks(
     return recommendations_by_resource
 
 
+def _apply_lb_zone_redundancy_heuristic(
+    evaluations: Dict[str, Any],
+    zonal_data_list: List[Dict[str, Any]]
+) -> int:
+    """Update LB zone-redundancy APRL check using zonal analysis results."""
+    lb_zone_map: Dict[str, Dict[str, Any]] = {}
+    for item in zonal_data_list:
+        resource_id = item.get("resource_id")
+        resource_type = str(item.get("resource_type", "")).lower()
+        if resource_id and resource_type == "microsoft.network/loadbalancers":
+            lb_zone_map[resource_id.lower()] = item.get("zonal_data", {})
+
+    updated = 0
+    target_rec_id = "796b9be0-487d-4daa-8771-f08e4d7c9c0c"
+
+    for resource_id, evaluation in evaluations.items():
+        resource_type = str(evaluation.get("resource_type", "")).lower()
+        if resource_type != "microsoft.network/loadbalancers":
+            continue
+
+        zonal_data = lb_zone_map.get(resource_id.lower())
+        if not zonal_data:
+            continue
+
+        deployment_pattern = zonal_data.get("deployment_pattern", "unknown")
+        is_zone_redundant = deployment_pattern == "zone_redundant"
+
+        for check in evaluation.get("checks", []):
+            if check.get("recommendation_id") != target_rec_id:
+                continue
+
+            check["status"] = "pass" if is_zone_redundant else "fail"
+            check["validation_source"] = "Heuristic"
+
+            learn_more = check.get("learn_more") or {}
+            if is_zone_redundant:
+                learn_more["heuristic_reasoning"] = (
+                    "Standard SKU with no explicit zones "
+                    "indicates a zone-redundant Load Balancer in zone-enabled regions."
+                )
+            else:
+                learn_more["heuristic_reasoning"] = (
+                    "Load Balancer is not zone-redundant "
+                    "(explicit zones or non-Standard SKU detected)."
+                )
+            check["learn_more"] = learn_more
+            updated += 1
+
+    return updated
+
+
 def analyze_and_save_zonal_resilience(
     subscription_id: str,
     resources: List[Dict[str, Any]],
@@ -634,6 +685,13 @@ def main():
                 subscription_dir,
                 resilience_evaluations=zone_findings
             )
+
+            zonal_data_list = []
+            try:
+                zonal_payload = json.loads((subscription_dir / "zonal_resilience.json").read_text())
+                zonal_data_list = zonal_payload.get("resources", [])
+            except Exception as e:
+                LOGGER.debug(f"Could not load zonal_resilience.json for heuristic updates: {e}")
             
             # Inject zone recommendations into evaluations (with deduplication)
             for resource_id, zone_checks in zone_recommendations.items():
@@ -710,6 +768,10 @@ def main():
                             LOGGER.debug(f"Added zone recommendation to {resource_id}: {zone_check['description'][:50]}...")
                 else:
                     LOGGER.debug(f"Resource {resource_id} not in evaluations, skipping zone checks")
+
+            updated = _apply_lb_zone_redundancy_heuristic(evaluations, zonal_data_list)
+            if updated:
+                LOGGER.info("Applied heuristic LB zone-redundancy updates: %s checks", updated)
         except Exception as e:
             LOGGER.error(f"Zonal analysis failed: {e}", exc_info=True)
             # Don't fail the whole process if zonal analysis fails

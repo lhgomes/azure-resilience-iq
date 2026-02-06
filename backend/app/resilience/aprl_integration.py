@@ -360,6 +360,86 @@ class APRLEvaluator:
 
         return "\n".join(new_lines) + "\n"
 
+    @staticmethod
+    def _get_practical_heuristic_reasoning(description: str, is_failed: bool, resource_name: str) -> str:
+        """Generate practical, context-specific reasoning for heuristic validations."""
+        
+        # Map keywords to practical guidance
+        reasoning_map = {
+            "Azure Boost": {
+                "fail": f"Azure Boost is not configured. Review the VM size and enable Azure Boost to improve performance.",
+                "pass": f"Azure Boost is configured for improved performance."
+            },
+            "Scheduled Events": {
+                "fail": f"Scheduled Events is not enabled for VM. Enable 'scheduledEventsPolicy' in the VM configuration.",
+                "pass": f"Scheduled Events are properly configured."
+            },
+            "VM Agent": {
+                "fail": f"The VM may not have the latest Azure Linux VM Agent. Update to the latest version.",
+                "pass": f"The Azure Linux VM Agent is running a supported version."
+            },
+            "Availability Zones": {
+                "fail": f"The resource is not deployed across multiple availability zones. Reconfigure to span 2+ zones.",
+                "pass": f"The resource is properly distributed across multiple availability zones."
+            },
+            "zone-redundant": {
+                "fail": f"The resource is not zone-redundant. Modify configuration to enable zone-redundancy.",
+                "pass": f"The resource is configured as zone-redundant."
+            },
+            "Monitor": {
+                "fail": f"Monitoring is not configured for resource. Enable Application Insights or Log Analytics.",
+                "pass": f"The resource has monitoring properly configured."
+            },
+            "Health check": {
+                "fail": f"Health check is not enabled for resource. Configure a health check endpoint.",
+                "pass": f"The resource has health check enabled."
+            },
+            "Autoscale": {
+                "fail": f"Autoscaling is not configured. Enable autoscale rules based on metrics.",
+                "pass": f"The resource has autoscaling properly configured."
+            },
+            "minimum instance": {
+                "fail": f"The resource has fewer than 2 instances. Increase minimum instance count.",
+                "pass": f"The resource has the recommended minimum instance count."
+            },
+            "SSL": {
+                "fail": f"SSL/TLS is not enabled. Configure HTTPS with an SSL certificate.",
+                "pass": f"The resource has SSL/TLS properly configured."
+            },
+            "WAF": {
+                "fail": f"Web Application Firewall is not enabled. Enable WAF policies.",
+                "pass": f"The resource has Web Application Firewall enabled."
+            },
+            "encryption": {
+                "fail": f"Encryption is not enabled. Enable encryption at rest and in transit.",
+                "pass": f"The resource has encryption properly configured."
+            },
+            "backup": {
+                "fail": f"Backup/replication is not configured Enable backup features.",
+                "pass": f"The resource has backup/replication properly configured."
+            },
+            "Function App": {
+                "fail": f"The function runtime is running an unsupported version. Migrate to a supported runtime version to ensure continued support and access to the latest features and security updates.",
+                "pass": f"The resource is running a supported Functions runtime version."
+            },
+            "Regional location": {
+                "fail": f"The resource group may be in a different region. Ensure same region.",
+                "pass": f"The resource and its resource group are in the same region."
+            },
+        }
+        
+        # Find matching keyword
+        for keyword, templates in reasoning_map.items():
+            if keyword.lower() in description.lower():
+                status_key = "fail" if is_failed else "pass"
+                return templates.get(status_key, templates.get("fail"))
+        
+        # Fallback to generic but practical message
+        status_text = "should be remediated" if is_failed else "is properly configured"
+        # Use "The resource" for subscription resources, "The {name}" for others
+        resource_ref = "The resource" if len(resource_name) > 30 or resource_name.count('-') > 4 else f"The {resource_name}"
+        return f"{resource_ref} {status_text}. Review the recommendation details and configuration."
+
     def _execute_kql(
         self,
         subscription_id: str,
@@ -1037,27 +1117,22 @@ class APRLEvaluator:
                                 learn_more = dict(learn_more) if learn_more else {}
                                 learn_more["llm_reasoning"] = strategy.llm_reasoning
                     
-                    # Add reasoning for any Heuristic validation that doesn't have it yet
-                    if validation_source == "Heuristic" and not (learn_more and learn_more.get("heuristic_reasoning")):
-                        learn_more = dict(learn_more) if learn_more else {}
-                        # Get detailed reasoning from the strategy if available
-                        if "heuristic_reasoning" not in learn_more:
+    # Add reasoning for Heuristic validation - ALWAYS ensure reasoning is present
+                    learn_more = dict(learn_more) if learn_more else {}
+                    
+                    if validation_source == "Heuristic":
+                        # For heuristic validations, always ensure we have reasoning
+                        if not learn_more.get("heuristic_reasoning"):
+                            # Try to get detailed reasoning from strategy first
                             _, strategy = strategy_map.get((rid, rec.guid), (False, None))
                             if strategy and hasattr(strategy, 'detailed_validation_reason'):
                                 # Use the detailed reason from the validation
                                 learn_more["heuristic_reasoning"] = strategy.detailed_validation_reason
                             else:
-                                # Fallback: Build reasoning from what we know
-                                if is_failed:
-                                    learn_more["heuristic_reasoning"] = (
-                                        "Based on heuristic analysis of the resource configuration and properties, "
-                                        "this resource does not meet the recommendation criteria and should be remediated."
-                                    )
-                                else:
-                                    learn_more["heuristic_reasoning"] = (
-                                        "Based on heuristic analysis of the resource configuration and properties, "
-                                        "this resource meets the recommendation criteria."
-                                    )
+                                # Generate practical, context-specific reasoning
+                                learn_more["heuristic_reasoning"] = self._get_practical_heuristic_reasoning(
+                                    rec.description, is_failed, rid
+                                )
                     
                     check_obj = {
                         "recommendation_id": rec.guid,

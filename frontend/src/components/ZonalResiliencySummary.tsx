@@ -21,6 +21,7 @@ interface ResiliencyCheck {
   impact: string;
   status: "pass" | "fail";
   llm_reasoning?: string;
+  heuristic_reasoning?: string;
 }
 
 interface ResourceEvaluation {
@@ -215,8 +216,8 @@ const ResourceRow: React.FC<{
       return "Not compliant with 3-AZ requirement";
     }
 
-    // Use LLM reasoning if available, otherwise use description
-    const recommendation = zoneFailures[0].llm_reasoning || zoneFailures[0].description;
+    // Use LLM or heuristic reasoning if available, otherwise use description
+    const recommendation = zoneFailures[0].llm_reasoning || zoneFailures[0].heuristic_reasoning || zoneFailures[0].description;
     return recommendation;
   };
 

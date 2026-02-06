@@ -22,6 +22,7 @@ from app.collector.arg import populate_backend_pool_ids
 LOGGER = get_logger(__name__)
 
 VMSS_RECOMMENDATION_ID = "5f2613df-629f-4b07-9425-2a47ea0dfad3"
+LB_ZONE_REDUNDANT_RECOMMENDATION_ID = "796b9be0-487d-4daa-8771-f08e4d7c9c0c"
 
 
 def _collect_backend_pool_zones(resources: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
@@ -128,6 +129,53 @@ def _refresh_zone_recommendations(
         evaluation["checks"] = filtered + updated
 
 
+def _apply_lb_zone_redundancy_heuristic(
+    evaluations: Dict[str, Any],
+    zonal_resources: List[Dict[str, Any]],
+) -> int:
+    """Update LB zone-redundancy APRL check using zonal analysis results."""
+    zonal_map = {
+        str(item.get("resource_id", "")).lower(): item.get("zonal_data", {})
+        for item in zonal_resources
+        if item.get("resource_id")
+    }
+
+    updated = 0
+    for resource_id, evaluation in evaluations.items():
+        resource_type = str(evaluation.get("resource_type", "")).lower()
+        if resource_type != "microsoft.network/loadbalancers":
+            continue
+
+        zonal_data = zonal_map.get(resource_id.lower())
+        if not zonal_data:
+            continue
+
+        deployment_pattern = zonal_data.get("deployment_pattern", "unknown")
+        is_zone_redundant = deployment_pattern == "zone_redundant"
+
+        for check in evaluation.get("checks", []):
+            if check.get("recommendation_id") != LB_ZONE_REDUNDANT_RECOMMENDATION_ID:
+                continue
+
+            check["status"] = "pass" if is_zone_redundant else "fail"
+            check["validation_source"] = "Heuristic"
+            learn_more = check.get("learn_more") or {}
+            if is_zone_redundant:
+                learn_more["heuristic_reasoning"] = (
+                    "Standard SKU with no explicit zones "
+                    "indicates a zone-redundant Load Balancer in zone-enabled regions."
+                )
+            else:
+                learn_more["heuristic_reasoning"] = (
+                    "Load Balancer is not zone-redundant "
+                    "(explicit zones or non-Standard SKU detected)."
+                )
+            check["learn_more"] = learn_more
+            updated += 1
+
+    return updated
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Patch resilience outputs for multi-zone backend pools without rerunning collector."
@@ -175,6 +223,11 @@ def main() -> None:
         resilience_evaluations=evals_payload,
     )
     _refresh_zone_recommendations(evaluations, zone_recommendations_by_resource)
+
+    zonal_payload = read_json(data_dir / "zonal_resilience.json", default={})
+    zonal_resources = zonal_payload.get("resources", [])
+    updated = _apply_lb_zone_redundancy_heuristic(evaluations, zonal_resources)
+    LOGGER.info("Applied heuristic LB zone-redundancy updates: %s checks", updated)
 
     evals_payload["evaluations"] = evaluations
     write_json(evals_path, evals_payload)

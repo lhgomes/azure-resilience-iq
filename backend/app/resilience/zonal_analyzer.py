@@ -348,8 +348,21 @@ class ZonalAnalyzer:
         Returns:
             ZonalData with group context applied
         """
-        # Get basic analysis for the resource
-        zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
+        resource_type_raw = resource.get("type") or resource.get("properties", {}).get("type") or ""
+        resource_type = str(resource_type_raw).lower()
+
+        if all_resources and (
+            "microsoft.network/loadbalancers" in resource_type
+            or "microsoft.network/applicationgateways" in resource_type
+        ):
+            lb_zonal_data = ZonalAnalyzer._analyze_lb_or_apgw(resource, all_resources)
+            if lb_zonal_data is not None:
+                zonal_data = lb_zonal_data
+            else:
+                zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
+        else:
+            # Get basic analysis for the resource
+            zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
         
         # Check if resource is part of a resilience group
         group = correlator.get_group_for_resource(resource.get('id'))
@@ -374,6 +387,73 @@ class ZonalAnalyzer:
             return ZonalAnalyzer._analyze_replicated_resource(group, resource, correlator)
         
         return zonal_data
+
+    @staticmethod
+    def _analyze_lb_or_apgw(
+        resource: Dict[str, Any],
+        all_resources: List[Dict[str, Any]]
+    ) -> Optional[ZonalData]:
+        resource_type_raw = resource.get("type") or resource.get("properties", {}).get("type") or ""
+        resource_type = str(resource_type_raw).lower()
+
+        if not all_resources:
+            return None
+
+        resources_map = {
+            str(r.get("id", "")).lower(): r
+            for r in all_resources
+            if r.get("id")
+        }
+
+        from app.collector.load_balancer_analyzer import LoadBalancerAnalyzer
+
+        if "microsoft.network/loadbalancers" in resource_type:
+            analysis = LoadBalancerAnalyzer.analyze_load_balancer(resource, resources_map)
+        elif "microsoft.network/applicationgateways" in resource_type:
+            analysis = LoadBalancerAnalyzer.analyze_application_gateway(resource, resources_map)
+        else:
+            return None
+
+        zones_used = analysis.direct_zones or []
+        if not isinstance(zones_used, list):
+            zones_used = []
+        zones_used = [str(z) for z in zones_used]
+        zone_count = len(zones_used)
+
+        if analysis.classification == "zone_redundant":
+            pattern = DeploymentPattern.ZONE_REDUNDANT
+            is_zone_redundant = True
+            meets_3az = True
+            zone_count = 0
+            zones_used = []
+        elif analysis.classification == "zonal":
+            if zone_count >= 2:
+                pattern = DeploymentPattern.MULTI_ZONE
+                meets_3az = zone_count >= 3
+            elif zone_count == 1:
+                pattern = DeploymentPattern.SINGLE_ZONE
+                meets_3az = False
+            else:
+                pattern = DeploymentPattern.UNKNOWN
+                meets_3az = False
+        elif analysis.classification == "not_zone_resilient":
+            pattern = DeploymentPattern.SINGLE_ZONE
+            meets_3az = False
+            zone_count = 1
+            if not zones_used:
+                zones_used = ["unknown"]
+        else:
+            pattern = DeploymentPattern.UNKNOWN
+            meets_3az = False
+
+        return ZonalData(
+            zones_used=zones_used,
+            is_zone_redundant=analysis.is_zone_redundant,
+            zone_count=zone_count,
+            meets_3az_requirement=meets_3az,
+            deployment_pattern=pattern,
+            recommendation=analysis.recommendation,
+        )
     
     @staticmethod
     def _analyze_group_resilience(
