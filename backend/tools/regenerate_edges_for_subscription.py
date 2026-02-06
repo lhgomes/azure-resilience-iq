@@ -9,11 +9,15 @@ import hashlib
 import sys
 from pathlib import Path
 from datetime import datetime
-from app.relationships.multi_source import MultiSourceAggregator
 from collections import Counter
 
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
+
+from app.relationships.multi_source import MultiSourceAggregator
+
 def regenerate_edges(subscription_id: str):
-    data_dir = Path(f"data/{subscription_id}")
+    data_dir = backend_dir / "data" / subscription_id
     
     print(f"📊 Regenerating edges for subscription {subscription_id}...")
     
@@ -111,7 +115,7 @@ def regenerate_edges(subscription_id: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python regenerate_edges_for_subscription.py <subscription-id>")
+        print("Usage: python backend/tools/regenerate_edges_for_subscription.py <subscription-id>")
         sys.exit(1)
     
     subscription_id = sys.argv[1]

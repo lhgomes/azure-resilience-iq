@@ -21,6 +21,7 @@ interface ResiliencyCheck {
   impact: string;
   status: "pass" | "fail";
   llm_reasoning?: string;
+  heuristic_reasoning?: string;
 }
 
 interface ResourceEvaluation {
@@ -215,8 +216,8 @@ const ResourceRow: React.FC<{
       return "Not compliant with 3-AZ requirement";
     }
 
-    // Use LLM reasoning if available, otherwise use description
-    const recommendation = zoneFailures[0].llm_reasoning || zoneFailures[0].description;
+    // Use LLM or heuristic reasoning if available, otherwise use description
+    const recommendation = zoneFailures[0].llm_reasoning || zoneFailures[0].heuristic_reasoning || zoneFailures[0].description;
     return recommendation;
   };
 
@@ -483,17 +484,6 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
           border: "1px solid #e5e7eb",
         }}
       >
-        <h1
-          style={{
-            margin: "0 0 24px",
-            fontSize: "24px",
-            fontWeight: 700,
-            color: "#1f2937",
-          }}
-        >
-          Zonal Resiliency Analysis
-        </h1>
-
         <div
           style={{
             display: "grid",

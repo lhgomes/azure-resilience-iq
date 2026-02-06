@@ -1213,15 +1213,18 @@ CRITICAL: Absence of evidence IS evidence of absence. If a resilience property i
             resource: Resource dict to validate
             
         Returns:
-            (is_failing, reason): True if resource fails the check, reason explaining why
+            (is_failing, detailed_reason): True if resource fails the check, detailed reason explaining why
         
         Note: Sets strategy.escalate_to_llm flag when checks fail (for downstream escalation)
         """
         props = resource.get("properties", {})
         failed_checks = []
+        passed_checks = []  # Track what passed
+        check_details = {}  # Store details about what was found
         
         for check in strategy.property_checks:
             check_type = check.get("type")
+            check_description = check.get("check", check_type or "property check")
             
             # For LLM-generated checks, use generic property validation
             if strategy.strategy_type == "llm" and not check_type:
@@ -1253,21 +1256,36 @@ CRITICAL: Absence of evidence IS evidence of absence. If a resilience property i
                 if value is None:
                     # Property doesn't exist - check fails
                     failed_checks.append(f"{prop_path}: property not found")
+                    check_details[prop_path] = {"expected": expected, "actual": "not found"}
                 else:
                     # Property exists but we can't validate complex conditions
                     # Just log that we found it
                     LOGGER.debug(f"LLM check: found {prop_path} = {value}")
+                    passed_checks.append(f"{prop_path}: found")
+                    check_details[prop_path] = {"expected": expected, "actual": value}
             
             # Heuristic check types (hardcoded)
             elif check_type == "region_count":
                 regions = self._get_nested_prop(props, "replicationSettings.regions")
                 if not regions or len(regions) < 2:
-                    failed_checks.append(check.get("check", "Region check"))
+                    actual_count = len(regions) if regions else 0
+                    failed_checks.append(f"{check_description} (found {actual_count} region(s), need 2+)")
+                    check_details["regions"] = {"expected": "2+", "actual": actual_count}
+                else:
+                    passed_checks.append(f"{check_description} (found {len(regions)} regions)")
+                    check_details["regions"] = {"expected": "2+", "actual": len(regions)}
             
             elif check_type == "zone_check":
                 zones = resource.get("zones", [])
                 if not zones or len(zones) < 2:
-                    failed_checks.append("Not spread across multiple zones")
+                    actual_count = len(zones) if zones else 0
+                    actual_zones = ", ".join(zones) if zones else "none"
+                    failed_checks.append(f"{check_description} (found zones: {actual_zones}, need 2+)")
+                    check_details["zones"] = {"expected": "2+ zones", "actual": actual_zones or "none"}
+                else:
+                    actual_zones = ", ".join(zones)
+                    passed_checks.append(f"{check_description} (zones: {actual_zones})")
+                    check_details["zones"] = {"expected": "2+ zones", "actual": actual_zones}
             
             elif check_type == "deployment_type":
                 # Can't determine without sub-resource enumeration
@@ -1279,27 +1297,61 @@ CRITICAL: Absence of evidence IS evidence of absence. If a resilience property i
                 tags = resource.get("tags", {})
                 monitoring_tags = [t for t in tags if "monitor" in t.lower()]
                 if not extensions and not monitoring_tags:
-                    failed_checks.append("No monitoring detected")
+                    failed_checks.append(f"{check_description} (no extensions or monitoring tags found)")
+                    check_details["monitoring"] = {"expected": "monitoring enabled", "actual": "not configured"}
+                else:
+                    details = []
+                    if extensions:
+                        details.append(f"{len(extensions)} extension(s)")
+                    if monitoring_tags:
+                        details.append(f"monitoring tags")
+                    passed_checks.append(f"{check_description} ({', '.join(details)})")
+                    check_details["monitoring"] = {"expected": "monitoring enabled", "actual": ", ".join(details)}
             
             elif check_type == "replication_configured":
                 replication = self._get_nested_prop(props, "replication")
                 if not replication:
-                    failed_checks.append("Replication not configured")
+                    failed_checks.append(f"{check_description} (not configured)")
+                    check_details["replication"] = {"expected": "configured", "actual": "not found"}
+                else:
+                    passed_checks.append(f"{check_description} (configured)")
+                    check_details["replication"] = {"expected": "configured", "actual": "enabled"}
             
             elif check_type == "encryption_enabled":
                 encryption = props.get("encryption", {})
                 https_only = props.get("enableHttpsTrafficOnly", False)
                 if not encryption and not https_only:
-                    failed_checks.append("Encryption not configured")
+                    failed_checks.append(f"{check_description} (not configured)")
+                    check_details["encryption"] = {"expected": "enabled", "actual": "disabled"}
+                else:
+                    details = []
+                    if encryption:
+                        details.append("encryption at rest")
+                    if https_only:
+                        details.append("HTTPS only")
+                    passed_checks.append(f"{check_description} ({', '.join(details)})")
+                    check_details["encryption"] = {"expected": "enabled", "actual": ", ".join(details)}
         
+        # Build detailed reason string
         if failed_checks:
             # Mark for potential LLM escalation (for critical recommendations)
             if not hasattr(strategy, 'failed_property_checks'):
                 strategy.failed_property_checks = failed_checks
-            return True, " | ".join(failed_checks)
+            detailed_reason = "Failed: " + " | ".join(failed_checks)
+        else:
+            # Include passed checks in the reason
+            if passed_checks:
+                detailed_reason = "Passed: " + " | ".join(passed_checks)
+            else:
+                strategy_desc = "LLM checks" if strategy.strategy_type == "llm" else "heuristic checks"
+                detailed_reason = f"Passed {strategy_desc}"
         
-        strategy_desc = "LLM checks" if strategy.strategy_type == "llm" else "heuristic checks"
-        return False, f"Passed {strategy_desc}"
+        # Store check details and passed checks in strategy for later use
+        strategy.check_details = check_details
+        strategy.passed_checks = passed_checks
+        strategy.failed_checks_details = failed_checks
+        
+        return bool(failed_checks), detailed_reason
 
     @staticmethod
     def _get_nested_prop(obj: Dict[str, Any], path: str) -> Any:

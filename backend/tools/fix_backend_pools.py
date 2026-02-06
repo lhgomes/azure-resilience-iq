@@ -9,17 +9,17 @@ import sys
 from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, str(Path(__file__).parent))
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
 
 from app.collector.arg import populate_backend_pool_ids
-from app.config import get_resources_path
 
 
 def fix_backend_pools_for_subscription(subscription_id: str):
     """Fix backend pool IDs in an existing resources.json file"""
     
     # Load existing data
-    resources_file = Path(__file__).parent / "data" / subscription_id / "resources.json"
+    resources_file = backend_dir / "data" / subscription_id / "resources.json"
     
     if not resources_file.exists():
         print(f"❌ Error: {resources_file} does not exist")

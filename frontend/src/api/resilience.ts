@@ -45,7 +45,7 @@ export interface ResiliencyCheck {
   };
   criticality_weight: number;
   status: 'pass' | 'fail' | 'pending';
-  validation_source: string[];  // List of validation sources: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
+  validation_source: string;  // Top-level validation source: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
   impact_weight: number;
   contribution_percent: number;
   is_critical: boolean;
@@ -223,6 +223,32 @@ export async function deleteOverride(
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resilience_check_id: resilienceCheckId }),
+  });
+}
+
+export interface BatchOverrideItem {
+  resource_id: string;
+  recommendation_id: string;
+  resilience_check_id: string;
+}
+
+/**
+ * Create or update multiple overrides in a single batch operation
+ */
+export async function saveBatchOverrides(
+  subscriptionId: string,
+  items: BatchOverrideItem[],
+  newStatus: 'pass' | 'fail',
+  userIdentifier: string = 'user'
+): Promise<{ overrides: OverrideData[]; count: number }> {
+  return apiJson(`/api/resilience/${encodeURIComponent(subscriptionId)}/overrides/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items,
+      new_status: newStatus,
+      user_identifier: userIdentifier,
+    }),
   });
 }
 

@@ -14,7 +14,7 @@ from .extract_appinsights import extract_appinsights_signals
 from .extract_connections import extract_connection_string_signals
 from .extract_dns import extract_dns_signals
 from .extract_references import extract_resource_references
-from .utils import norm_id
+from .utils import norm_id, parent_id
 
 
 @dataclass
@@ -67,6 +67,9 @@ class MultiSourceAggregator:
         
         # Extract from configuration-driven reference definitions
         self._extract_reference_definitions_signals()
+
+        # Extract from NIC backend pool membership (LB -> NIC)
+        self._extract_lb_backend_pool_signals()
         
         # Extract from configuration sources
         self._extract_connection_string_signals()
@@ -181,6 +184,62 @@ class MultiSourceAggregator:
                     source_resource='ReferenceDefinition'
                 )
             )
+
+    def _extract_lb_backend_pool_signals(self):
+        """Extract LB -> NIC signals from NIC backend pool membership."""
+        for nic_id, resource in self.resources_by_id.items():
+            rtype = (resource.get('type') or '').lower()
+            if 'microsoft.network/networkinterfaces' not in rtype:
+                continue
+
+            ip_configs = resource.get('properties', {}).get('ipConfigurations', [])
+            if not isinstance(ip_configs, list):
+                continue
+
+            for ip_config in ip_configs:
+                if not isinstance(ip_config, dict):
+                    continue
+
+                ip_config_id = ip_config.get('id')
+                ip_props = ip_config.get('properties', {}) if isinstance(ip_config.get('properties'), dict) else {}
+                lb_pools = ip_props.get('loadBalancerBackendAddressPools', [])
+                if not isinstance(lb_pools, list):
+                    continue
+
+                for pool in lb_pools:
+                    pool_id = pool.get('id') if isinstance(pool, dict) else None
+                    if not isinstance(pool_id, str):
+                        continue
+
+                    lb_id = parent_id(pool_id, '/backendaddresspools/')
+                    if not lb_id:
+                        continue
+
+                    lb_resource = self.resources_by_id.get(lb_id)
+                    if not lb_resource:
+                        continue
+
+                    lb_type = (lb_resource.get('type') or '').lower()
+                    if 'microsoft.network/loadbalancers' not in lb_type:
+                        continue
+
+                    self._add_signal(
+                        source=lb_id,
+                        target=nic_id,
+                        relationship='balances',
+                        signal=SignalSource(
+                            type=SignalType.ARM_DECLARED,
+                            confidence=0.95,
+                            evidence={
+                                'property': 'ipConfigurations[].properties.loadBalancerBackendAddressPools[].id',
+                                'backend_pool_id': pool_id,
+                                'ip_configuration_id': ip_config_id,
+                                'source': 'nic_backend_pool'
+                            },
+                            timestamp=datetime.utcnow().isoformat() + 'Z',
+                            source_resource='NIC'
+                        )
+                    )
     
     def _extract_aks_signals(self):
         """Extract signals from AKS relationships"""

@@ -106,7 +106,7 @@ class UpdateGroupRequest(BaseModel):
 
 
 class AddNodeToGroupRequest(BaseModel):
-    node_id: str
+    node_ids: list[str]
 
 
 @app.get("/health")
@@ -507,10 +507,21 @@ def delete_group_endpoint(subscription_id: str, group_id: str):
 
 @app.post("/api/subscriptions/{subscription_id}/groups/{group_id}/nodes")
 def add_node_endpoint(subscription_id: str, group_id: str, payload: AddNodeToGroupRequest):
-    success = add_node_to_group(subscription_id, group_id, payload.node_id)
-    if not success:
+    added_nodes = []
+    for node_id in payload.node_ids:
+        success = add_node_to_group(subscription_id, group_id, node_id)
+        if success:
+            added_nodes.append(node_id)
+    
+    if not added_nodes:
+        raise HTTPException(status_code=404, detail="Group not found or no nodes added")
+    
+    # Return the full updated group
+    updated_group = get_group(subscription_id, group_id)
+    if not updated_group:
         raise HTTPException(status_code=404, detail="Group not found")
-    return {"status": "added", "group_id": group_id, "node_id": payload.node_id}
+    
+    return updated_group.model_dump()
 
 
 @app.delete("/api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id:path}")
@@ -518,7 +529,13 @@ def remove_node_endpoint(subscription_id: str, group_id: str, node_id: str):
     success = remove_node_from_group(subscription_id, group_id, node_id)
     if not success:
         raise HTTPException(status_code=404, detail="Group not found")
-    return {"status": "removed", "group_id": group_id, "node_id": node_id}
+    
+    # Return the updated group, or null if it was deleted (< 2 members)
+    updated_group = get_group(subscription_id, group_id)
+    if updated_group:
+        return updated_group.model_dump()
+    else:
+        return {"status": "deleted", "group_id": group_id}
 
 
 @app.get("/api/subscriptions/{subscription_id}/graph")

@@ -71,6 +71,11 @@ def remove_node_from_group(subscription_id: str, group_id: str, node_id: str) ->
     
     if node_id in group.nodes:
         group.nodes.remove(node_id)
-        save_group(subscription_id, group)
+        
+        # If fewer than 2 nodes remain, delete the group
+        if len(group.nodes) < 2:
+            delete_group(subscription_id, group_id)
+        else:
+            save_group(subscription_id, group)
     
     return True
