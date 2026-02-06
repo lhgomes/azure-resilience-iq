@@ -234,6 +234,7 @@ def _generate_zone_recommendation_checks(
         deployment_pattern_str = zonal_data.get("deployment_pattern", "unknown")
         pattern_map = {
             "single_zone": DeploymentPattern.SINGLE_ZONE,
+            "multi_zone": DeploymentPattern.MULTI_ZONE,
             "multi_zone_2": DeploymentPattern.MULTI_ZONE,
             "multi_zone_3plus": DeploymentPattern.MULTI_ZONE,
             "zone_redundant": DeploymentPattern.ZONE_REDUNDANT,
@@ -273,7 +274,7 @@ def _generate_zone_recommendation_checks(
                     "links": zone_rec.learn_more_links
                 } if zone_rec.learn_more_links else {},
                 "status": status,
-                "validation_source": ["ZoneRecommendation"],
+                "validation_source": "ZoneRecommendation",
                 "deployment_pattern": deployment_pattern_str,
                 "resilience_check_id": generate_resilience_check_id(resource_id, zone_rec.aprl_guid or f"zone-{resource_type.replace('/', '-')}-{deployment_pattern_str}"),
             }
@@ -287,6 +288,132 @@ def _generate_zone_recommendation_checks(
             continue
     
     return recommendations_by_resource
+
+
+def _apply_lb_zone_redundancy_heuristic(
+    evaluations: Dict[str, Any],
+    zonal_data_list: List[Dict[str, Any]]
+) -> int:
+    """Update LB zone-redundancy APRL check using zonal analysis results."""
+    lb_zone_map: Dict[str, Dict[str, Any]] = {}
+    for item in zonal_data_list:
+        resource_id = item.get("resource_id")
+        resource_type = str(item.get("resource_type", "")).lower()
+        if resource_id and resource_type == "microsoft.network/loadbalancers":
+            lb_zone_map[resource_id.lower()] = item.get("zonal_data", {})
+
+    updated = 0
+    target_rec_id = "796b9be0-487d-4daa-8771-f08e4d7c9c0c"
+
+    for resource_id, evaluation in evaluations.items():
+        resource_type = str(evaluation.get("resource_type", "")).lower()
+        if resource_type != "microsoft.network/loadbalancers":
+            continue
+
+        zonal_data = lb_zone_map.get(resource_id.lower())
+        if not zonal_data:
+            continue
+
+        deployment_pattern = zonal_data.get("deployment_pattern", "unknown")
+        is_zone_redundant = deployment_pattern == "zone_redundant"
+
+        for check in evaluation.get("checks", []):
+            if check.get("recommendation_id") != target_rec_id:
+                continue
+
+            check["status"] = "pass" if is_zone_redundant else "fail"
+            check["validation_source"] = "Heuristic"
+
+            learn_more = check.get("learn_more") or {}
+            if is_zone_redundant:
+                learn_more["heuristic_reasoning"] = (
+                    "Standard SKU with no explicit zones "
+                    "indicates a zone-redundant Load Balancer in zone-enabled regions."
+                )
+            else:
+                learn_more["heuristic_reasoning"] = (
+                    "Load Balancer is not zone-redundant "
+                    "(explicit zones or non-Standard SKU detected)."
+                )
+            check["learn_more"] = learn_more
+            updated += 1
+
+    return updated
+
+
+def _override_site_recovery_for_stateless_lbs(
+    evaluations: Dict[str, Any],
+    resources: List[Dict[str, Any]]
+) -> int:
+    """
+    Override Site Recovery check for VMs in stateless LB backend pools.
+    
+    VMs in Load Balancer backend pools without session affinity (stateless) don't need
+    Site Recovery protection for disaster recovery as they maintain no state and are
+    part of a multi-zone load-balanced architecture providing inherent redundancy.
+    
+    Args:
+        evaluations: Resources evaluations dict
+        resources: List of all resources with backend_pool_ids info
+        
+    Returns:
+        Number of checks overridden
+    """
+    # Build VM resource map with backend pool and session affinity info
+    vm_info: Dict[str, Dict[str, Any]] = {}
+    for resource in resources:
+        resource_type = str(resource.get("type", "")).lower()
+        if "virtualmachine" in resource_type and "/extensions" not in resource_type:
+            resource_id = resource.get("id", "").lower()
+            vm_info[resource_id] = {
+                "has_session_affinity": resource.get("has_session_affinity", False),
+                "backend_pool_ids": resource.get("backend_pool_ids", [])
+            }
+    
+    # Target recommendation: "Use Azure Site Recovery to protect stateful session hosts"
+    target_rec_id = "38721758-2cc2-4d6b-b7b7-8b47dadbf7df"
+    updated = 0
+    
+    for resource_id, evaluation in evaluations.items():
+        resource_type = str(evaluation.get("resource_type", "")).lower()
+        if "virtualmachine" not in resource_type or "/extensions" in resource_type:
+            continue
+        
+        # Get VM info from resources
+        resource_id_lower = resource_id.lower()
+        vm_data = vm_info.get(resource_id_lower)
+        if not vm_data:
+            continue
+        
+        # Check if this VM is in a backend pool
+        backend_pool_ids = vm_data.get("backend_pool_ids", [])
+        if not backend_pool_ids or not isinstance(backend_pool_ids, list) or len(backend_pool_ids) == 0:
+            continue
+        
+        # Check if VM is stateless (no session affinity)
+        has_session_affinity = vm_data.get("has_session_affinity", False)
+        
+        if has_session_affinity:
+            continue  # Skip stateful VMs - they need Site Recovery
+        
+        # This is a stateless VM in an LB backend pool - override the Site Recovery check
+        for check in evaluation.get("checks", []):
+            if check.get("recommendation_id") != target_rec_id:
+                continue
+            
+            check["status"] = "pass"
+            check["validation_source"] = "Heuristic"
+            
+            learn_more = check.get("learn_more") or {}
+            learn_more["heuristic_reasoning"] = (
+                "VM is not a stateful session host. Load Balancer backend pool has no session affinity enabled "
+                "(has_session_affinity: false). VM is stateless and part of a multi-zone load-balanced architecture "
+                "providing inherent redundancy."
+            )
+            check["learn_more"] = learn_more
+            updated += 1
+    
+    return updated
 
 
 def analyze_and_save_zonal_resilience(
@@ -633,6 +760,13 @@ def main():
                 subscription_dir,
                 resilience_evaluations=zone_findings
             )
+
+            zonal_data_list = []
+            try:
+                zonal_payload = json.loads((subscription_dir / "zonal_resilience.json").read_text())
+                zonal_data_list = zonal_payload.get("resources", [])
+            except Exception as e:
+                LOGGER.debug(f"Could not load zonal_resilience.json for heuristic updates: {e}")
             
             # Inject zone recommendations into evaluations (with deduplication)
             for resource_id, zone_checks in zone_recommendations.items():
@@ -652,14 +786,9 @@ def main():
                             
                             # Option 1: Same recommendation_id (exact match)
                             if zone_rec_id and existing_rec_id == zone_rec_id:
-                                # Merge validation sources
-                                existing_sources = existing_check.get("validation_source", [])
-                                if isinstance(existing_sources, str):
-                                    existing_sources = [existing_sources]
-                                if "ZoneRecommendation" not in existing_sources:
-                                    existing_sources.append("ZoneRecommendation")
-                                    existing_check["validation_source"] = existing_sources
-
+                                # Keep the original validation_source (APRL/Heuristic/LLM)
+                                # Zone analysis enriches the check but doesn't change how it was validated
+                                
                                 # Enrich existing APRL/Heuristic check with zone recommendation details
                                 existing_long = existing_check.get("long_description", "")
                                 existing_benefits = existing_check.get("potential_benefits", "")
@@ -696,10 +825,8 @@ def main():
                                 break
                             
                             # Option 2: Check if any existing APRL/Heuristic check covers this zone guidance
-                            existing_sources = existing_check.get("validation_source", [])
-                            if isinstance(existing_sources, str):
-                                existing_sources = [existing_sources]
-                            if existing_sources and existing_sources[0] in ["APRL", "Heuristic"]:
+                            existing_source = existing_check.get("validation_source", "")
+                            if existing_source in ["APRL", "Heuristic"]:
                                 # Check for common zone-related keywords overlap
                                 zone_keywords = {"zone", "vmss", "flex", "redundant", "zrs", "availability"}
                                 zone_words_in_zone = {word for word in zone_keywords if word in zone_desc_lower}
@@ -708,7 +835,7 @@ def main():
                                 # If both mention zones/redundancy and share key terms, consider it duplicate
                                 if zone_words_in_zone and zone_words_in_aprl and len(zone_words_in_zone & zone_words_in_aprl) >= 1:
                                     merged = True
-                                    LOGGER.debug(f"Skipping duplicate zone check '{zone_check['description'][:50]}...' - already covered by {existing_sources[0]} check '{existing_check['description'][:50]}'")
+                                    LOGGER.debug(f"Skipping duplicate zone check '{zone_check['description'][:50]}...' - already covered by {existing_source} check '{existing_check['description'][:50]}'")
                                     break
                         
                         if not merged:
@@ -716,9 +843,22 @@ def main():
                             LOGGER.debug(f"Added zone recommendation to {resource_id}: {zone_check['description'][:50]}...")
                 else:
                     LOGGER.debug(f"Resource {resource_id} not in evaluations, skipping zone checks")
+
+            updated = _apply_lb_zone_redundancy_heuristic(evaluations, zonal_data_list)
+            if updated:
+                LOGGER.info("Applied heuristic LB zone-redundancy updates: %s checks", updated)
         except Exception as e:
             LOGGER.error(f"Zonal analysis failed: {e}", exc_info=True)
             # Don't fail the whole process if zonal analysis fails
+
+        # Apply custom heuristic: override Site Recovery check for stateless VMs in LB backend pools
+        try:
+            updated = _override_site_recovery_for_stateless_lbs(evaluations, resources)
+            if updated:
+                LOGGER.info("Applied heuristic Site Recovery overrides for stateless LB members: %s checks", updated)
+        except Exception as e:
+            LOGGER.error(f"Site Recovery heuristic failed: {e}", exc_info=True)
+            # Don't fail the whole process if heuristic fails
 
         # NOW SAVE evaluations after zone recommendations have been injected
         LOGGER.debug("Saving evaluation results with zone recommendations...")

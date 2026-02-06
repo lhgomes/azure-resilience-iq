@@ -8,13 +8,16 @@ updated extract_networking.py logic.
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
+
 from app.relationships.multi_source import MultiSourceAggregator
 from app.graph.builder import edge_id
 
 def main():
     subscription_id = "59e12ca5-d654-418e-bc74-ef6f56c92836"
-    data_dir = Path(f"backend/data/{subscription_id}")
+    data_dir = backend_dir / "data" / subscription_id
     resources_file = data_dir / "resources.json"
     edges_file = data_dir / "edges.json"
     

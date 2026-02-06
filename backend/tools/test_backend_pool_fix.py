@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Test script to verify backend pool ID extraction fix"""
 
+import sys
+from pathlib import Path
+
+backend_dir = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(backend_dir))
+
 from app.collector.arg import populate_backend_pool_ids
 
 # Mock data representing the actual structure

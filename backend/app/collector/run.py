@@ -1,7 +1,7 @@
 import json
 import argparse
 
-from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields, populate_backend_pool_ids
+from .arg import query_resources, query_subresources, query_role_assignments, normalize_id_fields, populate_backend_pool_ids, populate_session_affinity_info
 
 from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.relationships.multi_source import MultiSourceAggregator
@@ -141,6 +141,11 @@ def main():
     print("🔗 Populating backend pool IDs from network interfaces...")
     populate_backend_pool_ids(normalized_resources)
     print("✔ Backend pool IDs populated")
+    
+    # Post-process: Extract session affinity information from LB and APGW
+    print("🔗 Extracting session affinity configuration from load balancers and gateways...")
+    populate_session_affinity_info(normalized_resources)
+    print("✔ Session affinity information extracted")
 
     if allowed_types:
         monitored_count = sum(1 for r in normalized_resources if r.get('monitored'))

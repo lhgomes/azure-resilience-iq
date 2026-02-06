@@ -143,12 +143,12 @@ const ResiliencyScoreDashboard: React.FC<ResiliencyScoreDashboardProps> = ({
             color="#3b82f6"
           />
           <StatCard 
-            label="Passed Checks" 
+            label="Passed" 
             value={summary.total_passed_checks.toString()} 
             color="#22c55e"
           />
           <StatCard 
-            label="Failed Checks" 
+            label="Failed" 
             value={summary.total_failed_checks.toString()} 
             color="#ef4444"
           />

@@ -348,8 +348,21 @@ class ZonalAnalyzer:
         Returns:
             ZonalData with group context applied
         """
-        # Get basic analysis for the resource
-        zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
+        resource_type_raw = resource.get("type") or resource.get("properties", {}).get("type") or ""
+        resource_type = str(resource_type_raw).lower()
+
+        if all_resources and (
+            "microsoft.network/loadbalancers" in resource_type
+            or "microsoft.network/applicationgateways" in resource_type
+        ):
+            lb_zonal_data = ZonalAnalyzer._analyze_lb_or_apgw(resource, all_resources)
+            if lb_zonal_data is not None:
+                zonal_data = lb_zonal_data
+            else:
+                zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
+        else:
+            # Get basic analysis for the resource
+            zonal_data = ZonalAnalyzer.extract_zonal_data(resource)
         
         # Check if resource is part of a resilience group
         group = correlator.get_group_for_resource(resource.get('id'))
@@ -364,12 +377,83 @@ class ZonalAnalyzer:
         # For Load Balancer backend: Check if LB is zone-redundant
         if group.type.value == 'load_balancer_backend':
             return ZonalAnalyzer._analyze_lb_protected_resource(group, resource, correlator)
+
+        # For Application Gateway backend: Analyze backend pool distribution
+        if group.type.value == 'application_gateway_backend':
+            return ZonalAnalyzer._analyze_app_gateway_protected_resource(group, resource, correlator)
         
         # For replicated resources: Check replication
         if group.type.value in ['replicated_resource', 'cosmos_replicated', 'database_failover']:
             return ZonalAnalyzer._analyze_replicated_resource(group, resource, correlator)
         
         return zonal_data
+
+    @staticmethod
+    def _analyze_lb_or_apgw(
+        resource: Dict[str, Any],
+        all_resources: List[Dict[str, Any]]
+    ) -> Optional[ZonalData]:
+        resource_type_raw = resource.get("type") or resource.get("properties", {}).get("type") or ""
+        resource_type = str(resource_type_raw).lower()
+
+        if not all_resources:
+            return None
+
+        resources_map = {
+            str(r.get("id", "")).lower(): r
+            for r in all_resources
+            if r.get("id")
+        }
+
+        from app.collector.load_balancer_analyzer import LoadBalancerAnalyzer
+
+        if "microsoft.network/loadbalancers" in resource_type:
+            analysis = LoadBalancerAnalyzer.analyze_load_balancer(resource, resources_map)
+        elif "microsoft.network/applicationgateways" in resource_type:
+            analysis = LoadBalancerAnalyzer.analyze_application_gateway(resource, resources_map)
+        else:
+            return None
+
+        zones_used = analysis.direct_zones or []
+        if not isinstance(zones_used, list):
+            zones_used = []
+        zones_used = [str(z) for z in zones_used]
+        zone_count = len(zones_used)
+
+        if analysis.classification == "zone_redundant":
+            pattern = DeploymentPattern.ZONE_REDUNDANT
+            is_zone_redundant = True
+            meets_3az = True
+            zone_count = 0
+            zones_used = []
+        elif analysis.classification == "zonal":
+            if zone_count >= 2:
+                pattern = DeploymentPattern.MULTI_ZONE
+                meets_3az = zone_count >= 3
+            elif zone_count == 1:
+                pattern = DeploymentPattern.SINGLE_ZONE
+                meets_3az = False
+            else:
+                pattern = DeploymentPattern.UNKNOWN
+                meets_3az = False
+        elif analysis.classification == "not_zone_resilient":
+            pattern = DeploymentPattern.SINGLE_ZONE
+            meets_3az = False
+            zone_count = 1
+            if not zones_used:
+                zones_used = ["unknown"]
+        else:
+            pattern = DeploymentPattern.UNKNOWN
+            meets_3az = False
+
+        return ZonalData(
+            zones_used=zones_used,
+            is_zone_redundant=analysis.is_zone_redundant,
+            zone_count=zone_count,
+            meets_3az_requirement=meets_3az,
+            deployment_pattern=pattern,
+            recommendation=analysis.recommendation,
+        )
     
     @staticmethod
     def _analyze_group_resilience(
@@ -449,34 +533,220 @@ class ZonalAnalyzer:
         """
         Analyze resource protected by a Load Balancer.
         
-        If the LB is zone-redundant, mark the resource as having resilience protection.
+        Checks two forms of resilience:
+        1. Load balancer is zone-redundant (frontend IP is zone-redundant)
+        2. Backend pool members are distributed across multiple zones (active-active HA)
         """
-        is_zone_redundant = group.metadata.get('is_zone_redundant', False)
+        is_lb_zone_redundant = group.metadata.get('is_zone_redundant', False)
         lb_name = group.metadata.get('load_balancer_name', group.id)
         
-        if is_zone_redundant:
+        # Analyze backend pool zone distribution
+        members = correlator.get_group_members(group.id)
+        backend_zones: Set[str] = set()
+        member_count = 0
+        
+        for member in members:
+            member_type = member.get('type', '').lower()
+            # Only count VMs in zone distribution (not NICs)
+            if 'virtualmachine' in member_type and '/extensions' not in member_type:
+                member_zones = member.get('zones', [])
+                if isinstance(member_zones, list):
+                    backend_zones.update(str(z) for z in member_zones)
+                member_count += 1
+        
+        backend_zone_count = len(backend_zones)
+        resource_zone = resource.get('zones', ['N/A'])[0] if resource.get('zones') else 'N/A'
+        
+        # Determine resilience based on LB and backend pool configuration
+        if is_lb_zone_redundant and backend_zone_count >= 3:
+            # BEST CASE: Zone-redundant LB + multi-zone backend pool
             recommendation = (
-                f"✓ Protected by zone-redundant Load Balancer '{lb_name}'. "
-                f"Resource is in zone {resource.get('zones', ['N/A'])[0]}. "
-                f"LB provides AZ resilience for traffic distribution."
+                f"✓ Active-active multi-zone HA configuration: {member_count} VMs "
+                f"distributed across {backend_zone_count} zones ({', '.join(sorted(backend_zones))}) "
+                f"behind zone-redundant Load Balancer '{lb_name}'. "
+                f"This VM is in zone {resource_zone}."
             )
             return ZonalData(
-                zones_used=[],
+                zones_used=sorted(list(backend_zones)),
                 is_zone_redundant=True,
-                zone_count=0,
+                zone_count=backend_zone_count,
                 meets_3az_requirement=True,
-                deployment_pattern=DeploymentPattern.ZONE_REDUNDANT,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
                 recommendation=recommendation
             )
-        else:
-            resource_zone = resource.get('zones', ['N/A'])[0]
+        
+        elif backend_zone_count >= 3:
+            # GOOD: Multi-zone backend pool (active-active HA even without zone-redundant LB)
             recommendation = (
-                f"⚠ Behind Load Balancer '{lb_name}' (not zone-redundant). "
-                f"Resource is in zone {resource_zone}. "
-                f"Consider using zone-redundant LB SKU for improved resilience."
+                f"✓ Active-active multi-zone HA: {member_count} VMs distributed across "
+                f"{backend_zone_count} zones ({', '.join(sorted(backend_zones))}) "
+                f"behind Load Balancer '{lb_name}'. "
+                f"This VM is in zone {resource_zone}. "
+                f"Consider upgrading LB to zone-redundant SKU for frontend resilience."
             )
             return ZonalData(
-                zones_used=[resource_zone],
+                zones_used=sorted(list(backend_zones)),
+                is_zone_redundant=False,
+                zone_count=backend_zone_count,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
+                recommendation=recommendation
+            )
+        
+        elif backend_zone_count == 2:
+            # PARTIAL: Two zones in backend pool
+            recommendation = (
+                f"⚠ Partial multi-zone HA: {member_count} VMs across {backend_zone_count} zones "
+                f"({', '.join(sorted(backend_zones))}) behind Load Balancer '{lb_name}'. "
+                f"This VM is in zone {resource_zone}. "
+                f"Add a third zone for full 3-AZ resilience."
+            )
+            return ZonalData(
+                zones_used=sorted(list(backend_zones)),
+                is_zone_redundant=is_lb_zone_redundant,
+                zone_count=backend_zone_count,
+                meets_3az_requirement=False,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
+                recommendation=recommendation
+            )
+        
+        elif is_lb_zone_redundant:
+            # LB is zone-redundant but backend pool is single-zone
+            recommendation = (
+                f"⚠ Protected by zone-redundant Load Balancer '{lb_name}', "
+                f"but backend pool has only {member_count} VM(s) in single zone {resource_zone}. "
+                f"Deploy additional VMs in other zones for active-active HA."
+            )
+            return ZonalData(
+                zones_used=[resource_zone] if resource_zone != 'N/A' else [],
+                is_zone_redundant=True,
+                zone_count=1,
+                meets_3az_requirement=False,
+                deployment_pattern=DeploymentPattern.SINGLE_ZONE,
+                recommendation=recommendation
+            )
+        
+        else:
+            # Neither LB is zone-redundant nor backend pool is multi-zone
+            recommendation = (
+                f"✗ Single-zone deployment behind Load Balancer '{lb_name}'. "
+                f"Resource is in zone {resource_zone}. "
+                f"Consider: (1) deploying VMs across multiple zones, "
+                f"and (2) using zone-redundant LB SKU for improved resilience."
+            )
+            return ZonalData(
+                zones_used=[resource_zone] if resource_zone != 'N/A' else [],
+                is_zone_redundant=False,
+                zone_count=1,
+                meets_3az_requirement=False,
+                deployment_pattern=DeploymentPattern.SINGLE_ZONE,
+                recommendation=recommendation
+            )
+
+    @staticmethod
+    def _analyze_app_gateway_protected_resource(
+        group: 'ResiliencyGroup',
+        resource: Dict[str, Any],
+        correlator: 'ResourceCorrelator'
+    ) -> ZonalData:
+        """
+        Analyze resource protected by an Application Gateway.
+        
+        Checks two forms of resilience:
+        1. Application Gateway is deployed across multiple zones
+        2. Backend pool members are distributed across multiple zones (active-active HA)
+        """
+        is_agw_zone_redundant = group.metadata.get('is_zone_redundant', False)
+        agw_name = group.metadata.get('application_gateway_name', group.id)
+
+        members = correlator.get_group_members(group.id)
+        backend_zones: Set[str] = set()
+        member_count = 0
+
+        for member in members:
+            member_type = member.get('type', '').lower()
+            if 'virtualmachine' in member_type and '/extensions' not in member_type:
+                member_zones = member.get('zones', [])
+                if isinstance(member_zones, list):
+                    backend_zones.update(str(z) for z in member_zones)
+                member_count += 1
+
+        backend_zone_count = len(backend_zones)
+        resource_zone = resource.get('zones', ['N/A'])[0] if resource.get('zones') else 'N/A'
+
+        if is_agw_zone_redundant and backend_zone_count >= 3:
+            recommendation = (
+                f"✓ Active-active multi-zone HA configuration: {member_count} VMs "
+                f"distributed across {backend_zone_count} zones ({', '.join(sorted(backend_zones))}) "
+                f"behind Application Gateway '{agw_name}'. "
+                f"This VM is in zone {resource_zone}."
+            )
+            return ZonalData(
+                zones_used=sorted(list(backend_zones)),
+                is_zone_redundant=True,
+                zone_count=backend_zone_count,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
+                recommendation=recommendation
+            )
+
+        elif backend_zone_count >= 3:
+            recommendation = (
+                f"✓ Active-active multi-zone HA: {member_count} VMs distributed across "
+                f"{backend_zone_count} zones ({', '.join(sorted(backend_zones))}) "
+                f"behind Application Gateway '{agw_name}'. "
+                f"This VM is in zone {resource_zone}. "
+                f"Consider ensuring the Application Gateway is multi-zone for frontend resilience."
+            )
+            return ZonalData(
+                zones_used=sorted(list(backend_zones)),
+                is_zone_redundant=False,
+                zone_count=backend_zone_count,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
+                recommendation=recommendation
+            )
+
+        elif backend_zone_count == 2:
+            recommendation = (
+                f"⚠ Partial multi-zone HA: {member_count} VMs across {backend_zone_count} zones "
+                f"({', '.join(sorted(backend_zones))}) behind Application Gateway '{agw_name}'. "
+                f"This VM is in zone {resource_zone}. "
+                f"Add a third zone for full 3-AZ resilience."
+            )
+            return ZonalData(
+                zones_used=sorted(list(backend_zones)),
+                is_zone_redundant=is_agw_zone_redundant,
+                zone_count=backend_zone_count,
+                meets_3az_requirement=False,
+                deployment_pattern=DeploymentPattern.MULTI_ZONE,
+                recommendation=recommendation
+            )
+
+        elif is_agw_zone_redundant:
+            recommendation = (
+                f"⚠ Application Gateway '{agw_name}' is multi-zone, "
+                f"but backend pool has only {member_count} VM(s) in single zone {resource_zone}. "
+                f"Deploy additional VMs in other zones for active-active HA."
+            )
+            return ZonalData(
+                zones_used=[resource_zone] if resource_zone != 'N/A' else [],
+                is_zone_redundant=True,
+                zone_count=1,
+                meets_3az_requirement=False,
+                deployment_pattern=DeploymentPattern.SINGLE_ZONE,
+                recommendation=recommendation
+            )
+
+        else:
+            recommendation = (
+                f"✗ Single-zone deployment behind Application Gateway '{agw_name}'. "
+                f"Resource is in zone {resource_zone}. "
+                f"Consider: (1) deploying VMs across multiple zones, "
+                f"and (2) configuring the Application Gateway across zones."
+            )
+            return ZonalData(
+                zones_used=[resource_zone] if resource_zone != 'N/A' else [],
                 is_zone_redundant=False,
                 zone_count=1,
                 meets_3az_requirement=False,

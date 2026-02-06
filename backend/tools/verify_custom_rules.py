@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 # Add backend to path
-backend_dir = Path(__file__).parent
+backend_dir = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(backend_dir))
 
 from app.resilience.aprl_integration import APRLCatalog

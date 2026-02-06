@@ -124,6 +124,156 @@ def populate_backend_pool_ids(resources: List[Dict[str, Any]]) -> None:
                 resource['backend_pool_ids'] = list(set(all_backend_pools))
 
 
+def populate_session_affinity_info(resources: List[Dict[str, Any]]) -> None:
+    """
+    Extract session affinity/stickiness information from Load Balancers and Application Gateways.
+    
+    Populates:
+    - 'has_session_affinity': boolean on VMs/VMSS indicating if they're behind sticky LB/APGW
+    - 'lb_rules_affinity': dict with session affinity details from LB rules
+    - 'apgw_rules_affinity': dict with affinity details from APGW HTTP settings
+    
+    This helps determine if VMs are stateful (have session affinity) or stateless.
+    """
+    resources_by_id = {r['id']: r for r in resources}
+    
+    # Build maps of backend pool IDs to load balancer rules with session affinity
+    lb_pool_to_affinity: Dict[str, Dict[str, Any]] = {}
+    apgw_pool_to_affinity: Dict[str, Dict[str, Any]] = {}
+    
+    # Process Load Balancers
+    for resource in resources:
+        rtype = resource.get('type', '').lower()
+        if 'microsoft.network/loadbalancers' not in rtype:
+            continue
+        
+        lb_id = resource['id']
+        properties = resource.get('properties', {})
+        
+        # Extract load balancing rules with session persistence
+        lb_rules = properties.get('loadBalancingRules', [])
+        if not isinstance(lb_rules, list):
+            continue
+        
+        for rule in lb_rules:
+            if not isinstance(rule, dict):
+                continue
+            
+            rule_name = rule.get('name', 'unknown')
+            rule_props = rule.get('properties', {})
+            
+            # Check for session persistence
+            session_persistence = rule_props.get('sessionPersistence', {})
+            if isinstance(session_persistence, dict):
+                persistence_type = session_persistence.get('timeout')
+            else:
+                persistence_type = session_persistence
+            
+            # Check for floating IP (affects statefulness)
+            enable_floating_ip = rule_props.get('enableFloatingIP', False)
+            
+            # Get backend pool reference
+            backend_pool_ref = rule_props.get('backendAddressPool', {})
+            if isinstance(backend_pool_ref, dict) and 'id' in backend_pool_ref:
+                backend_pool_id = norm_id(backend_pool_ref['id'])
+                
+                # Store affinity info if session persistence is enabled
+                if persistence_type and persistence_type != 'None':
+                    lb_pool_to_affinity[backend_pool_id] = {
+                        'type': 'loadBalancer',
+                        'session_type': persistence_type,
+                        'enable_floating_ip': enable_floating_ip,
+                        'rule_name': rule_name,
+                        'lb_id': lb_id,
+                    }
+    
+    # Process Application Gateways
+    for resource in resources:
+        rtype = resource.get('type', '').lower()
+        if 'microsoft.network/applicationgateways' not in rtype:
+            continue
+        
+        apgw_id = resource['id']
+        properties = resource.get('properties', {})
+        
+        # Extract HTTP settings with cookie-based affinity
+        http_settings = properties.get('backendHttpSettingsCollection', [])
+        if not isinstance(http_settings, list):
+            continue
+        
+        for setting in http_settings:
+            if not isinstance(setting, dict):
+                continue
+            
+            setting_name = setting.get('name', 'unknown')
+            setting_props = setting.get('properties', {})
+            
+            # Check for cookie-based affinity
+            cookie_affinity = setting_props.get('cookieBasedAffinity', 'Disabled')
+            cookie_name = setting_props.get('affinityCookieName', '')
+            
+            # Get associated backend pools
+            backend_pools = setting_props.get('backendAddressPools', [])
+            if isinstance(backend_pools, list):
+                for pool_ref in backend_pools:
+                    if isinstance(pool_ref, dict) and 'id' in pool_ref:
+                        backend_pool_id = norm_id(pool_ref['id'])
+                        
+                        # Store affinity info if cookie affinity is enabled
+                        if cookie_affinity and cookie_affinity != 'Disabled':
+                            apgw_pool_to_affinity[backend_pool_id] = {
+                                'type': 'applicationGateway',
+                                'affinity_enabled': True,
+                                'cookie_name': cookie_name,
+                                'setting_name': setting_name,
+                                'apgw_id': apgw_id,
+                            }
+    
+    # Now apply affinity info to VMs/VMSS based on their backend_pool_ids
+    for resource in resources:
+        rtype = resource.get('type', '').lower()
+        
+        # Check VMs and VMSS
+        is_vm = 'microsoft.compute/virtualmachines' in rtype and '/extensions' not in rtype.lower()
+        is_vmss = 'microsoft.compute/virtualmachinescalesets' in rtype
+        
+        if not (is_vm or is_vmss):
+            continue
+        
+        # Get backend pool IDs
+        backend_pool_ids = resource.get('backend_pool_ids', [])
+        if not backend_pool_ids:
+            continue
+        
+        # Check if any pool has session affinity
+        has_lb_affinity = False
+        has_apgw_affinity = False
+        lb_affinity_details = []
+        apgw_affinity_details = []
+        
+        for pool_id in backend_pool_ids:
+            if pool_id in lb_pool_to_affinity:
+                has_lb_affinity = True
+                lb_affinity_details.append(lb_pool_to_affinity[pool_id])
+            
+            if pool_id in apgw_pool_to_affinity:
+                has_apgw_affinity = True
+                apgw_affinity_details.append(apgw_pool_to_affinity[pool_id])
+        
+        # Set affinity flags
+        has_any_affinity = has_lb_affinity or has_apgw_affinity
+        
+        if has_any_affinity:
+            resource['has_session_affinity'] = True
+            if has_lb_affinity:
+                resource['lb_rules_affinity'] = lb_affinity_details
+            if has_apgw_affinity:
+                resource['apgw_rules_affinity'] = apgw_affinity_details
+        else:
+            # Explicitly mark as not having session affinity (even if no backend pools)
+            resource['has_session_affinity'] = False
+
+
 def normalize_id_fields(data: Any) -> Any:
     """
     Recursively normalize all Azure resource IDs in a data structure to lowercase.
