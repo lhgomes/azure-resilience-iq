@@ -186,6 +186,9 @@ class AppSettings:
             "max_attempts": int(aoai.get("max_attempts", 2)),
             "max_tokens": int(aoai.get("max_tokens", 6000)),
             "api_key": os.getenv("AZURE_OPENAI_API_KEY") or aoai.get("api_key"),
+            # Embedding model configuration (for semantic guardrails)
+            "embedding_deployment": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT") or aoai.get("embedding_deployment", "text-embedding-3-small"),
+            "embedding_api_version": os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION") or aoai.get("embedding_api_version", "2024-05-01-preview"),
         }
 
     def get_llm_batching_config(self) -> Dict[str, int]:
@@ -194,6 +197,19 @@ class AppSettings:
         return {
             "batch_threshold": int(llm_cfg.get("batch_threshold", 100)),
             "max_nodes_per_batch": int(llm_cfg.get("max_nodes_per_batch", 50)),
+        }
+
+    def get_guardrail_config(self) -> Dict[str, Any]:
+        """Get chat guardrail configuration values.
+        
+        Used for semantic scope validation and content safety.
+        """
+        guardrail_cfg = self.config.get("guardrails", {})
+        return {
+            "semantic_threshold": float(os.getenv("GUARDRAIL_SEMANTIC_THRESHOLD") or guardrail_cfg.get("semantic_threshold", 0.50)),
+            "enable_content_safety": os.getenv("GUARDRAIL_ENABLE_CONTENT_SAFETY", "false").lower() == "true",
+            "content_safety_endpoint": os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT", ""),
+            "content_safety_key": os.getenv("AZURE_CONTENT_SAFETY_KEY", ""),
         }
 
     def get_data_dir(self) -> str:
