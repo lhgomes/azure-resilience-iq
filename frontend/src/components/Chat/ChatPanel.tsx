@@ -509,64 +509,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <div className="chat-messages">
         {messages.map((msg: ChatMessageType) => (
           <div key={msg.id} className={`message message-${msg.role}`}>
-            {/* Edit mode for user messages */}
-            {editingMessageId === msg.id && msg.role === 'user' ? (
-              <div className="message-edit-mode">
-                <textarea
-                  value={editingText}
-                  onChange={(e) => setEditingText(e.target.value)}
-                  className="message-edit-textarea"
-                  rows={3}
-                />
-                <div className="message-edit-buttons">
-                  <button
-                    onClick={(): Promise<void> => handleResendMessage()}
-                    className="edit-resend-btn"
-                    disabled={!editingText.trim() || isLoading}
-                  >
-                    Resend
-                  </button>
-                  <button
-                    onClick={handleCancelEdit}
-                    className="edit-cancel-btn"
-                    disabled={isLoading}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="message-content">{renderMessageContent(msg.content)}</div>
-
-                {/* Message actions (edit for user messages, retry for failed responses) */}
-                <div className="message-actions">
-                  {msg.role === 'user' && (
+            <div className="message-bubble">
+              {/* Edit mode for user messages */}
+              {editingMessageId === msg.id && msg.role === 'user' ? (
+                <div className="message-edit-mode">
+                  <textarea
+                    value={editingText}
+                    onChange={(e) => setEditingText(e.target.value)}
+                    className="message-edit-textarea"
+                    rows={3}
+                  />
+                  <div className="message-edit-buttons">
                     <button
-                      className="message-action-btn"
-                      onClick={() => handleEditMessage(msg.id, msg.content)}
-                      title="Edit and resend"
+                      onClick={(): Promise<void> => handleResendMessage()}
+                      className="edit-resend-btn"
+                      disabled={!editingText.trim() || isLoading}
+                    >
+                      Resend
+                    </button>
+                    <button
+                      onClick={handleCancelEdit}
+                      className="edit-cancel-btn"
                       disabled={isLoading}
                     >
-                      ✏️ Edit
+                      Cancel
                     </button>
-                  )}
-                  {msg.role === 'assistant' && !msg.response && !msg.id?.startsWith('baseline') && !msg.id?.startsWith('welcome') && (
-                    <button
-                      className="message-action-btn"
-                      onClick={() => handleRetryMessage(msg.id)}
-                      title="Retry"
-                      disabled={isLoading}
-                    >
-                      🔄 Retry
-                    </button>
-                  )}
+                  </div>
                 </div>
-              </>
-            )}
+              ) : (
+                <>
+                  <div className="message-content">{renderMessageContent(msg.content)}</div>
 
-            {/* Extended response content */}
-            {msg.response && (
+                  {/* Message actions (edit for user messages, retry for failed responses) */}
+                  <div className="message-actions">
+                    {msg.role === 'user' && (
+                      <button
+                        className="message-action-btn"
+                        onClick={() => handleEditMessage(msg.id, msg.content)}
+                        title="Edit and resend"
+                        disabled={isLoading}
+                      >
+                        ✏️ Edit
+                      </button>
+                    )}
+                    {msg.role === 'assistant' && !msg.response && !msg.id?.startsWith('baseline') && !msg.id?.startsWith('welcome') && (
+                      <button
+                        className="message-action-btn"
+                        onClick={() => handleRetryMessage(msg.id)}
+                        title="Retry"
+                        disabled={isLoading}
+                      >
+                        🔄 Retry
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* Extended response content */}
+              {msg.response && (
               <>
                 {msg.response.resources_to_highlight &&
                   msg.response.resources_to_highlight.length > 0 && (
@@ -712,13 +713,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 )}
               </>
             )}
+            </div>{/* end message-bubble */}
           </div>
         ))}
 
         {isLoading && (
           <div className="message message-assistant">
-            <div className="message-content">
-              <span className="loading-dots">Analyzing...</span>
+            <div className="message-bubble">
+              <div className="message-content">
+                <span className="loading-dots">Analyzing...</span>
+              </div>
             </div>
           </div>
         )}
