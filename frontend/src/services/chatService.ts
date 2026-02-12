@@ -80,6 +80,34 @@ export class LLMChatService {
   }
 
   /**
+   * Check if chat feature is available (static method)
+   */
+  static async isChatAvailable(): Promise<{ available: boolean; reason?: string }> {
+    try {
+      const response = await fetch('/api/chat/availability');
+      
+      if (!response.ok) {
+        return {
+          available: false,
+          reason: 'Failed to check chat availability'
+        };
+      }
+      
+      const data = await response.json();
+      return {
+        available: data.available,
+        reason: data.reason
+      };
+    } catch (error) {
+      console.error('Error checking chat availability:', error);
+      return {
+        available: false,
+        reason: 'Error checking chat availability'
+      };
+    }
+  }
+
+  /**
    * Send message to chat API
    */
   async sendMessage(
