@@ -15,6 +15,7 @@ import NodeDrawer, { NodeData } from "../components/NodeDrawer";
 
 import WorkloadSidebar from "../components/WorkloadSidebar";
 import LegendPanel from "../components/LegendPanel";
+import { ChatPanel } from "../components/Chat";
 import {
   acceptEdge,
   createManualEdge,
@@ -137,6 +138,7 @@ const WorkloadView: React.FC = () => {
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [pendingRefreshSubscriptions, setPendingRefreshSubscriptions] = useState<Set<string>>(new Set());
+  const [chatRefreshToken, setChatRefreshToken] = useState(0);
 
   // Weights for resilience score calculation
   const [resilienceWeights, setResiliencyWeights] = useState<ResiliencyWeights>(DEFAULT_WEIGHTS);
@@ -832,6 +834,13 @@ const WorkloadView: React.FC = () => {
     setError("Cross-subscription edits are not supported.");
     return null;
   }, [graph, viewGraph, singleSubscriptionId]);
+
+  const getResourceLabel = useCallback((nodeId: string): string | undefined => {
+    const node = graph?.nodes.find(n => n.id === nodeId) ?? viewGraph?.nodes.find(n => n.id === nodeId);
+    if (!node) return undefined;
+    const meta = (node as any)?.metadata ?? (node as any)?.data ?? {};
+    return meta.display_name || meta.label || (node as any)?.name || nodeId;
+  }, [graph, viewGraph]);
 
   // Persist subscription selection
   useEffect(() => {
@@ -1682,6 +1691,9 @@ const WorkloadView: React.FC = () => {
       // Refresh the graph from server after completion
       await fetchGraph();
 
+      // Refresh chat baseline summary after annotations update
+      setChatRefreshToken(prev => prev + 1);
+
       // Clear the dirty flag if nothing pending
       setNeedsRefresh(failed.length > 0);
     } catch (err: any) {
@@ -2313,83 +2325,107 @@ const WorkloadView: React.FC = () => {
                     Select one or more subscriptions in the sidebar to load the graph.
                   </div>
                 ) : (
-                  <div style={{ width: "100%", height: "100%" }}>
-                    <ReactFlowProvider>
-                      <GraphCanvas
-                        ref={graphCanvasRef}
-                        nodes={nodesForView}
-                        edges={edgesForView}
-                        groups={graph?.groups ?? []}
-                        graphViewState={pendingGraphView}
-                        onGraphViewApplied={() => setPendingGraphView(null)}
-                        selectedEdgeId={selectedEdge?.id ?? null}
-                        userLayerEnabled={userLayerEnabled}
-                        aiLayerEnabled={aiLayerEnabled}
-                        onAiLayerEnabledChange={setAiLayerEnabled}
-                        onUserLayerEnabledChange={setUserLayerEnabled}
-                        maxImportance={maxImportance}
-                        onNodeSelected={handleNodeSelected}
-                        onEdgeCreate={handleCreateManualLink}
-                        onNodeRename={handleRenameNode}
-                        onNodeHide={handleHideNode}
-                        onNodeDragStart={() => { setSelectedNode(null); setSelectedEdge(null); }}
-                        onGroupCreate={applyGroupToNodes}
-                        groupCreateRequest={groupCreateRequest}
-                        onRemoveNodeFromGroup={handleRemoveNodeFromGroup}
-                        onSelectionStateChange={state => {
-                          const prevSelection = lastGroupToolbarSelectionRef.current;
-                          lastGroupToolbarSelectionRef.current = state;
-                          setGroupToolbarSelection(state);
+                  <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
+                    <div style={{ flex: 1, position: "relative" }}>
+                      <ReactFlowProvider>
+                        <GraphCanvas
+                          ref={graphCanvasRef}
+                          nodes={nodesForView}
+                          edges={edgesForView}
+                          groups={graph?.groups ?? []}
+                          graphViewState={pendingGraphView}
+                          onGraphViewApplied={() => setPendingGraphView(null)}
+                          selectedEdgeId={selectedEdge?.id ?? null}
+                          userLayerEnabled={userLayerEnabled}
+                          aiLayerEnabled={aiLayerEnabled}
+                          onAiLayerEnabledChange={setAiLayerEnabled}
+                          onUserLayerEnabledChange={setUserLayerEnabled}
+                          maxImportance={maxImportance}
+                          onNodeSelected={handleNodeSelected}
+                          onEdgeCreate={handleCreateManualLink}
+                          onNodeRename={handleRenameNode}
+                          onNodeHide={handleHideNode}
+                          onNodeDragStart={() => { setSelectedNode(null); setSelectedEdge(null); }}
+                          onGroupCreate={applyGroupToNodes}
+                          groupCreateRequest={groupCreateRequest}
+                          onRemoveNodeFromGroup={handleRemoveNodeFromGroup}
+                          onSelectionStateChange={state => {
+                            const prevSelection = lastGroupToolbarSelectionRef.current;
+                            lastGroupToolbarSelectionRef.current = state;
+                            setGroupToolbarSelection(state);
 
-                          // Initialize toolbar name when mode changes or selecting a different group.
-                          if (state.selectedGroupId) {
-                            lastSuggestedGroupNameRef.current = "";
-                            setGroupToolbarName(prev => {
-                              if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
-                                return state.selectedGroupLabel ?? "";
-                              }
-                              return prev;
-                            });
-                          } else if (state.selectedNodeIds.length > 1) {
-                            const suggested = suggestGroupName(state.selectedNodeIds);
-                            setGroupToolbarName(prev => {
-                              const shouldReplace =
-                                prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
-                              if (!shouldReplace) return prev;
+                            // Initialize toolbar name when mode changes or selecting a different group.
+                            if (state.selectedGroupId) {
+                              lastSuggestedGroupNameRef.current = "";
+                              setGroupToolbarName(prev => {
+                                if (prev.trim().length === 0 || prev === (prevSelection.selectedGroupLabel ?? "")) {
+                                  return state.selectedGroupLabel ?? "";
+                                }
+                                return prev;
+                              });
+                            } else if (state.selectedNodeIds.length > 1) {
+                              const suggested = suggestGroupName(state.selectedNodeIds);
+                              setGroupToolbarName(prev => {
+                                const shouldReplace =
+                                  prev.trim().length === 0 || prev === lastSuggestedGroupNameRef.current;
+                                if (!shouldReplace) return prev;
 
-                              lastSuggestedGroupNameRef.current = suggested;
-                              return suggested;
+                                lastSuggestedGroupNameRef.current = suggested;
+                                return suggested;
+                              });
+                            } else {
+                              lastSuggestedGroupNameRef.current = "";
+                              setGroupToolbarName("");
+                            }
+                          }}
+                          onMoveNodeToGroup={moveNodeToGroup}
+                          onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
+                          onEdgeSelected={(e) => {
+                            if (!e) {
+                              setSelectedEdge(null);
+                              setActiveSubscriptionId(null);
+                              return;
+                            }
+
+                            setSelectedNode(null);
+                            setSelectedEdge({
+                              id: e.id,
+                              source: e.source,
+                              target: e.target,
+                              relationship: e.relationship,
+                              confidence: e.confidence,
+                              status: e.status as any,
+                              evidence: e.evidence,
+                              origin: e.origin,
+                              raw: e,
                             });
-                          } else {
-                            lastSuggestedGroupNameRef.current = "";
-                            setGroupToolbarName("");
+                            setActiveSubscriptionId(resolveSubscriptionIdForEdge(e.id));
+                          }}
+                        />
+                      </ReactFlowProvider>
+                      {/* Floating chat badge on Graph Tab */}
+                      <ChatPanel
+                        subscriptionId={singleSubscriptionId ?? ""}
+                        refreshToken={chatRefreshToken}
+                        getResourceLabel={getResourceLabel}
+                        context={{
+                          tab: "graph",
+                          selected_resource_id: selectedNode?.id,
+                          selected_edge_id: selectedEdge?.id,
+                        }}
+                        onResourceHighlight={(resourceIds) => {
+                          if (resourceIds.length > 0 && graphCanvasRef.current) {
+                            handleShowInGraph(resourceIds[0]);
                           }
                         }}
-                        onMoveNodeToGroup={moveNodeToGroup}
-                        onNodeRemoveFromGroup={handleNodeRemoveFromGroupClick}
-                        onEdgeSelected={(e) => {
-                          if (!e) {
-                            setSelectedEdge(null);
-                            setActiveSubscriptionId(null);
-                            return;
-                          }
-
-                          setSelectedNode(null);
-                          setSelectedEdge({
-                            id: e.id,
-                            source: e.source,
-                            target: e.target,
-                            relationship: e.relationship,
-                            confidence: e.confidence,
-                            status: e.status as any,
-                            evidence: e.evidence,
-                            origin: e.origin,
-                            raw: e,
-                          });
-                          setActiveSubscriptionId(resolveSubscriptionIdForEdge(e.id));
+                        onEdgeSuggest={(edges) => {
+                          console.log("Chat suggested edges:", edges);
                         }}
+                        height={600}
+                        isMinimized={true}
+                        mode="floating"
                       />
-                    </ReactFlowProvider>
+                    </div>
                   </div>
                 ),
               },
@@ -2401,21 +2437,48 @@ const WorkloadView: React.FC = () => {
                     Select one or more subscriptions to view resilience findings.
                   </div>
                 ) : resilience_evaluations ? (
-                  <ResiliencySummary
-                    evaluations={resilience_evaluations || {}}
-                    workloadScore={resilience_data?.workload_score}
-                    subscriptionId={singleSubscriptionId ?? undefined}
-                    subscriptionOptions={selectedSubscriptionOptions}
-                    graphData={graph ?? undefined}
-                    overrides={resilience_overrides}
-                    viewLevel={viewLevel}
-                    resourceGroupFilter={resourceGroupFilter}
-                    serviceFilter={serviceFilter}
-                    validationSourceFilter={validationSourceFilter}
-                    onOverrideSaved={handleOverrideSaved}
-                    onOverrideDeleted={handleOverrideDeleted}
-                    onShowInGraph={handleShowInGraph}
-                  />
+                  <>
+                    <div style={{ display: "flex", height: "100%", gap: "12px" }}>
+                      <div style={{ flex: 1, overflow: "auto" }}>
+                        <ResiliencySummary
+                          evaluations={resilience_evaluations || {}}
+                          workloadScore={resilience_data?.workload_score}
+                          subscriptionId={singleSubscriptionId ?? undefined}
+                          subscriptionOptions={selectedSubscriptionOptions}
+                          graphData={graph ?? undefined}
+                          overrides={resilience_overrides}
+                          viewLevel={viewLevel}
+                          resourceGroupFilter={resourceGroupFilter}
+                          serviceFilter={serviceFilter}
+                          validationSourceFilter={validationSourceFilter}
+                          onOverrideSaved={handleOverrideSaved}
+                          onOverrideDeleted={handleOverrideDeleted}
+                          onShowInGraph={handleShowInGraph}
+                        />
+                      </div>
+                    </div>
+                    <ChatPanel
+                      subscriptionId={singleSubscriptionId ?? ""}
+                      refreshToken={chatRefreshToken}
+                      getResourceLabel={getResourceLabel}
+                      context={{
+                        tab: "overview",
+                        selected_resource_id: selectedNode?.id,
+                        view_level: viewLevel,
+                      }}
+                      onResourceHighlight={(resourceIds) => {
+                        if (resourceIds.length > 0 && graphCanvasRef.current) {
+                          handleShowInGraph(resourceIds[0]);
+                        }
+                      }}
+                      onEdgeSuggest={(edges) => {
+                        console.log("Chat suggested edges:", edges);
+                      }}
+                      height={600}
+                      isMinimized={true}
+                      mode="floating"
+                    />
+                  </>
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
                     No resilience data available

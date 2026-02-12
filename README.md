@@ -23,7 +23,10 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 ```bash
 git clone <repository-url>
 cd azure-resilience-iq
+git submodule update --init --recursive
 ```
+
+The submodule command initializes the Azure Proactive Resiliency Library (APRL) at `backend/aprl`, which provides the resiliency rules used for evaluation.
 
 ### 2. Backend Setup
 
