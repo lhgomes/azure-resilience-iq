@@ -36,9 +36,6 @@ llm:
 #   2. Managed identity (if running in Azure)
 #   3. Azure CLI credentials (if running locally with az login)
 azure_openai:
-  endpoint: ""  # DO NOT SET HERE - use AZURE_OPENAI_ENDPOINT in .env
-  deployment: ""  # DO NOT SET HERE - use AZURE_OPENAI_DEPLOYMENT in .env
-  api_version: ""  # DO NOT SET HERE - use AZURE_OPENAI_API_VERSION in .env
   timeout_seconds: 60
   max_attempts: 2
   max_tokens: 6000

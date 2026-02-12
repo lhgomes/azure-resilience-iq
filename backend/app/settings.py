@@ -212,6 +212,29 @@ class AppSettings:
             "content_safety_key": os.getenv("AZURE_CONTENT_SAFETY_KEY", ""),
         }
 
+    def is_chat_available(self) -> bool:
+        """
+        Check if chat feature is available (all required config is present).
+        
+        Required configuration:
+        - AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+        - AZURE_OPENAI_EMBEDDING_API_VERSION  
+        - GUARDRAIL_SEMANTIC_THRESHOLD
+        
+        Returns:
+            True if all required chat configuration is present
+        """
+        aoai_config = self.get_azure_openai_config()
+        guardrail_config = self.get_guardrail_config()
+        
+        required_fields = [
+            aoai_config.get("embedding_deployment"),
+            aoai_config.get("embedding_api_version"),
+            guardrail_config.get("semantic_threshold"),
+        ]
+        
+        return all(field is not None and str(field).strip() != "" for field in required_fields)
+
     def get_data_dir(self) -> str:
         """Get base data directory for filesystem artifacts."""
         data_cfg = self.config.get("data", {})

@@ -16,6 +16,7 @@ import NodeDrawer, { NodeData } from "../components/NodeDrawer";
 import WorkloadSidebar from "../components/WorkloadSidebar";
 import LegendPanel from "../components/LegendPanel";
 import { ChatPanel } from "../components/Chat";
+import { LLMChatService } from "../services/chatService";
 import {
   acceptEdge,
   createManualEdge,
@@ -137,6 +138,10 @@ const WorkloadView: React.FC = () => {
   // Track if user has made changes requiring refresh
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Chat availability state
+  const [isChatAvailable, setIsChatAvailable] = useState(true); // Default to true, check on mount
+  const [chatAvailabilityChecked, setChatAvailabilityChecked] = useState(false);
   const [pendingRefreshSubscriptions, setPendingRefreshSubscriptions] = useState<Set<string>>(new Set());
   const [chatRefreshToken, setChatRefreshToken] = useState(0);
 
@@ -547,6 +552,23 @@ const WorkloadView: React.FC = () => {
       })
       .catch(err => {
         console.error("Failed to fetch subscriptions:", err);
+      });
+  }, []);
+
+  // Check chat availability on mount
+  useEffect(() => {
+    LLMChatService.isChatAvailable()
+      .then(result => {
+        setIsChatAvailable(result.available);
+        setChatAvailabilityChecked(true);
+        if (!result.available) {
+          console.warn('Chat feature is disabled:', result.reason);
+        }
+      })
+      .catch(err => {
+        console.error('Error checking chat availability:', err);
+        setIsChatAvailable(false);
+        setChatAvailabilityChecked(true);
       });
   }, []);
 
@@ -2404,27 +2426,29 @@ const WorkloadView: React.FC = () => {
                         />
                       </ReactFlowProvider>
                       {/* Floating chat badge on Graph Tab */}
-                      <ChatPanel
-                        subscriptionId={singleSubscriptionId ?? ""}
-                        refreshToken={chatRefreshToken}
-                        getResourceLabel={getResourceLabel}
-                        context={{
-                          tab: "graph",
-                          selected_resource_id: selectedNode?.id,
-                          selected_edge_id: selectedEdge?.id,
-                        }}
-                        onResourceHighlight={(resourceIds) => {
-                          if (resourceIds.length > 0 && graphCanvasRef.current) {
-                            handleShowInGraph(resourceIds[0]);
-                          }
-                        }}
-                        onEdgeSuggest={(edges) => {
-                          console.log("Chat suggested edges:", edges);
-                        }}
-                        height={600}
-                        isMinimized={true}
-                        mode="floating"
-                      />
+                      {isChatAvailable && (
+                        <ChatPanel
+                          subscriptionId={singleSubscriptionId ?? ""}
+                          refreshToken={chatRefreshToken}
+                          getResourceLabel={getResourceLabel}
+                          context={{
+                            tab: "graph",
+                            selected_resource_id: selectedNode?.id,
+                            selected_edge_id: selectedEdge?.id,
+                          }}
+                          onResourceHighlight={(resourceIds) => {
+                            if (resourceIds.length > 0 && graphCanvasRef.current) {
+                              handleShowInGraph(resourceIds[0]);
+                            }
+                          }}
+                          onEdgeSuggest={(edges) => {
+                            console.log("Chat suggested edges:", edges);
+                          }}
+                          height={600}
+                          isMinimized={true}
+                          mode="floating"
+                        />
+                      )}
                     </div>
                   </div>
                 ),
@@ -2457,27 +2481,29 @@ const WorkloadView: React.FC = () => {
                         />
                       </div>
                     </div>
-                    <ChatPanel
-                      subscriptionId={singleSubscriptionId ?? ""}
-                      refreshToken={chatRefreshToken}
-                      getResourceLabel={getResourceLabel}
-                      context={{
-                        tab: "overview",
-                        selected_resource_id: selectedNode?.id,
-                        view_level: viewLevel,
-                      }}
-                      onResourceHighlight={(resourceIds) => {
-                        if (resourceIds.length > 0 && graphCanvasRef.current) {
-                          handleShowInGraph(resourceIds[0]);
-                        }
-                      }}
-                      onEdgeSuggest={(edges) => {
-                        console.log("Chat suggested edges:", edges);
-                      }}
-                      height={600}
-                      isMinimized={true}
-                      mode="floating"
-                    />
+                    {isChatAvailable && (
+                      <ChatPanel
+                        subscriptionId={singleSubscriptionId ?? ""}
+                        refreshToken={chatRefreshToken}
+                        getResourceLabel={getResourceLabel}
+                        context={{
+                          tab: "overview",
+                          selected_resource_id: selectedNode?.id,
+                          view_level: viewLevel,
+                        }}
+                        onResourceHighlight={(resourceIds) => {
+                          if (resourceIds.length > 0 && graphCanvasRef.current) {
+                            handleShowInGraph(resourceIds[0]);
+                          }
+                        }}
+                        onEdgeSuggest={(edges) => {
+                          console.log("Chat suggested edges:", edges);
+                        }}
+                        height={600}
+                        isMinimized={true}
+                        mode="floating"
+                      />
+                    )}
                   </>
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>

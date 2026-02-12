@@ -11,6 +11,7 @@ from app.chat.models import ChatRequest, ChatResponse
 from app.chat.service import ChatService
 from app.services.workloads import get_workload_graph
 from app.logger import get_logger
+from app.settings import get_settings
 
 LOGGER = get_logger(__name__)
 
@@ -19,8 +20,40 @@ router = APIRouter(
     tags=["chat"]
 )
 
+# Global chat availability endpoint
+chat_router = APIRouter(
+    prefix="/api/chat",
+    tags=["chat"]
+)
+
 # Initialize chat service (singleton)
 _chat_service = None
+
+
+@chat_router.get("/availability")
+async def chat_availability():
+    """
+    Check if chat feature is available.
+    
+    Returns:
+    {
+      "available": true/false,
+      "reason": "string (if not available)"
+    }
+    """
+    settings = get_settings()
+    is_available = settings.is_chat_available()
+    
+    if is_available:
+        return {
+            "available": True,
+            "reason": None
+        }
+    else:
+        return {
+            "available": False,
+            "reason": "Chat feature requires AZURE_OPENAI_EMBEDDING_DEPLOYMENT, AZURE_OPENAI_EMBEDDING_API_VERSION, and GUARDRAIL_SEMANTIC_THRESHOLD environment variables"
+        }
 
 
 def get_chat_service() -> ChatService:

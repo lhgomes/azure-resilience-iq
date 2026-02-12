@@ -54,16 +54,57 @@ llm:
   max_nodes_per_batch: 30
 
 azure_openai:
-  endpoint: "https://your-resource.openai.azure.com/"
-  deployment: "your-deployment-name"
-  api_version: "2024-05-01-preview"
   timeout_seconds: 60
   max_attempts: 2
   max_tokens: 6000
-  api_key: ""  # optional; leave empty to use DefaultAzureCredential
 ```
 
 Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
+
+#### Configure Chat Feature (Optional)
+
+The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload. The chat feature requires additional Azure OpenAI configuration beyond basic LLM annotations.
+
+**Create Environment File**:
+
+Create a `backend/.env` file (copy from `backend/.env.example` if available) and add:
+
+```env
+# Azure OpenAI Configuration
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini  # or your chat completion model
+AZURE_OPENAI_API_VERSION=2024-05-01-preview
+
+# Chat Feature Configuration (Required for chat to be enabled)
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
+GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+```
+
+**Required Environment Variables**:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | **Yes** | Embeddings model for semantic query validation (e.g., `text-embedding-3-small`) |
+| `AZURE_OPENAI_EMBEDDING_API_VERSION` | **Yes** | API version for embeddings endpoint |
+| `GUARDRAIL_SEMANTIC_THRESHOLD` | **Yes** | Relevance threshold for chat queries (0.0-1.0, recommended: 0.50) |
+
+**How It Works**:
+- The chat feature uses **semantic guardrails** to ensure queries are infrastructure-related
+- Queries are compared against reference workload questions using embeddings
+- If similarity score is below the threshold, the query is rejected
+- If **all three variables** are missing, the chat UI is automatically hidden
+
+**Features**:
+- 💬 Natural language infrastructure analysis
+- 🔍 Resource-specific recommendations
+- 🛠️ Remediation guidance with step-by-step instructions
+- 📊 Cost and performance impact analysis  
+- 🧩 Terraform code generation
+- 🔗 Dependency relationship suggestions
+- ⚡ Query-type-specific responses (findings, remediation, terraform, connections)
+
+**Note**: The `.env` file is gitignored and should never be committed to the repository. Each developer needs their own local configuration.
 
 ### 3. Frontend Setup
 
@@ -325,6 +366,7 @@ azure-resilience-iq/
 │   ├── package.json          # npm dependencies
 │   └── vite.config.ts        # Vite configuration
 └── README.md
+```
 
 ## Graph Composition
 
@@ -803,6 +845,91 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 - **Relationship detection**: Identifies dependencies between resources
 - **Full pipeline compatibility**: Works with all resilience and LLM modules
 
+## AI-Powered Chat Assistant
+
+The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance using Azure OpenAI.
+
+### Features
+
+- **Natural Language Queries**: Ask questions about your infrastructure in plain English
+- **Contextual Understanding**: Semantic guardrails ensure queries are workload-related
+- **Query-Type-Specific Responses**: Different response formats for different types of questions:
+  - **Findings**: Explains failures and impact
+  - **Remediation**: Provides step-by-step fix instructions
+  - **Terraform**: Generates infrastructure-as-code
+  - **Connections**: Suggests logical dependencies between resources
+  - **General**: Answers infrastructure questions, including cost and performance impact
+- **Smart Recommendations**: Structured, actionable recommendations with priority, effort, and impact assessment
+- **Resource Highlighting**: Automatically highlights relevant resources in the graph
+- **Edit & Retry**: Edit and resend messages, retry failed queries
+- **Baseline Summaries**: Contextual summaries from LLM annotations
+
+### Query Examples
+
+The chat assistant can answer questions like:
+
+- "Why is this resource failing resilience checks?"
+- "How do I fix this VM for high availability?"
+- "Generate Terraform code for zone redundancy"
+- "What are the top 3 changes I need to make to improve resilience?"
+- "What would be the cost difference for ZRS disk? Will this change impact performance?"
+- "Show me the dependencies for this VM"
+- "Which resources need updating for compliance?"
+
+### Configuration
+
+Chat requires three environment variables in `backend/.env`:
+
+```env
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
+GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+```
+
+**If these variables are missing**, the chat feature is automatically disabled and hidden from the UI.
+
+### Semantic Guardrails
+
+The chat uses **embeddings-based semantic validation** to prevent off-topic queries:
+
+- User queries are compared against 22 reference infrastructure questions
+- Cosine similarity determines if the query is workload-related
+- Queries below the threshold (default: 0.50) are rejected
+- Reference queries cover: findings, remediation, cost, performance, terraform, dependencies
+
+**Adjusting Threshold**:
+- Lower (0.45): More permissive, allows broader questions
+- Higher (0.55): Stricter, infrastructure-only focus
+- Recommended: 0.50 for balanced validation
+
+### UI Integration
+
+The chat panel appears as a floating badge on both the **Graph** and **Overview** tabs:
+
+1. Click the chat sparkle icon (✨) to open
+2. Type your question in natural language
+3. View responses with:
+   - Structured recommendations with priority and effort
+   - Resource chips you can click to highlight in graph
+   - Code blocks for Terraform generation
+   - Actionable edge suggestions
+4. Edit and resend messages using the edit button
+5. Retry failed queries with the retry button
+
+The chat is context-aware:
+- Knows which tab you're viewing (graph vs overview)
+- Understands selected resources
+- Provides relevant recommendations based on findings
+
+### Response Validation
+
+All LLM outputs are validated before being returned:
+
+- **Edge suggestions**: Filtered to prevent illogical connections (e.g., disks from different VMs)
+- **Resource references**: Verified against the graph
+- **Terraform code**: Self-validated using built-in validation prompts
+- **Query-type filtering**: Edges and terraform only generated when explicitly requested
+
 ## Troubleshooting
 
 ### Collector Issues
@@ -820,6 +947,30 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 
 **Problem**: No annotations generated
 - **Solution**: Confirm `llm.enabled` is `true`, Azure OpenAI settings are populated, and (if no `api_key`) you are logged in with `az login`.
+
+### Chat Issues
+
+**Problem**: Chat feature not visible in UI
+- **Solution**: Check that all required environment variables are set in `backend/.env`:
+  - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
+  - `AZURE_OPENAI_EMBEDDING_API_VERSION`
+  - `GUARDRAIL_SEMANTIC_THRESHOLD`
+- **Verification**: Check `/api/chat/availability` endpoint - it should return `{"available": true}`
+
+**Problem**: Queries rejected as out-of-scope
+- **Solution**: Semantic guardrail threshold may be too strict. Try lowering `GUARDRAIL_SEMANTIC_THRESHOLD` from `0.50` to `0.45` to allow more queries through.
+
+**Problem**: LLM suggesting invalid edges
+- **Solution**: This should not occur - edge suggestions are filtered by query type and logical validation. If you see invalid edges, report as a bug.
+
+**Problem**: Chat returns "Azure OpenAI not configured"
+- **Solution**: Ensure your chat-specific Azure OpenAI deployment is configured in `.env` and that the embedding model is deployed (text-embedding-3-small).
+
+**Problem**: Slow chat responses
+- **Solution**: Embedding generation and similarity checks add latency. Consider:
+  - Using a closer Azure region for OpenAI deployment
+  - Reducing number of reference queries (advanced)
+  - Caching embeddings (future enhancement)
 
 ### Backend Issues
 

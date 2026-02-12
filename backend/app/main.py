@@ -8,7 +8,7 @@ from app.settings import load_settings
 from app.routes.resilience import router as resilience_router
 from app.routes.unified_recommendations import router as unified_recommendations_router
 from app.routes.terraform import router as terraform_router
-from app.routes.chat import router as chat_router
+from app.routes.chat import router as chat_router, chat_router as chat_availability_router
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
@@ -70,6 +70,7 @@ app.include_router(resilience_router)
 app.include_router(unified_recommendations_router)
 app.include_router(terraform_router)
 app.include_router(chat_router)
+app.include_router(chat_availability_router)
 
 
 class CreateEdgeRequest(BaseModel):
