@@ -1,35 +1,43 @@
 # Environment Setup
 
-## Local Development with Azure OpenAI
+## Local Development with APIM + Azure AI Foundry Agent
 
-To enable LLM-based architecture annotation in your local environment, edit `backend/config/app_config.yaml`:
+The backend LLM runtime is APIM + Azure AI Foundry only.
+Direct Azure OpenAI SDK configuration is no longer used by runtime modules.
+
+### 1. Configure `backend/config/app_config.yaml`
 
 ```yaml
-azure_openai:
-  endpoint: "https://<your-resource>.openai.azure.com/"
-  deployment: "<your-deployment-name>"
-  api_key: ""  # optional; leave empty to use DefaultAzureCredential
-
 llm:
   enabled: true
+
+ai_agent:
+  gateway_base_url: "https://<apim-host>/<agent-api-base>"
+  agent_id: "asst_<foundry-agent-id>"
+  api_version: "2025-05-01"
+  subscription_header_name: "api-key"
+  memory_scope: "subscription_or_workload"
+
+  # Optional: APIM embeddings endpoint used by ingestion/RAG tooling
+  embedding_base_url: "https://<apim-host>/<openai-api-base>"
+  embedding_api_version: "2024-10-21"
+  embedding_subscription_header_name: "api-key"
 ```
 
-Get endpoint/deployment from your Azure OpenAI resource in the Azure Portal.
+### 2. Configure `backend/.env`
 
-### 2. Ensure DefaultAzureCredential is configured
-The backend uses **DefaultAzureCredential**, which checks (in order):
-1. Environment variables (`AZURE_*`)
-2. Managed Identity (if running in Azure)
-3. Azure CLI credentials (`az login`)
-4. Visual Studio credentials
-5. IntelliJ credentials
+```env
+AZURE_SEARCH_ENDPOINT=<your-search-endpoint>
+AZURE_SEARCH_ADMIN_KEY=<your-search-admin-key>
+AZURE_SEARCH_INDEX_NAME=<your-index-name>
 
-For local development, run:
-```bash
-az login
+AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
 ```
 
-## Workflow: Collector → Resiliency Evaluation → LLM Annotation → API
+`AI_GATEWAY_SUBSCRIPTION_KEY` is required to call APIM routes.
+If you do not have one, contact the repository maintainer.
+
+## Workflow: Collector → Resilience Evaluation → LLM Annotation → API
 
 ### Step 1: Run the Azure Resource Graph collector
 ```bash
@@ -39,16 +47,13 @@ python -m app.collector.run --subscription-id <your-subscription-id>
 
 This generates `backend/data/{subscription-id}/resources.json` and `backend/data/{subscription-id}/edges.json`.
 
-If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
-
-### Step 2: Run Resiliency evaluations
+### Step 2: Run resilience evaluations
 ```bash
 cd backend
-python -m app.Resiliency.run --subscription-id <your-subscription-id>
+python -m app.resilience.run --subscription-id <your-subscription-id>
 ```
 
-This evaluates resources against Azure Proactive Resiliency Library (APRL) and saves results to `backend/data/{subscription-id}/Resiliency_evaluations.json`.
-(Takes 5–10 seconds depending on resource count.)
+This evaluates resources against APRL and saves results to `backend/data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run the LLM annotator (optional)
 ```bash
@@ -56,9 +61,8 @@ cd backend
 python -m app.llm.run --subscription-id <your-subscription-id>
 ```
 
-This processes the collected resources with the LLM and saves annotations to `backend/data/{subscription-id}/llm_annotations.json`.
-(Takes 10–15 seconds depending on graph size.)
-Requires `USE_REAL_LLM=true` and Azure OpenAI configuration.
+This generates annotations in `backend/data/{subscription-id}/llm_annotations.json`.
+Requires `llm.enabled: true` and valid APIM + Foundry agent configuration.
 
 ### Step 4: Start the API server
 ```bash
@@ -67,107 +71,53 @@ uvicorn app.main:app --reload
 ```
 
 ### Step 5: Access the API
-All data is now pre-computed and served instantly:
-
 ```bash
 # Get workload graph
 curl "http://localhost:8000/api/subscriptions/<your-subscription-id>/graph"
 
-# Get Resiliency evaluations
-curl "http://localhost:8000/api/Resiliency/evaluate/<your-subscription-id>"
+# Get resilience evaluations
+curl "http://localhost:8000/api/resilience/evaluate/<your-subscription-id>"
 
 # Get unified recommendations
 curl "http://localhost:8000/api/<your-subscription-id>/recommendations"
 ```
 
-Or start the frontend and toggle visibility options in the UI.
+## Application Configuration (`app_config.yaml`)
 
-## Application Configuration (app_config.yaml)
-
-The `backend/config/app_config.yaml` file controls application behavior and Resiliency analysis settings.
-
-### Logging Configuration
-
+### Logging
 ```yaml
 logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
 ```
 
-- **level**: Controls logging verbosity. Can be overridden by `LOG_LEVEL` environment variable.
-
-### LLM Configuration
-
+### LLM
 ```yaml
 llm:
-  enabled: true                # Enable/disable LLM (compute + serve)
+  enabled: true
 ```
 
-- **enabled**: Toggle LLM end-to-end. Set to `false` to skip processing and serving LLM annotations.
-
-### Resiliency Analysis Configuration
-
+### APIM + Foundry Agent
 ```yaml
-Resiliency:
-  category_weights:
-    "HighAvailability": 0.30
-    "DisasterRecovery": 0.20
-    "Scalability": 0.20
-    "MonitoringAndAlerting": 0.15
-    "Security": 0.10
-    "OtherBestPractices": 0.05
+ai_agent:
+  gateway_base_url: "..."
+  agent_id: "asst_..."
+  api_version: "2025-05-01"
+  subscription_header_name: "api-key"
+  memory_scope: "subscription_or_workload"
+```
 
-  impact_weights:
-    "High": 0.6
-    "Medium": 0.3
-    "Low": 0.1
-
+### Resilience
+```yaml
+resilience:
+  category_weights: { ... }
+  impact_weights: { ... }
   aprl_root: "aprl"
   rules_dir: "./config/resiliency_rules"
 ```
 
-**Category Weights** (must sum to 1.0):
-- **HighAvailability** (0.30): Redundancy, failover, and availability patterns
-- **DisasterRecovery** (0.20): Backup, restoration, and recovery procedures
-- **Scalability** (0.20): Auto-scaling, performance, and capacity planning
-- **MonitoringAndAlerting** (0.15): Observability, logging, and alerting
-- **Security** (0.10): Access control, encryption, and compliance
-- **OtherBestPractices** (0.05): General best practices and recommendations
-
-**Impact Weights** (must sum to 1.0):
-- **High** (0.6): Critical recommendations that significantly affect Resiliency
-- **Medium** (0.3): Important recommendations with moderate impact
-- **Low** (0.1): Minor recommendations and optimizations
-
-**Paths**:
-- **aprl_root**: Location of the Azure Proactive Resiliency Library v2 (relative to backend directory or absolute path)
-- **rules_dir**: Directory containing custom resiliency rule definitions
-
-### Customizing Configuration
-
-To modify settings:
-
-1. Edit `backend/config/app_config.yaml`
-2. Restart the API server (`uvicorn app.main:app --reload`)
-
-Example: To increase weight for Security and reduce Others:
-```yaml
-Resiliency:
-  category_weights:
-    "HighAvailability": 0.25
-    "DisasterRecovery": 0.20
-    "Scalability": 0.20
-    "MonitoringAndAlerting": 0.15
-    "Security": 0.15        # Increased from 0.10
-    "OtherBestPractices": 0.05
-```
-
-The weights will be auto-normalized if they don't sum to exactly 1.0.
-
 ## Notes
 
-- **`.env` is gitignored** – never commit credentials.
-- **`.env.example` is tracked** – use it as a template for setting up new environments.
-- **DefaultAzureCredential** avoids hardcoding API keys; prefer it over static keys.
-- **Resiliency evaluation is recommended** – provides APRL-based recommendations before optional LLM processing.
-- **LLM Annotator is optional** – skip step 3 if you want to test without LLM suggestions.
-- **API doesn't compute evaluations** – all results are pre-computed for instant response times.
+- `.env` is gitignored. Never commit credentials.
+- `.env.example` is tracked. Use it as a template.
+- APRL deterministic evaluation remains the source of truth.
+- Agent memory is used as continuity/context; memory keys are scoped by subscription/workload/module.

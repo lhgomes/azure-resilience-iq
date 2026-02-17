@@ -6,13 +6,13 @@ and available icon files. It should be run once to generate the mapping.
 """
 
 import json
+import os
 from pathlib import Path
-from typing import Dict, List, Set
-
-from azure.identity import DefaultAzureCredential
-from openai import AzureOpenAI
+from typing import Dict, List, Optional, Set
 
 from app.settings import load_settings
+from app.llm.gateway import create_llm_gateway, LLMGateway
+from app.llm.memory_scope import build_scoped_memory_key
 
 
 def get_all_icon_files(icons_dir: Path) -> Dict[str, List[str]]:
@@ -175,8 +175,9 @@ def get_microsoft_resource_types() -> Set[str]:
 def generate_icon_mappings_with_llm(
     resource_types: List[str],
     icon_categories: Dict[str, List[str]],
-    client: AzureOpenAI,
-    deployment: str,
+    llm_gateway: LLMGateway,
+    model: Optional[str],
+    memory_key: str,
     batch_size: int = 100
 ) -> Dict[str, str]:
     """Use LLM to generate mappings from resource types to icon paths in batches."""
@@ -225,38 +226,25 @@ Map ALL {len(batch)} resource types in this batch:
 """
 
         try:
-            response = client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert system that generates accurate Azure resource type to icon mappings. Output only valid JSON without markdown formatting. Map every single resource type provided."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+            batch_mappings = llm_gateway.generate_json(
+                system_prompt=(
+                    "You are an expert system that generates accurate Azure resource type to icon mappings. "
+                    "Output only valid JSON without markdown formatting. "
+                    "Map every single resource type provided."
+                ),
+                user_prompt=prompt,
                 temperature=0.3,
-                max_tokens=16000
+                max_tokens=16000,
+                model=model,
+                memory_key=memory_key,
             )
-            
-            response_text = response.choices[0].message.content.strip()
-            
-            # Remove markdown code blocks if present
-            if response_text.startswith('```'):
-                lines = response_text.split('\n')
-                response_text = '\n'.join(lines[1:-1]) if len(lines) > 2 else response_text
-                if response_text.startswith('json'):
-                    response_text = response_text[4:].strip()
-            
-            batch_mappings = json.loads(response_text)
+
+            if not isinstance(batch_mappings, dict):
+                raise ValueError("Invalid mapping payload returned by LLM")
+
             all_mappings.update(batch_mappings)
             print(f"  ✓ Generated {len(batch_mappings)} mappings for this batch")
             
-        except json.JSONDecodeError as e:
-            print(f"  ✗ Failed to parse LLM response for batch {batch_num}: {e}")
-            print(f"  Response preview: {response_text[:200]}")
         except Exception as e:
             print(f"  ✗ Error processing batch {batch_num}: {e}")
     
@@ -283,39 +271,26 @@ def main():
     print(f"\nFound {len(icon_categories)} icon categories")
     print(f"Using {len(resource_types)} Azure resource types from Microsoft ARI documentation")
     
-    # Initialize Azure OpenAI client
-    aoai_cfg = settings.get_azure_openai_config()
-    endpoint = aoai_cfg["endpoint"]
-    api_version = aoai_cfg["api_version"]
-    deployment = aoai_cfg["deployment"]
-    api_key = aoai_cfg.get("api_key")
-
-    if not endpoint or not deployment:
-        print("Azure OpenAI configuration missing endpoint or deployment; aborting icon generation.")
+    # Initialize APIM + Foundry gateway
+    llm_gateway = create_llm_gateway(settings)
+    if not llm_gateway.is_available():
+        print("APIM/Foundry LLM gateway unavailable; aborting icon generation.")
         return
-    
-    if api_key:
-        client = AzureOpenAI(
-            api_key=api_key,
-            api_version=api_version,
-            azure_endpoint=endpoint,
-        )
-    else:
-        # Use managed identity
-        credential = DefaultAzureCredential()
-        token = credential.get_token("https://cognitiveservices.azure.com/.default")
-        client = AzureOpenAI(
-            api_key=token.token,
-            api_version=api_version,
-            azure_endpoint=endpoint,
-        )
+
+    generation_cfg = settings.get_llm_generation_config()
+    deployment = generation_cfg.get("model")
+    memory_key = build_scoped_memory_key(
+        subscription_id="tools",
+        module="icon_mapper",
+    )
     
     # Generate mappings with LLM
     mappings = generate_icon_mappings_with_llm(
         sorted(resource_types),
         icon_categories,
-        client,
+        llm_gateway,
         deployment,
+        memory_key,
     )
     
     if not mappings:

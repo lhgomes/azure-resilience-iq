@@ -4,13 +4,13 @@ from textwrap import dedent
 from time import sleep
 from typing import Any, Dict
 
-from azure.identity import DefaultAzureCredential
-from openai import AzureOpenAI
 from pydantic import ValidationError
 
 from .models import LLMAnnotations
 from .summarizer import summarize_graph_for_llm
 from .batcher import BatchPartitioner, merge_batch_annotations
+from .gateway import create_llm_gateway
+from .memory_scope import build_scoped_memory_key
 from app.graph.builder import edge_id
 from app.settings import get_settings
 
@@ -196,7 +196,7 @@ ARCHITECT_ANNOTATION_PROMPT: str = dedent(
 ).strip()
 
 
-def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
+def annotate_graph(snapshot: Dict[str, Any], subscription_id: str | None = None) -> LLMAnnotations:
     try:
         summary = summarize_graph_for_llm(snapshot)
         id_lookup = {
@@ -216,19 +216,18 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
         return LLMAnnotations(nodes=[], edges=[])
 
     settings = get_settings()
-    aoai_cfg = settings.get_azure_openai_config()
-
-    # Check config before attempting request
-    endpoint = aoai_cfg["endpoint"]
-    deployment = aoai_cfg["deployment"]
-    if not endpoint or not deployment:
-        LOGGER.warning(
-            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set; "
-            "LLM annotation skipped."
-        )
+    llm_gateway = create_llm_gateway(settings)
+    if not llm_gateway.is_available():
+        LOGGER.warning("LLM enabled but configured provider is not available; LLM annotation skipped.")
         return LLMAnnotations(nodes=[], edges=[])
 
-    LOGGER.info("Starting Azure OpenAI annotation request")
+    LOGGER.info("Starting LLM annotation request")
+
+    memory_key = build_scoped_memory_key(
+        subscription_id=subscription_id,
+        module="annotator",
+    )
+    LOGGER.debug("Annotator memory key: %s", memory_key)
 
     # Decide: batch or single call based on graph size
     nodes = summary.get("nodes", [])
@@ -239,13 +238,13 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
 
     if len(nodes) > batch_threshold:
         LOGGER.info("Graph size %d exceeds batch threshold %d; using batched annotation", len(nodes), batch_threshold)
-        annotations = _annotate_batched(summary, id_lookup, max_nodes_per_batch)
+        annotations = _annotate_batched(summary, id_lookup, max_nodes_per_batch, memory_key=memory_key)
     else:
         LOGGER.info("Graph size %d within single-call threshold; using direct annotation", len(nodes))
         try:
-            raw = _call_azure_openai(summary)
+            raw = _call_llm(summary, llm_gateway=llm_gateway, memory_key=memory_key)
         except Exception:
-            LOGGER.exception("Azure OpenAI annotation request failed; falling back to empty annotations")
+            LOGGER.exception("LLM annotation request failed; falling back to empty annotations")
             return LLMAnnotations(nodes=[], edges=[])
 
         try:
@@ -261,7 +260,7 @@ def annotate_graph(snapshot: Dict[str, Any]) -> LLMAnnotations:
         LOGGER.exception("Failed to calculate criticality weights")
         return LLMAnnotations(nodes=[], edges=[])
 
-    LOGGER.info("Azure OpenAI annotation request succeeded; %d nodes, %d edge suggestions", len(annotations.nodes), len(annotations.edges))
+    LOGGER.info("LLM annotation request succeeded; %d nodes, %d edge suggestions", len(annotations.nodes), len(annotations.edges))
     return annotations
 
 
@@ -274,6 +273,7 @@ def _annotate_batched(
     summary: Dict[str, Any],
     id_lookup: Dict[str, str],
     max_nodes_per_batch: int,
+    memory_key: str,
 ) -> LLMAnnotations:
     """
     Annotate a large graph by partitioning into independent batches.
@@ -303,7 +303,7 @@ def _annotate_batched(
         }
 
         try:
-            raw = _call_azure_openai(batch_summary)
+            raw = _call_llm(batch_summary, memory_key=memory_key)
         except Exception:
             LOGGER.exception("Batch %d annotation failed; skipping", batch_idx)
             continue
@@ -485,92 +485,40 @@ def _validate_and_filter_annotations(raw: Dict[str, Any], id_lookup: Dict[str, s
     return LLMAnnotations(nodes=valid_nodes, edges=valid_edges)
 
 
-def _call_azure_openai(summary: Dict[str, Any]) -> Dict[str, Any]:
+def _call_llm(summary: Dict[str, Any], llm_gateway=None, memory_key: str | None = None) -> Dict[str, Any]:
     """
-    Invoke Azure OpenAI with the architect prompt and return parsed JSON.
+    Invoke configured LLM provider with the architect prompt and return parsed JSON.
     The graph summary is treated as authoritative input; the LLM is advisory only.
     """
+    settings = get_settings()
+    llm_gen_cfg = settings.get_llm_generation_config()
+    max_attempts = llm_gen_cfg["max_attempts"]
+    max_tokens = llm_gen_cfg["max_tokens"]
+    deployment = llm_gen_cfg.get("model")
+    provider_gateway = llm_gateway or create_llm_gateway(settings)
 
-    aoai_cfg = get_settings().get_azure_openai_config()
-
-    endpoint = aoai_cfg["endpoint"]
-    deployment = aoai_cfg["deployment"]
-    api_version = aoai_cfg["api_version"]
-    timeout_seconds = aoai_cfg["timeout_seconds"]
-    max_attempts = aoai_cfg["max_attempts"]
-    max_tokens = aoai_cfg["max_tokens"]
-
-    if not endpoint or not deployment:
-        raise RuntimeError("Azure OpenAI endpoint or deployment not configured")
-
-    # Prefer API key if provided; otherwise use AAD.
-    api_key = aoai_cfg.get("api_key")
-    if api_key:
-        client = AzureOpenAI(
-            azure_endpoint=endpoint,
-            api_key=api_key,
-            api_version=api_version,
-            timeout=timeout_seconds,
-        )
-    else:
-        credential = DefaultAzureCredential()
-        token = credential.get_token("https://cognitiveservices.azure.com/.default")
-        client = AzureOpenAI(
-            azure_endpoint=endpoint,
-            azure_ad_token=token.token,
-            api_version=api_version,
-            timeout=timeout_seconds,
-        )
-
-    messages = [
-        {"role": "system", "content": ARCHITECT_ANNOTATION_PROMPT},
-        {
-            "role": "user",
-            "content": f"Graph summary (authoritative):\n{json.dumps(summary, ensure_ascii=False)}",
-        },
-    ]
+    if not provider_gateway.is_available():
+        raise RuntimeError("Configured LLM provider is not available")
 
     for attempt in range(1, max_attempts + 1):
         try:
-            completion = client.chat.completions.create(
-                model=deployment,
-                messages=messages,
-                temperature=0.1,  # low temperature to stay deterministic
+            response = provider_gateway.generate_json(
+                system_prompt=ARCHITECT_ANNOTATION_PROMPT,
+                user_prompt=f"Graph summary (authoritative):\n{json.dumps(summary, ensure_ascii=False)}",
+                temperature=0.1,
                 max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-                timeout=timeout_seconds,
+                model=deployment,
+                memory_key=memory_key,
             )
 
-            content = completion.choices[0].message.content
-            if not content:
-                raise ValueError("Empty response from LLM")
-
-            # Log token usage for visibility
-            usage = getattr(completion, "usage", None) or {}
-            prompt_tokens = getattr(usage, "prompt_tokens", None) if hasattr(usage, "prompt_tokens") else usage.get("prompt_tokens") if isinstance(usage, dict) else None
-            completion_tokens = getattr(usage, "completion_tokens", None) if hasattr(usage, "completion_tokens") else usage.get("completion_tokens") if isinstance(usage, dict) else None
-            total_tokens = getattr(usage, "total_tokens", None) if hasattr(usage, "total_tokens") else usage.get("total_tokens") if isinstance(usage, dict) else None
-            LOGGER.info(
-                "Azure OpenAI usage: prompt_tokens=%s completion_tokens=%s total_tokens=%s",
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-            )
-
-            # Check if response was truncated
-            finish_reason = completion.choices[0].finish_reason
-            if finish_reason == "length":
-                LOGGER.warning("LLM response truncated; increase max_tokens")
-                raise ValueError("Response truncated by token limit")
-
-            return json.loads(content)
+            return response
         except json.JSONDecodeError as e:
-            LOGGER.warning("Azure OpenAI attempt %s/%s failed: invalid JSON - %s", attempt, max_attempts, e)
+            LOGGER.warning("LLM attempt %s/%s failed: invalid JSON - %s", attempt, max_attempts, e)
             if attempt == max_attempts:
                 raise
             sleep(1)  # brief backoff before retry
         except Exception as e:
-            LOGGER.warning("Azure OpenAI attempt %s/%s failed: %s", attempt, max_attempts, e)
+            LOGGER.warning("LLM attempt %s/%s failed: %s", attempt, max_attempts, e)
             if attempt == max_attempts:
                 raise
             sleep(1)  # brief backoff before retry
