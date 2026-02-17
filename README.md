@@ -13,7 +13,7 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 ### Azure Requirements
 
 - Azure subscription with resources to analyze
-- Azure OpenAI service (optional, for LLM annotations)
+- Azure AI Foundry Agent exposed through APIM
 - Appropriate Azure RBAC permissions to query resources
 
 ## Installation
@@ -45,7 +45,7 @@ Notes:
 
 #### Configure Application Settings
 
-Edit `backend/config/app_config.yaml` to set Azure OpenAI and LLM settings:
+Edit `backend/config/app_config.yaml` to set APIM + Foundry and LLM settings:
 
 ```yaml
 llm:
@@ -53,47 +53,45 @@ llm:
   batch_threshold: 50
   max_nodes_per_batch: 30
 
-azure_openai:
-  timeout_seconds: 60
-  max_attempts: 2
-  max_tokens: 6000
+ai_agent:
+  gateway_base_url: "https://<apim-host>/<agent-api-base>"
+  agent_id: "asst_<foundry-agent-id>"
+  api_version: "2025-05-01"
+  subscription_header_name: "api-key"
+  memory_scope: "subscription_or_workload"
+
+  embedding_base_url: "https://<apim-host>/<openai-api-base>"
+  embedding_api_version: "2024-10-21"
+  embedding_subscription_header_name: "api-key"
 ```
 
 Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
 
 #### Configure Chat Feature (Optional)
 
-The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload. The chat feature requires additional Azure OpenAI configuration beyond basic LLM annotations.
+The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload through APIM + Foundry Agent.
 
 **Create Environment File**:
 
 Create a `backend/.env` file (copy from `backend/.env.example` if available) and add:
 
 ```env
-# Azure OpenAI Configuration
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini  # or your chat completion model
-AZURE_OPENAI_API_VERSION=2024-05-01-preview
+# Required APIM Key
+AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
 
-# Chat Feature Configuration (Required for chat to be enabled)
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
-GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+# Optional Embeddings Overrides (for ingestion tooling)
+AI_GATEWAY_EMBEDDING_BASE_URL=https://<apim-host>/<openai-api-base>
+AI_GATEWAY_EMBEDDING_API_VERSION=2024-10-21
+AI_GATEWAY_EMBEDDING_SUBSCRIPTION_HEADER_NAME=api-key
 ```
 
-**Required Environment Variables**:
+**Required Environment Variable**:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | **Yes** | Embeddings model for semantic query validation (e.g., `text-embedding-3-small`) |
-| `AZURE_OPENAI_EMBEDDING_API_VERSION` | **Yes** | API version for embeddings endpoint |
-| `GUARDRAIL_SEMANTIC_THRESHOLD` | **Yes** | Relevance threshold for chat queries (0.0-1.0, recommended: 0.50) |
+| `AI_GATEWAY_SUBSCRIPTION_KEY` | **Yes** | APIM subscription key used by all backend LLM calls |
 
-**How It Works**:
-- The chat feature uses **semantic guardrails** to ensure queries are infrastructure-related
-- Queries are compared against reference workload questions using embeddings
-- If similarity score is below the threshold, the query is rejected
-- If **all three variables** are missing, the chat UI is automatically hidden
+If you do not have an `AI_GATEWAY_SUBSCRIPTION_KEY`, contact the repository maintainer.
 
 **Features**:
 - 💬 Natural language infrastructure analysis
@@ -190,7 +188,7 @@ Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run LLM Annotations (Optional)
 
-If you configured Azure OpenAI and have `llm.enabled: true`, run the LLM annotator:
+If APIM + Foundry is configured and `llm.enabled: true`, run the LLM annotator:
 
 ```bash
 python -m app.llm.run --subscription-id <your-subscription-id>
@@ -764,13 +762,18 @@ Set these in `backend/config/app_config.yaml`.
 | `llm.enabled` | No | `false` | Toggle LLM end-to-end (compute and serve annotations) |
 | `llm.batch_threshold` | No | `50` | Node count threshold for batching annotations |
 | `llm.max_nodes_per_batch` | No | `30` | Max nodes per batch when batching |
-| `azure_openai.endpoint` | Yes (if LLM enabled) | - | Azure OpenAI service endpoint |
-| `azure_openai.deployment` | Yes (if LLM enabled) | - | Azure OpenAI deployment name |
-| `azure_openai.api_version` | No | `2024-05-01-preview` | Azure OpenAI API version |
-| `azure_openai.timeout_seconds` | No | `60` | Request timeout in seconds |
-| `azure_openai.max_attempts` | No | `2` | Maximum retry attempts |
-| `azure_openai.max_tokens` | No | `6000` | Maximum tokens for LLM response |
-| `azure_openai.api_key` | No | empty | API key; if empty, uses DefaultAzureCredential |
+| `llm.model` / `LLM_MODEL` | Yes (if LLM enabled) | - | Model/deployment name used by the agent |
+| `llm.max_attempts` / `LLM_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
+| `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
+| `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
+| `ai_agent.gateway_base_url` | Yes (if LLM enabled) | - | APIM base URL for Foundry Agent threads/runs/messages |
+| `ai_agent.agent_id` | Yes (if LLM enabled) | - | Foundry agent id (`asst_*`) |
+| `ai_agent.api_version` | No | `2025-05-01` | Foundry agent API version via APIM |
+| `ai_agent.subscription_header_name` | No | `api-key` | APIM subscription header name |
+| `AI_GATEWAY_SUBSCRIPTION_KEY` | Yes (if LLM enabled) | - | APIM subscription key |
+| `ai_agent.embedding_base_url` | No | - | APIM OpenAI-style base URL for embeddings ingestion |
+| `ai_agent.embedding_api_version` | No | `2024-10-21` | API version for embeddings ingestion |
+| `ai_agent.embedding_subscription_header_name` | No | `api-key` | APIM header name for embeddings ingestion |
 | `data.dir` | No | `./data` | Base directory for collected artifacts |
 | `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
 
@@ -847,12 +850,12 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 
 ## AI-Powered Chat Assistant
 
-The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance using Azure OpenAI.
+The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance through APIM + Azure AI Foundry Agent.
 
 ### Features
 
 - **Natural Language Queries**: Ask questions about your infrastructure in plain English
-- **Contextual Understanding**: Semantic guardrails ensure queries are workload-related
+- **Contextual Understanding**: APIM-native scope classification and strict ID validation keep responses workload-focused
 - **Query-Type-Specific Responses**: Different response formats for different types of questions:
   - **Findings**: Explains failures and impact
   - **Remediation**: Provides step-by-step fix instructions
@@ -878,29 +881,13 @@ The chat assistant can answer questions like:
 
 ### Configuration
 
-Chat requires three environment variables in `backend/.env`:
+Chat requires APIM key configuration in `backend/.env`:
 
 ```env
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
-GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
 ```
 
-**If these variables are missing**, the chat feature is automatically disabled and hidden from the UI.
-
-### Semantic Guardrails
-
-The chat uses **embeddings-based semantic validation** to prevent off-topic queries:
-
-- User queries are compared against 22 reference infrastructure questions
-- Cosine similarity determines if the query is workload-related
-- Queries below the threshold (default: 0.50) are rejected
-- Reference queries cover: findings, remediation, cost, performance, terraform, dependencies
-
-**Adjusting Threshold**:
-- Lower (0.45): More permissive, allows broader questions
-- Higher (0.55): Stricter, infrastructure-only focus
-- Recommended: 0.50 for balanced validation
+If you do not have this key, contact the repository maintainer.
 
 ### UI Integration
 
@@ -942,35 +929,29 @@ All LLM outputs are validated before being returned:
 
 ### LLM Annotation Issues
 
-**Problem**: "Azure OpenAI endpoint not set"
-- **Solution**: Set `azure_openai.endpoint` and `azure_openai.deployment` in `backend/config/app_config.yaml`, and ensure `llm.enabled` is `true`.
+**Problem**: "LLM gateway unavailable" or agent calls fail
+- **Solution**: Ensure `llm.enabled: true`, `ai_agent.gateway_base_url`, `ai_agent.agent_id`, and `AI_GATEWAY_SUBSCRIPTION_KEY` are correctly configured.
 
 **Problem**: No annotations generated
-- **Solution**: Confirm `llm.enabled` is `true`, Azure OpenAI settings are populated, and (if no `api_key`) you are logged in with `az login`.
+- **Solution**: Confirm `llm.enabled` is `true`, APIM base URL is valid, and the APIM subscription key is active.
 
 ### Chat Issues
 
 **Problem**: Chat feature not visible in UI
-- **Solution**: Check that all required environment variables are set in `backend/.env`:
-  - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
-  - `AZURE_OPENAI_EMBEDDING_API_VERSION`
-  - `GUARDRAIL_SEMANTIC_THRESHOLD`
+- **Solution**: Check `llm.enabled`, `ai_agent.gateway_base_url`, `ai_agent.agent_id`, and `AI_GATEWAY_SUBSCRIPTION_KEY`.
 - **Verification**: Check `/api/chat/availability` endpoint - it should return `{"available": true}`
 
 **Problem**: Queries rejected as out-of-scope
-- **Solution**: Semantic guardrail threshold may be too strict. Try lowering `GUARDRAIL_SEMANTIC_THRESHOLD` from `0.50` to `0.45` to allow more queries through.
+- **Solution**: Query scope classifier rejected the request; rephrase toward workload resources, dependencies, findings, or remediation.
 
 **Problem**: LLM suggesting invalid edges
 - **Solution**: This should not occur - edge suggestions are filtered by query type and logical validation. If you see invalid edges, report as a bug.
 
-**Problem**: Chat returns "Azure OpenAI not configured"
-- **Solution**: Ensure your chat-specific Azure OpenAI deployment is configured in `.env` and that the embedding model is deployed (text-embedding-3-small).
+**Problem**: Chat returns "LLM service is not available"
+- **Solution**: Verify APIM endpoint route, agent id (`asst_*`), and APIM subscription key.
 
 **Problem**: Slow chat responses
-- **Solution**: Embedding generation and similarity checks add latency. Consider:
-  - Using a closer Azure region for OpenAI deployment
-  - Reducing number of reference queries (advanced)
-  - Caching embeddings (future enhancement)
+- **Solution**: Foundry runs are asynchronous and polled through APIM. Reduce prompt size, tune polling/timeouts, and check APIM/backend latency.
 
 ### Backend Issues
 

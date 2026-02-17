@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import get_resources_path, get_subscription_dir
+from app.llm.gateway import create_llm_gateway
 from app.logger import get_logger, setup_logging
 from app.resilience.aprl_integration import APRLEvaluator, generate_resilience_check_id, load_aprl_catalog
 from app.resilience.resilience_correlator import ResourceCorrelator, ResiliencyGroupType
@@ -36,67 +37,28 @@ from app.storage.resilience_evaluations_store import save_resilience_evaluations
 LOGGER = get_logger(__name__)
 
 
-def get_aoai_client(use_real_llm: bool) -> Optional[object]:
+def get_llm_gateway(use_real_llm: bool) -> Optional[object]:
     """
-    Initialize Azure OpenAI client if LLM is enabled.
-    
-    Uses Azure AD authentication (DefaultAzureCredential) if no API key is provided.
-    This allows running in user login context without storing API keys.
+    Initialize configured LLM gateway if LLM is enabled.
     
     Args:
         use_real_llm: Whether to enable LLM (from merged toggle)
         
     Returns:
-        AzureOpenAI client or None if disabled or credentials missing
+        LLM gateway instance or None if disabled/unavailable
     """
     if not use_real_llm:
         return None
-    
+
     try:
-        from openai import AzureOpenAI
-        from azure.identity import DefaultAzureCredential
-    except ImportError:
-        LOGGER.warning("OpenAI or azure-identity package not installed. LLM disabled.")
-        return None
-    
-    aoai_cfg = get_settings().get_azure_openai_config()
-    endpoint = aoai_cfg["endpoint"]
-    deployment = aoai_cfg["deployment"]
-    
-    if not endpoint or not deployment:
-        LOGGER.warning(
-            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set. LLM disabled."
-        )
-        return None
-    
-    try:
-        api_version = aoai_cfg["api_version"]
-        timeout_seconds = aoai_cfg["timeout_seconds"]
-        
-        # Prefer API key if provided; otherwise use Azure AD (DefaultAzureCredential)
-        api_key = aoai_cfg.get("api_key")
-        if api_key:
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                api_key=api_key,
-                api_version=api_version,
-                timeout=timeout_seconds,
-            )
-            LOGGER.info("✓ Azure OpenAI client initialized with API key")
-        else:
-            credential = DefaultAzureCredential()
-            token = credential.get_token("https://cognitiveservices.azure.com/.default")
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                azure_ad_token=token.token,
-                api_version=api_version,
-                timeout=timeout_seconds,
-            )
-            LOGGER.info("✓ Azure OpenAI client initialized with Azure AD authentication")
-        
-        return client
+        gateway = create_llm_gateway(get_settings())
+        if not gateway.is_available():
+            LOGGER.warning("LLM enabled but configured provider is unavailable. LLM disabled.")
+            return None
+        LOGGER.info("✓ LLM gateway initialized")
+        return gateway
     except Exception as e:
-        LOGGER.warning("Failed to initialize Azure OpenAI client: %s. LLM disabled.", e)
+        LOGGER.warning("Failed to initialize LLM gateway: %s. LLM disabled.", e)
         return None
 
 
@@ -609,10 +571,10 @@ def main():
         settings = get_settings()
         setup_logging(args.log_level)
         
-        # Initialize Azure OpenAI client if LLM is enabled
+        # Initialize LLM gateway if LLM is enabled
         use_real_llm = settings.use_real_llm()
-        aoai_client = get_aoai_client(use_real_llm)
-        if use_real_llm and not aoai_client:
+        llm_gateway = get_llm_gateway(use_real_llm)
+        if use_real_llm and not llm_gateway:
             LOGGER.warning("LLM was enabled in config but could not initialize. Using heuristics only.")
         
         LOGGER.info("Loading APRL catalog...")
@@ -659,8 +621,8 @@ def main():
         # Load LLM annotations
         LOGGER.debug("Loading LLM annotations...")
 
-        # Create evaluator with optional LLM client
-        evaluator = APRLEvaluator(catalog, aoai_client=aoai_client)
+        # Create evaluator with optional LLM gateway
+        evaluator = APRLEvaluator(catalog, llm_gateway=llm_gateway)
 
         # Evaluate all resources (one KQL per recommendation per resource type)
         LOGGER.info("Running resilience evaluation on %d resources...", len(resources))
