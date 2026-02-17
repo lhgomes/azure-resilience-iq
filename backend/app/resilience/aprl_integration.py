@@ -325,16 +325,16 @@ class APRLEvaluator:
     to identify resilience gaps and provide recommendations.
     """
     
-    def __init__(self, catalog: APRLCatalog, aoai_client: Optional[object] = None):
+    def __init__(self, catalog: APRLCatalog, llm_gateway: Optional[object] = None):
         """
         Initialize evaluator.
         
         Args:
             catalog: Loaded APRLCatalog
-            aoai_client: Optional Azure OpenAI client for LLM strategy generation
+            llm_gateway: Optional LLM gateway for strategy generation
         """
         self.catalog = catalog
-        self.aoai_client = aoai_client
+        self.llm_gateway = llm_gateway
 
     @staticmethod
     def _inject_resource_filter(kql_query: str, resource_ids: List[str]) -> str:
@@ -579,6 +579,7 @@ class APRLEvaluator:
 
     def _check_property_based_finding(
         self,
+        subscription_id: str,
         resource_type: str,
         aprl_guid: str,
         description: str,
@@ -604,7 +605,11 @@ class APRLEvaluator:
             - is_failing=True if resource likely FAILS the recommendation
             - strategy_used: The ValidationStrategy that was applied, or None
         """
-        validator = HeuristicValidator(aoai_client=self.aoai_client)
+        validator = HeuristicValidator(
+            llm_gateway=self.llm_gateway,
+            subscription_id=subscription_id,
+            resource_type=resource_type,
+        )
         
         # Analyze recommendation to build validation strategy
         # Use heuristics only - LLM escalation is handled separately below
@@ -663,7 +668,7 @@ class APRLEvaluator:
         should_escalate = False
         escalation_reason = None
         
-        if self.aoai_client and strategy.confidence < 0.25:
+        if self.llm_gateway and strategy.confidence < 0.25:
             # Extremely low confidence - may need expert analysis
             should_escalate = True
             escalation_reason = f"extremely low confidence ({strategy.confidence:.0%})"
@@ -1012,6 +1017,7 @@ class APRLEvaluator:
                     rid = res.get("id")
                     if rid:
                         is_failing, strategy = self._check_property_based_finding(
+                            subscription_id=subscription_id,
                             resource_type=resource_type,
                             aprl_guid=rec.aprl_guid,
                             description=rec.description,
@@ -1155,7 +1161,11 @@ class APRLEvaluator:
         # Use unified evaluation for both virtual and missing-KQL items
         # This analyzes actual resource properties for consistent, accurate results
         if pending_items:
-            validator = HeuristicValidator(aoai_client=self.aoai_client)
+            validator = HeuristicValidator(
+                llm_gateway=self.llm_gateway,
+                subscription_id=subscription_id,
+                resource_type=resource_type,
+            )
             
             # Unified evaluation: All pending items analyzed for compliance without KQL
             eval_map = validator.evaluate_resources_without_kql(pending_items)

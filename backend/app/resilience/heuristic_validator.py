@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.llm.gateway import create_llm_gateway
+from app.llm.memory_scope import build_scoped_memory_key
 from app.settings import load_settings
 
 LOGGER = logging.getLogger(__name__)
@@ -96,18 +98,64 @@ class HeuristicValidator:
     how to validate recommendations without KQL files.
     """
 
-    def __init__(self, aoai_client=None):
+    def __init__(
+        self,
+        llm_gateway=None,
+        subscription_id: Optional[str] = None,
+        resource_type: Optional[str] = None,
+    ):
         """
         Initialize validator.
         
         Args:
-            aoai_client: Optional Azure OpenAI client for LLM analysis
+            llm_gateway: Optional provider-agnostic LLM gateway
+            subscription_id: Optional subscription identifier for memory scoping
+            resource_type: Optional resource type for finer memory partitioning
         """
         settings = load_settings()
-        self.aoai_client = aoai_client
+        self.llm_gateway = llm_gateway
+        self.memory_key = build_scoped_memory_key(
+            subscription_id=subscription_id,
+            module="resilience",
+            resource_type=resource_type,
+        )
+        LOGGER.debug("Resilience memory key: %s", self.memory_key)
+
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
         self.learn_more_defaults = settings.get_learn_more_defaults()
-        self.aoai_config = settings.get_azure_openai_config()
+        self.llm_generation_config = settings.get_llm_generation_config()
+
+    def _get_llm_gateway(self):
+        if self.llm_gateway is None:
+            settings = load_settings()
+            self.llm_gateway = create_llm_gateway(settings)
+        return self.llm_gateway
+
+    def _llm_available(self) -> bool:
+        gateway = self._get_llm_gateway()
+        return bool(gateway and gateway.is_available())
+
+    def _generate_text_response(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        deployment = self.llm_generation_config.get("model")
+        gateway = self._get_llm_gateway()
+        if gateway is None:
+            raise RuntimeError("LLM gateway is unavailable")
+
+        return gateway.generate_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=deployment,
+            memory_key=self.memory_key,
+        )
 
     @staticmethod
     def _extract_keywords(text: str) -> List[str]:
@@ -157,7 +205,7 @@ class HeuristicValidator:
         )
         
         # If heuristics found a low-confidence strategy and LLM is available, try LLM instead
-        if strategy and strategy.confidence < 0.5 and use_llm and self.aoai_client:
+        if strategy and strategy.confidence < 0.5 and use_llm and self._llm_available():
             LOGGER.debug(
                 f"Heuristic confidence too low ({strategy.confidence:.1%}) for {aprl_guid}, trying LLM analysis"
             )
@@ -174,7 +222,7 @@ class HeuristicValidator:
             return strategy
         
         # If heuristics fail completely and LLM available, try LLM analysis
-        if use_llm and self.aoai_client:
+        if use_llm and self._llm_available():
             strategy = self._llm_strategy(
                 recommendation_id, aprl_guid, resource_type, description, long_description
             )
@@ -331,10 +379,10 @@ class HeuristicValidator:
         Sends recommendation details to Azure OpenAI and asks for property-based
         validation strategies when heuristics fail.
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return None
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             LOGGER.warning("azure_openai.deployment not set, cannot use LLM")
             return None
@@ -373,23 +421,12 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
         try:
             LOGGER.debug(f"Calling LLM for recommendation {aprl_guid}: {description[:50]}...")
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,  # Use deployment from environment variable
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt="You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
+                user_prompt=prompt,
                 temperature=0.3,
                 max_tokens=500,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
             LOGGER.debug("LLM raw response (truncated): %s", response_text[:2000])
             
@@ -456,10 +493,10 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
         Returns:
             (is_failing, reasoning): True if resource fails recommendation, with explanation
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return False, None
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return False, None
         
@@ -500,20 +537,12 @@ RETURN ONLY VALID JSON."""
                 f"Deep LLM analysis for {aprl_guid} (impact: {impact}) on resource {resource.get('name')}"
             )
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
-                    },
-                    {"role": "user", "content": prompt}
-                ],
+            response_text = self._generate_text_response(
+                system_prompt="You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=800,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             
             # Parse JSON response
             try:
@@ -551,10 +580,10 @@ RETURN ONLY VALID JSON."""
         """
         Generate specific user guidance for manual validation when automated checks cannot be performed.
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
@@ -580,23 +609,12 @@ Include:
 Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
         
         try:
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful Azure guide. Provide clear, actionable guidance for manual validation steps.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            guidance = self._generate_text_response(
+                system_prompt="You are a helpful Azure guide. Provide clear, actionable guidance for manual validation steps.",
+                user_prompt=prompt,
                 temperature=0.3,
                 max_tokens=200,
             )
-            
-            guidance = response.choices[0].message.content.strip()
             LOGGER.info(f"Generated user guidance for manual validation")
             return guidance
             
@@ -612,7 +630,7 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
         if not pending_items:
             return {}
 
-        if not self.aoai_client:
+        if not self._llm_available():
             return {
                 item['id']: {
                     'quick_header': 'Manual review required',
@@ -621,7 +639,7 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
                 for item in pending_items
             }
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return {
                 item['id']: {
@@ -681,23 +699,12 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
         try:
             LOGGER.info(f"Generating batch user guidance for {len(pending_items)} pending items")
 
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert Azure compliance guide. Generate only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt="You are an expert Azure compliance guide. Generate only valid JSON responses.",
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=4000,
             )
-
-            response_text = response.choices[0].message.content.strip()
 
             try:
                 parsed = json.loads(response_text)
@@ -898,7 +905,7 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
         if not pending_items:
             return {}
         
-        if not self.aoai_client:
+        if not self._llm_available():
             # Without LLM, mark all as requiring review
             return {
                 item['id']: {
@@ -910,7 +917,7 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
                 for item in pending_items
             }
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return {
                 item['id']: {
@@ -1054,23 +1061,12 @@ CRITICAL: Absence of evidence IS evidence of absence. If a resilience property i
         try:
             LOGGER.info(f"Evaluating {len(pending_items)} resources without KQL with LLM")
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert Azure resilience evaluator. Analyze Terraform resources for compliance. Generate only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt="You are an expert Azure resilience evaluator. Analyze Terraform resources for compliance. Generate only valid JSON responses.",
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=4500,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
             
             # Sanitize CLI commands: replace double quotes with single quotes in Azure CLI examples

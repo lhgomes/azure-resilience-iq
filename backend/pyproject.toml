@@ -13,9 +13,11 @@ dependencies = [
   "pyyaml",
 
   "azure-identity",
+  "azure-ai-projects",
+  "azure-search-documents",
   "azure-mgmt-resourcegraph",
   "azure-mgmt-subscription",
-  "openai"
+  
 ]
 
 [build-system]

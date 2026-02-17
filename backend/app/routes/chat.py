@@ -52,7 +52,7 @@ async def chat_availability():
     else:
         return {
             "available": False,
-            "reason": "Chat feature requires AZURE_OPENAI_EMBEDDING_DEPLOYMENT, AZURE_OPENAI_EMBEDDING_API_VERSION, and GUARDRAIL_SEMANTIC_THRESHOLD environment variables"
+            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, ai_agent.agent_id, and AI_GATEWAY_SUBSCRIPTION_KEY"
         }
 
 

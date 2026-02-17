@@ -540,6 +540,18 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <>
                   <div className="message-content">{renderMessageContent(msg.content)}</div>
 
+                  {msg.role === 'assistant' && msg.response?.metrics && (
+                    <div className="message-footnote">
+                      ⚙️ {msg.response.metrics.model || msg.response.metrics.provider || 'llm'}
+                      {typeof msg.response.metrics.total_tokens === 'number'
+                        ? ` • ${msg.response.metrics.total_tokens} tokens`
+                        : ''}
+                      {typeof msg.response.metrics.total_ms === 'number'
+                        ? ` • ${(msg.response.metrics.total_ms / 1000).toFixed(1)}s`
+                        : ''}
+                    </div>
+                  )}
+
                   {/* Message actions (edit for user messages, retry for failed responses) */}
                   <div className="message-actions">
                     {msg.role === 'user' && (
@@ -635,6 +647,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       ))}
                     </div>
                   )}
+
+                {msg.response.sources && msg.response.sources.length > 0 && (
+                  <div className="recommendations-section">
+                    <div className="recommendations-header">
+                      📚 Sources:
+                    </div>
+                    {msg.response.sources.map((source, i: number) => (
+                      <div key={i} className="recommendation-item">
+                        <a
+                          href={source.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="resource-chip"
+                        >
+                          {source.title || source.url}
+                        </a>
+                        {source.type && (
+                          <div className="rec-metadata">
+                            <span className="effort">Type: {source.type}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {msg.response.clarifying_questions &&
                   msg.response.clarifying_questions.length > 0 && (

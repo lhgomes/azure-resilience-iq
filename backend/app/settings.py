@@ -92,14 +92,17 @@ class AppSettings:
                 "batch_threshold": 100,
                 "max_nodes_per_batch": 50,
             },
-            "azure_openai": {
-                "endpoint": None,
-                "deployment": None,
-                "api_version": "2024-05-01-preview",
-                "timeout_seconds": 60,
-                "max_attempts": 2,
-                "max_tokens": 6000,
-                "api_key": None,
+            "ai_agent": {
+                "agent_id": None,
+                "gateway_base_url": None,
+                "embedding_base_url": None,
+                "embedding_api_version": "2024-10-21",
+                "embedding_subscription_header_name": "api-key",
+                "api_version": "2025-05-01",
+                "subscription_header_name": "api-key",
+                "memory_scope": "subscription_or_workload",
+                "run_timeout_seconds": 120,
+                "poll_interval_seconds": 1.5,
             },
             "data": {
                 "dir": "./data",
@@ -172,23 +175,32 @@ class AppSettings:
         logging_config = self.config.get("logging", {})
         return logging_config.get("level", "INFO").upper()
 
-    def get_azure_openai_config(self) -> Dict[str, Any]:
-        """Get Azure OpenAI configuration values.
-        
-        Priority: Environment variables > YAML config > defaults
+    def get_llm_generation_config(self) -> Dict[str, Any]:
+        """Get provider-neutral generation settings for LLM calls.
+
+        Priority: generic LLM env/config > defaults.
         """
-        aoai = self.config.get("azure_openai", {})
+        llm_cfg = self.get_llm_config()
         return {
-            "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT") or aoai.get("endpoint"),
-            "deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT") or aoai.get("deployment"),
-            "api_version": os.getenv("AZURE_OPENAI_API_VERSION") or aoai.get("api_version", "2024-05-01-preview"),
-            "timeout_seconds": int(aoai.get("timeout_seconds", 60)),
-            "max_attempts": int(aoai.get("max_attempts", 2)),
-            "max_tokens": int(aoai.get("max_tokens", 6000)),
-            "api_key": os.getenv("AZURE_OPENAI_API_KEY") or aoai.get("api_key"),
-            # Embedding model configuration (for semantic guardrails)
-            "embedding_deployment": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT") or aoai.get("embedding_deployment", "text-embedding-3-small"),
-            "embedding_api_version": os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION") or aoai.get("embedding_api_version", "2024-05-01-preview"),
+            "model": (
+                os.getenv("LLM_MODEL")
+                or llm_cfg.get("model")
+            ),
+            "max_attempts": int(
+                os.getenv("LLM_MAX_ATTEMPTS")
+                or llm_cfg.get("max_attempts")
+                or 2
+            ),
+            "max_tokens": int(
+                os.getenv("LLM_MAX_TOKENS")
+                or llm_cfg.get("max_tokens")
+                or 6000
+            ),
+            "timeout_seconds": int(
+                os.getenv("LLM_TIMEOUT_SECONDS")
+                or llm_cfg.get("timeout_seconds")
+                or 60
+            ),
         }
 
     def get_llm_batching_config(self) -> Dict[str, int]:
@@ -199,41 +211,67 @@ class AppSettings:
             "max_nodes_per_batch": int(llm_cfg.get("max_nodes_per_batch", 50)),
         }
 
-    def get_guardrail_config(self) -> Dict[str, Any]:
-        """Get chat guardrail configuration values.
-        
-        Used for semantic scope validation and content safety.
-        """
-        guardrail_cfg = self.config.get("guardrails", {})
+    def get_ai_agent_config(self) -> Dict[str, Any]:
+        """Get Azure AI Foundry agent configuration values."""
+        agent_cfg = self.config.get("ai_agent", {})
         return {
-            "semantic_threshold": float(os.getenv("GUARDRAIL_SEMANTIC_THRESHOLD") or guardrail_cfg.get("semantic_threshold", 0.50)),
-            "enable_content_safety": os.getenv("GUARDRAIL_ENABLE_CONTENT_SAFETY", "false").lower() == "true",
-            "content_safety_endpoint": os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT", ""),
-            "content_safety_key": os.getenv("AZURE_CONTENT_SAFETY_KEY", ""),
+            "gateway_base_url": (
+                os.getenv("AI_GATEWAY_AGENT_BASE_URL")
+                or agent_cfg.get("gateway_base_url")
+            ),
+            "embedding_base_url": (
+                os.getenv("AI_GATEWAY_EMBEDDING_BASE_URL")
+                or agent_cfg.get("embedding_base_url")
+            ),
+            "subscription_key": os.getenv("AI_GATEWAY_SUBSCRIPTION_KEY"),
+            "subscription_header_name": (
+                os.getenv("AI_GATEWAY_SUBSCRIPTION_HEADER_NAME")
+                or agent_cfg.get("subscription_header_name")
+                or "api-key"
+            ),
+            "embedding_subscription_header_name": (
+                os.getenv("AI_GATEWAY_EMBEDDING_SUBSCRIPTION_HEADER_NAME")
+                or agent_cfg.get("embedding_subscription_header_name")
+                or "api-key"
+            ),
+            "api_version": (
+                os.getenv("AI_GATEWAY_API_VERSION")
+                or agent_cfg.get("api_version", "2025-05-01")
+            ),
+            "embedding_api_version": (
+                os.getenv("AI_GATEWAY_EMBEDDING_API_VERSION")
+                or agent_cfg.get("embedding_api_version", "2024-10-21")
+            ),
+            "agent_id": os.getenv("AI_GATEWAY_AGENT_ID") or agent_cfg.get("agent_id"),
+            "memory_scope": os.getenv("AI_GATEWAY_MEMORY_SCOPE") or agent_cfg.get("memory_scope", "subscription_or_workload"),
+            "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
+            "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
         }
 
     def is_chat_available(self) -> bool:
         """
         Check if chat feature is available (all required config is present).
-        
-        Required configuration:
-        - AZURE_OPENAI_EMBEDDING_DEPLOYMENT
-        - AZURE_OPENAI_EMBEDDING_API_VERSION  
-        - GUARDRAIL_SEMANTIC_THRESHOLD
-        
+
+        Required configuration (APIM + Foundry mode):
+        - llm.enabled=true
+        - ai_agent.gateway_base_url
+        - ai_agent.agent_id (or AI_GATEWAY_AGENT_ID)
+        - AI_GATEWAY_SUBSCRIPTION_KEY
+
         Returns:
             True if all required chat configuration is present
         """
-        aoai_config = self.get_azure_openai_config()
-        guardrail_config = self.get_guardrail_config()
-        
+        ai_agent_config = self.get_ai_agent_config()
+
         required_fields = [
-            aoai_config.get("embedding_deployment"),
-            aoai_config.get("embedding_api_version"),
-            guardrail_config.get("semantic_threshold"),
+            ai_agent_config.get("gateway_base_url"),
+            ai_agent_config.get("agent_id"),
+            ai_agent_config.get("subscription_key"),
         ]
-        
-        return all(field is not None and str(field).strip() != "" for field in required_fields)
+
+        return self.use_real_llm() and all(
+            field is not None and str(field).strip() != "" for field in required_fields
+        )
 
     def get_data_dir(self) -> str:
         """Get base data directory for filesystem artifacts."""

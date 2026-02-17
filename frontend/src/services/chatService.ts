@@ -18,6 +18,24 @@ export interface CriticalityInsight {
   current_score?: number;
 }
 
+export interface ChatSource {
+  title?: string;
+  url: string;
+  type?: string;
+}
+
+export interface ChatMetrics {
+  provider?: string;
+  model?: string;
+  status?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  total_ms?: number;
+  queue_ms?: number;
+  processing_ms?: number;
+}
+
 export interface RemediationStep {
   step: number;
   title: string;
@@ -39,6 +57,8 @@ export interface RemediationGuide {
 
 export interface ChatResponse {
   message: string;
+  sources: ChatSource[];
+  metrics?: ChatMetrics;
   suggested_edges: SuggestedEdge[];
   resources_to_highlight: string[];
   criticality_insights: CriticalityInsight[];
