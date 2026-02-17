@@ -36,7 +36,7 @@ The submodule command initializes the Azure Proactive Resiliency Library (APRL) 
 cd backend
 python3.12 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -e .
+pip install -r requirements.txt
 ```
 
 Notes:
