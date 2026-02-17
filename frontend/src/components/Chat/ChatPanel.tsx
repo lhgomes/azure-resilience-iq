@@ -93,53 +93,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     return fallback || getResourceLabel?.(id) || id;
   };
 
-  const isQueryWorkloadRelated = (query: string): boolean => {
-    /**
-     * Validates that a query is related to the workload.
-     * 
-     * Returns false for:
-     * - General learning/training questions
-     * - Career/certification advice
-     * - Off-topic conversations (news, jokes, etc.)
-     * 
-     * Returns true for:
-     * - Infrastructure and resource questions
-     * - Issue diagnosis and fixes
-     * - Architecture and design questions
-     * - Terraform/IaC code generation
-     */
-    const query_lower = query.toLowerCase();
-    
-    // Definite off-topic patterns - reject immediately
-    const off_topic_keywords = [
-      'tell me a joke',
-      'how to learn',
-      'take a course',
-      'certification',
-      'career advice',
-      'latest news',
-      'recommend a movie',
-      'best practices general',
-      'code review',
-      'personal advice'
-    ];
-    
-    if (off_topic_keywords.some(keyword => query_lower.includes(keyword))) {
-      return false;
-    }
-    
-    // Must contain infrastructure-related keywords
-    const workload_keywords = [
-      'resource', 'infrastructure', 'network', 'vm', 'database',
-      'storage', 'app service', 'failing', 'fail', 'issue', 'problem',
-      'fix', 'remediat', 'recommendation', 'resiliency', 'availab',
-      'zone', 'terraform', 'iac', 'edge', 'relationship',
-      'dependency', 'criticality', 'how', 'why', 'what'
-    ];
-    
-    return workload_keywords.some(keyword => query_lower.includes(keyword));
-  };
-
   const renderResourceChips = (items: Array<{ id: string; label?: string }>): ReactNode => {
     return items.map((item: { id: string; label?: string }) => (
       <button
@@ -295,16 +248,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const handleSendMessage = async (): Promise<void> => {
     if (!input.trim() || isLoading || !chatService.current) return;
-
-    // Validate query is workload-related
-    if (!isQueryWorkloadRelated(input)) {
-      setError(
-        'Please ask a question about your infrastructure. ' +
-        'I can help with resource issues, fixes, architecture, and Terraform code.'
-      );
-      setTimeout(() => setError(null), 5000);
-      return;
-    }
 
     const userMessage: ChatMessageType = {
       id: `msg-${Date.now()}`,

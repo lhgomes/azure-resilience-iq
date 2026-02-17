@@ -204,7 +204,8 @@ async def apply_chat_action(
 async def chat_health(subscription_id: str):
     """Health check for chat service."""
     chat_service = get_chat_service()
-    is_healthy = chat_service.client is not None
+    llm_gateway = getattr(chat_service, "llm_gateway", None)
+    is_healthy = bool(llm_gateway and llm_gateway.is_available())
     
     return {
         "status": "healthy" if is_healthy else "degraded",
