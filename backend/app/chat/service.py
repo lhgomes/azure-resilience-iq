@@ -8,12 +8,10 @@ import logging
 import re
 from typing import List, Optional, Dict, Any, Tuple
 
-from azure.identity import DefaultAzureCredential
-from openai import AzureOpenAI
-
 from app.settings import get_settings
-from app.chat.models import ChatResponse, SuggestedEdge, CriticalityInsight
-from app.chat.guardrails import SemanticGuardrails
+from app.chat.models import ChatResponse, SuggestedEdge, CriticalityInsight, ChatSource, ChatMetrics
+from app.llm.gateway import create_llm_gateway
+from app.llm.memory_scope import build_scoped_memory_key
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,118 +20,15 @@ class ChatService:
     """Service for handling chat interactions with LLM context."""
 
     def __init__(self):
-        """Initialize chat service with Azure OpenAI client and semantic guardrails."""
+        """Initialize chat service with APIM+Foundry gateway and scope classifier guardrails."""
         self.settings = get_settings()
         self.llm_config = self.settings.get_llm_config()
-        self.azure_openai_config = self.settings.get_azure_openai_config()
-        self.guardrail_config = self.settings.get_guardrail_config()
+        self.llm_generation_config = self.settings.get_llm_generation_config()
         
         LOGGER.debug(f"Chat service initialized with LLM config: {self.llm_config}")
-        LOGGER.debug(f"Azure OpenAI endpoint (from .env): {self.azure_openai_config.get('endpoint')}")
         
-        self.client = self._init_client()
-        self.semantic_guardrails = self._init_guardrails()
-
-    def _init_guardrails(self) -> Optional[SemanticGuardrails]:
-        """Initialize semantic guardrails for query scope validation."""
-        if not self.client:
-            LOGGER.warning("Cannot initialize guardrails: LLM client unavailable")
-            return None
-        
-        try:
-            threshold = self.guardrail_config.get('semantic_threshold', 0.55)
-            embedding_deployment = self.azure_openai_config.get('embedding_deployment', 'text-embedding-3-small')
-            
-            guardrails = SemanticGuardrails(
-                client=self.client,
-                embedding_deployment=embedding_deployment,
-                threshold=threshold
-            )
-            
-            LOGGER.info(
-                f"✓ Semantic guardrails initialized (threshold={threshold}, "
-                f"embedding_model={embedding_deployment})"
-            )
-            return guardrails
-        except Exception as e:
-            LOGGER.error(f"Failed to initialize semantic guardrails: {e}", exc_info=True)
-            return None
-
-    def _init_client(self) -> Optional[AzureOpenAI]:
-        """
-        Initialize Azure OpenAI client using managed identity (DefaultAzureCredential).
-        
-        Configuration:
-        - Requires AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT from .env file
-        - These are user-specific and should NOT be in app_config.yaml
-        - Authentication: Uses DefaultAzureCredential (managed identity)
-          * In Azure: managed identity for the resource
-          * Locally: Azure CLI credentials (az login), environment variables, etc.
-        
-        Returns:
-            AzureOpenAI client or None if initialization fails
-        """
-        if not self.settings.use_real_llm():
-            LOGGER.warning("LLM is disabled in configuration (llm.enabled=false)")
-            return None
-
-        endpoint = self.azure_openai_config.get('endpoint')
-        deployment = self.azure_openai_config.get('deployment')
-        api_version = self.azure_openai_config.get('api_version', '2024-05-01-preview')
-
-        LOGGER.debug(f"Checking Azure OpenAI configuration:")
-        LOGGER.debug(f"  endpoint: {endpoint}")
-        LOGGER.debug(f"  deployment: {deployment}")
-        LOGGER.debug(f"  api_version: {api_version}")
-
-        if not endpoint or not deployment:
-            LOGGER.error(
-                f"Azure OpenAI endpoint and deployment are required.\n"
-                f"Configure in your .env file (backend/.env):\n"
-                f"  AZURE_OPENAI_ENDPOINT=https://{{resource}}.openai.azure.com/\n"
-                f"  AZURE_OPENAI_DEPLOYMENT=gpt-4-turbo\n"
-                f"  AZURE_OPENAI_API_VERSION=2024-05-01-preview\n\n"
-                f"Use backend/.env.example as a template.\n"
-                f"IMPORTANT: .env should NOT be committed to the repository!\n"
-                f"Current values: endpoint={endpoint}, deployment={deployment}"
-            )
-            return None
-
-        try:
-            LOGGER.info(
-                f"Initializing Azure OpenAI with managed identity (DefaultAzureCredential)\n"
-                f"  Endpoint: {endpoint}\n"
-                f"  Deployment: {deployment}\n"
-                f"  API Version: {api_version}"
-            )
-            
-            credential = DefaultAzureCredential()
-            
-            # Test token retrieval to catch auth issues early
-            try:
-                test_token = credential.get_token("https://cognitiveservices.azure.com/.default")
-                LOGGER.info(f"✓ Azure credentials verified, token obtained")
-            except Exception as auth_error:
-                LOGGER.error(f"Failed to obtain Azure credentials: {auth_error}", exc_info=True)
-                raise auth_error
-            
-            return AzureOpenAI(
-                api_version=api_version,
-                azure_endpoint=endpoint,
-                azure_ad_token_provider=lambda: credential.get_token(
-                    "https://cognitiveservices.azure.com/.default"
-                ).token,
-            )
-        except Exception as e:
-            LOGGER.error(f"Failed to initialize Azure OpenAI client: {e}", exc_info=True)
-            LOGGER.error(
-                f"Configuration check:\n"
-                f"  - endpoint: {endpoint}\n"
-                f"  - deployment: {deployment}\n"
-                f"  - api_version: {api_version}\n"
-                f"Ensure .env file is set correctly and credentials are available (az login for local dev)"
-            )
-            return None
+        self.llm_gateway = create_llm_gateway(self.settings)
+        LOGGER.info("Using APIM-native scope classifier guardrails")
 
     async def process_query(
         self,
@@ -156,7 +51,7 @@ class ChatService:
         Returns:
             ChatResponse with message, suggestions, and insights
         """
-        if not self.client:
+        if not self.llm_gateway.is_available():
             return ChatResponse(
                 message="LLM service is not available. Please check configuration."
             )
@@ -164,14 +59,12 @@ class ChatService:
         LOGGER.debug(f"Processing chat query: {query[:100]}...")
 
         try:
-            # Validate query scope using semantic guardrails - reject off-topic questions early
-            if self.semantic_guardrails:
-                is_valid, reason = await self.semantic_guardrails.validate_query_full(query)
-                if not is_valid:
-                    LOGGER.info(f"Query rejected as out-of-scope (similarity score): {query[:100]}")
-                    return ChatResponse(message=reason)
-            else:
-                LOGGER.warning("Semantic guardrails unavailable, proceeding without scope validation")
+            memory_key = self._build_memory_key(subscription_id, context)
+            LOGGER.debug("Chat memory key: %s", memory_key)
+            is_valid, reason = self._classify_query_scope(query, memory_key=memory_key)
+            if not is_valid:
+                LOGGER.info("Query rejected by APIM-native scope classifier: %s", query[:100])
+                return ChatResponse(message=reason)
 
             # Normalize graph: convert Edge/Node objects to dicts if needed
             normalized_graph = self._normalize_graph(graph)
@@ -184,24 +77,35 @@ class ChatService:
                 query, normalized_graph, subscription_id, context, conversation_history, query_type
             )
 
-            # Call Azure OpenAI
-            response = self.client.chat.completions.create(
-                model=self.azure_openai_config.get('deployment'),
-                messages=[
-                    {"role": "system", "content": self._system_prompt(query_type)},
-                    {"role": "user", "content": prompt},
-                ],
+            llm_output = self.llm_gateway.generate_json(
+                system_prompt=self._system_prompt(query_type),
+                user_prompt=prompt,
                 temperature=0.7,
-                max_tokens=self.azure_openai_config.get('max_tokens', 2000),
-                response_format={"type": "json_object"}
+                max_tokens=self.llm_generation_config.get('max_tokens', 2000),
+                model=self.llm_generation_config.get('model'),
+                memory_key=memory_key,
             )
 
-            # Parse response
-            content = response.choices[0].message.content
-            llm_output = json.loads(content)
+            invalid_references = self._collect_invalid_references(llm_output, normalized_graph)
+            if invalid_references:
+                LOGGER.warning(
+                    "Detected %d invalid LLM references. Triggering one-shot repair pass.",
+                    len(invalid_references),
+                )
+                repaired = self._repair_llm_output(
+                    llm_output=llm_output,
+                    graph=normalized_graph,
+                    query_type=query_type,
+                    invalid_references=invalid_references,
+                    memory_key=memory_key,
+                )
+                if repaired:
+                    llm_output = repaired
+
+            llm_metrics = self.llm_gateway.get_last_metrics()
 
             # Validate and enrich response
-            return self._process_llm_response(llm_output, normalized_graph)
+            return self._process_llm_response(llm_output, normalized_graph, llm_metrics)
 
         except json.JSONDecodeError as e:
             LOGGER.error(f"Failed to parse LLM JSON response: {e}")
@@ -213,6 +117,22 @@ class ChatService:
             return ChatResponse(
                 message=f"Error processing query: {str(e)}"
             )
+
+    @staticmethod
+    def _build_memory_key(subscription_id: str, context: Optional[Dict[str, Any]]) -> str:
+        """Build memory key scoped to subscription and optional workload."""
+        workload_id = None
+        if isinstance(context, dict):
+            workload_id = (
+                context.get('workload_id')
+                or context.get('selected_workload_id')
+                or context.get('active_workload_id')
+            )
+        return build_scoped_memory_key(
+            subscription_id=subscription_id,
+            workload_id=str(workload_id).strip() if workload_id else None,
+            module="chat",
+        )
 
     def _detect_query_type(self, query: str) -> str:
         """Detect the type of query to route appropriately."""
@@ -228,6 +148,68 @@ class ChatService:
             return 'connections'
         else:
             return 'general'
+
+    def _classify_query_scope(self, query: str, memory_key: Optional[str] = None) -> Tuple[bool, str]:
+        """Classify whether a query is in-scope for workload infrastructure analysis."""
+        query_lower = (query or "").strip().lower()
+        if not query_lower:
+            return False, "Please enter a question about your workload resources, risks, or remediation."
+
+        off_topic_keywords = [
+            "certification", "career", "interview", "salary", "movie", "joke", "recipe",
+            "football", "weather today", "politics", "stock tips", "dating",
+        ]
+        if any(keyword in query_lower for keyword in off_topic_keywords):
+            return False, "Please ask about your Azure workload resources, dependencies, findings, or remediation."
+
+        in_scope_keywords = [
+            "resource", "resources", "workload", "architecture", "dependency", "dependencies",
+            "resilience", "availability", "zone", "critical", "criticality", "important",
+            "top", "risk", "issue", "failing", "failure", "fix", "remediation", "terraform",
+            "recommendation", "database", "storage", "vm", "network", "load balancer",
+        ]
+        if any(keyword in query_lower for keyword in in_scope_keywords):
+            return True, ""
+
+        classifier_system_prompt = (
+            "You are a scope classifier for Azure workload analysis. "
+            "Accept only infrastructure/workload questions (resources, dependencies, failures, remediation, "
+            "architecture, terraform). Reject training/certification/career/general-chat/off-topic questions. "
+            "Return JSON only."
+        )
+        classifier_user_prompt = (
+            "Classify if this query is in-scope for workload infrastructure analysis.\n"
+            "Return exactly this JSON schema:\n"
+            '{"in_scope": true|false, "reason": "short reason"}\n\n'
+            "Examples in-scope:\n"
+            "- What are the top 3 most important resources?\n"
+            "- Which resources are failing resilience checks?\n"
+            "- How do I remediate storage availability issues?\n"
+            "Examples out-of-scope:\n"
+            "- How do I pass Azure certification?\n"
+            "- Tell me a joke\n\n"
+            f"Query:\n{query}"
+        )
+
+        try:
+            result = self.llm_gateway.generate_json(
+                system_prompt=classifier_system_prompt,
+                user_prompt=classifier_user_prompt,
+                temperature=0.0,
+                max_tokens=120,
+                model=self.llm_generation_config.get('model'),
+                memory_key=memory_key,
+            )
+            in_scope = bool(result.get("in_scope", True))
+            reason = str(result.get("reason", "")).strip()
+            if in_scope:
+                return True, ""
+            if not reason:
+                reason = "Please ask about your Azure workload resources, issues, dependencies, or remediation."
+            return False, reason
+        except Exception as error:
+            LOGGER.warning("Scope classifier failed; allowing query (fail-open): %s", error)
+            return True, ""
 
     def _sanitize_response_message(self, message: str) -> str:
         """
@@ -314,6 +296,9 @@ IMPORTANT CONSTRAINTS:
 - Provide confidence scores (0-1) for all suggestions
 - Be technical but clear in explanations
 - All outputs must be valid JSON
+- For `resources_to_highlight`, you MUST return exact node IDs from the graph only
+- For `criticality_insights[].node_id`, you MUST return exact node IDs from the graph only
+- Never use display names (e.g., VM-test-1) in ID fields; use full node IDs exactly as provided
 
 EDGE SUGGESTION RULES (critical):
 - ONLY suggest edges between resources that logically connect
@@ -511,6 +496,7 @@ EDGE SUGGESTIONS: Return [] unless the user asks about connections.
         edges_summary = self._summarize_edges(graph.get('edges', []))
         llm_baseline_summary = self._build_llm_baseline_summary(graph)
         failed_findings_summary = self._summarize_failed_findings(graph)
+        allowed_node_ids = self._build_node_id_catalog(graph)
 
         prompt = f"""
 INFRASTRUCTURE CONTEXT:
@@ -527,6 +513,9 @@ FAILED FINDINGS (authoritative - use these for issue prioritization):
 
 LLM BASELINE ANALYSIS (from prior run):
 {llm_baseline_summary}
+
+ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insights.node_id):
+{allowed_node_ids}
 
 """
         
@@ -572,6 +561,98 @@ LLM BASELINE ANALYSIS (from prior run):
                 prompt += f"{role}: {msg.get('content', '')}\n"
 
         return prompt
+
+    @staticmethod
+    def _build_node_id_catalog(graph: Dict[str, Any], max_ids: int = 250) -> str:
+        """Build authoritative node ID catalog for strict ID-only response fields."""
+        node_ids: List[str] = []
+        for node in graph.get('nodes', []):
+            if isinstance(node, dict):
+                node_id = node.get('id')
+                if isinstance(node_id, str) and node_id.strip():
+                    node_ids.append(node_id.strip())
+
+        if not node_ids:
+            return "(none)"
+
+        if len(node_ids) > max_ids:
+            truncated = node_ids[:max_ids]
+            return "\n".join(f"- {node_id}" for node_id in truncated) + "\n- ..."
+
+        return "\n".join(f"- {node_id}" for node_id in node_ids)
+
+    @staticmethod
+    def _collect_invalid_references(llm_output: Dict[str, Any], graph: Dict[str, Any]) -> List[str]:
+        """Collect invalid node-reference issues in LLM output."""
+        issues: List[str] = []
+        nodes_by_id = {n['id']: n for n in graph.get('nodes', []) if isinstance(n, dict) and n.get('id')}
+
+        for resource_id in llm_output.get('resources_to_highlight', []) or []:
+            if resource_id not in nodes_by_id:
+                issues.append(f"resources_to_highlight invalid id: {resource_id}")
+
+        insights_raw = llm_output.get('criticality_insights', [])
+        insights_list = insights_raw if isinstance(insights_raw, list) else [insights_raw]
+        for insight in insights_list:
+            if not isinstance(insight, dict):
+                continue
+            node_id = insight.get('node_id')
+            if node_id not in nodes_by_id:
+                issues.append(f"criticality_insights invalid node_id: {node_id}")
+
+        for edge in llm_output.get('suggested_edges', []) or []:
+            if not isinstance(edge, dict):
+                continue
+            source = edge.get('source')
+            target = edge.get('target')
+            if source not in nodes_by_id or target not in nodes_by_id:
+                issues.append(f"suggested_edges invalid pair: {source} -> {target}")
+
+        return issues
+
+    def _repair_llm_output(
+        self,
+        *,
+        llm_output: Dict[str, Any],
+        graph: Dict[str, Any],
+        query_type: str,
+        invalid_references: List[str],
+        memory_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        """One-shot repair pass to fix invalid IDs while preserving response intent."""
+        repair_system_prompt = self._system_prompt(query_type)
+        repair_user_prompt = f"""
+Your previous JSON output contained invalid IDs that are not present in the graph.
+
+INVALID REFERENCES TO FIX:
+{chr(10).join(f'- {item}' for item in invalid_references)}
+
+ALLOWED NODE IDS:
+{self._build_node_id_catalog(graph)}
+
+PREVIOUS JSON OUTPUT:
+{json.dumps(llm_output, ensure_ascii=False)}
+
+TASK:
+- Return corrected JSON only.
+- Keep the same overall answer intent.
+- Replace invalid IDs with valid IDs when certain, otherwise remove those entries.
+- Do not invent IDs.
+"""
+
+        try:
+            repaired = self.llm_gateway.generate_json(
+                system_prompt=repair_system_prompt,
+                user_prompt=repair_user_prompt,
+                temperature=0.0,
+                max_tokens=self.llm_generation_config.get('max_tokens', 2000),
+                model=self.llm_generation_config.get('model'),
+                memory_key=memory_key,
+            )
+            return repaired if isinstance(repaired, dict) else None
+        except Exception as error:
+            LOGGER.warning("Repair pass failed; continuing with filtered original output: %s", error)
+            return None
 
     def _build_llm_baseline_summary(self, graph: Dict[str, Any]) -> str:
         """Summarize existing LLM annotations to ground chat in prior analysis."""
@@ -992,8 +1073,33 @@ LLM BASELINE ANALYSIS (from prior run):
             LOGGER.debug(f"Error extracting parent resource from {resource_id}: {e}")
         
         return None
-    def _process_llm_response(self, llm_output: Dict[str, Any], graph: Dict[str, Any]) -> ChatResponse:
+    def _process_llm_response(
+        self,
+        llm_output: Dict[str, Any],
+        graph: Dict[str, Any],
+        llm_metrics: Optional[Dict[str, Any]] = None,
+    ) -> ChatResponse:
         """Validate and process LLM response against guardrails."""
+        sources: List[ChatSource] = []
+        sources_raw = llm_output.get('sources', [])
+        sources_list = sources_raw if isinstance(sources_raw, list) else [sources_raw]
+        for src in sources_list:
+            if isinstance(src, str):
+                url = src.strip()
+                if url.startswith('http'):
+                    sources.append(ChatSource(url=url))
+                continue
+            if not isinstance(src, dict):
+                continue
+            url = str(src.get('url', '')).strip()
+            if not url or not url.startswith('http'):
+                continue
+            sources.append(ChatSource(
+                title=src.get('title'),
+                url=url,
+                type=src.get('type'),
+            ))
+
         # Validate suggested edges
         suggested_edges = []
         nodes_by_id = {n['id']: n for n in graph.get('nodes', [])}
@@ -1072,8 +1178,24 @@ LLM BASELINE ANALYSIS (from prior run):
         # Sanitize message to ensure it's appropriate and not excessively long
         message = self._sanitize_response_message(llm_output.get('message', 'No response'))
 
+        metrics = None
+        if isinstance(llm_metrics, dict) and llm_metrics:
+            metrics = ChatMetrics(
+                provider=llm_metrics.get('provider'),
+                model=llm_metrics.get('model'),
+                status=llm_metrics.get('status'),
+                prompt_tokens=llm_metrics.get('prompt_tokens'),
+                completion_tokens=llm_metrics.get('completion_tokens'),
+                total_tokens=llm_metrics.get('total_tokens'),
+                total_ms=llm_metrics.get('total_ms'),
+                queue_ms=llm_metrics.get('queue_ms'),
+                processing_ms=llm_metrics.get('processing_ms'),
+            )
+
         return ChatResponse(
             message=message,
+            sources=sources,
+            metrics=metrics,
             suggested_edges=suggested_edges,
             resources_to_highlight=resources_to_highlight,
             criticality_insights=criticality_insights,

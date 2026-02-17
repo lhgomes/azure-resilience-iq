@@ -290,6 +290,13 @@
   border: 1px solid var(--chat-border);
 }
 
+.message-footnote {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: -2px;
+  padding: 0 6px;
+}
+
 .message-actions {
   display: flex;
   gap: 8px;

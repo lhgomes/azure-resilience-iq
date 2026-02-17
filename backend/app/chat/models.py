@@ -21,6 +21,26 @@ class CriticalityInsight(BaseModel):
     current_score: Optional[int] = None
 
 
+class ChatSource(BaseModel):
+    """Source citation from LLM response."""
+    title: Optional[str] = None
+    url: str
+    type: Optional[str] = None
+
+
+class ChatMetrics(BaseModel):
+    """LLM run metadata and performance metrics."""
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    status: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    total_ms: Optional[int] = None
+    queue_ms: Optional[int] = None
+    processing_ms: Optional[int] = None
+
+
 class ChatRequest(BaseModel):
     """Request for chat service."""
     message: str
@@ -32,6 +52,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Response from chat service."""
     message: str
+    sources: List[ChatSource] = Field(default_factory=list)
+    metrics: Optional[ChatMetrics] = None
     suggested_edges: List[SuggestedEdge] = Field(default_factory=list)
     resources_to_highlight: List[str] = Field(default_factory=list)
     criticality_insights: List[CriticalityInsight] = Field(default_factory=list)

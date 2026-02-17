@@ -94,7 +94,7 @@ def main():
 
         # Run annotator
         LOGGER.info("Running LLM annotator...")
-        annotations = annotate_graph(graph)
+        annotations = annotate_graph(graph, subscription_id=args.subscription_id)
 
         if not annotations.nodes and not annotations.edges:
             LOGGER.warning("Annotator returned no results; check configuration")
