@@ -17,3 +17,4 @@ uvicorn
 # Tooling and tests
 pytest
 yamale
+numpy
