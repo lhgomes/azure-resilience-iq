@@ -8,6 +8,7 @@ import logging
 import re
 from typing import List, Optional, Dict, Any, Tuple
 
+from app.config import get_resources_path
 from app.settings import get_settings
 from app.chat.models import ChatResponse, SuggestedEdge, CriticalityInsight, ChatSource, ChatMetrics
 from app.llm.gateway import create_llm_gateway
@@ -28,6 +29,7 @@ class ChatService:
         LOGGER.debug(f"Chat service initialized with LLM config: {self.llm_config}")
         
         self.llm_gateway = create_llm_gateway(self.settings)
+        self._resource_index_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
         LOGGER.info("Using APIM-native scope classifier guardrails")
 
     async def process_query(
@@ -497,6 +499,12 @@ EDGE SUGGESTIONS: Return [] unless the user asks about connections.
         llm_baseline_summary = self._build_llm_baseline_summary(graph)
         failed_findings_summary = self._summarize_failed_findings(graph)
         allowed_node_ids = self._build_node_id_catalog(graph)
+        detailed_resource_context = self._build_detailed_resource_context(
+            query=query,
+            graph=graph,
+            subscription_id=subscription_id,
+            context=context,
+        )
 
         prompt = f"""
 INFRASTRUCTURE CONTEXT:
@@ -513,6 +521,9 @@ FAILED FINDINGS (authoritative - use these for issue prioritization):
 
 LLM BASELINE ANALYSIS (from prior run):
 {llm_baseline_summary}
+
+DETAILED RESOURCE CONTEXT (auto-included only when needed):
+{detailed_resource_context}
 
 ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insights.node_id):
 {allowed_node_ids}
@@ -561,6 +572,158 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
                 prompt += f"{role}: {msg.get('content', '')}\n"
 
         return prompt
+
+    def _query_requires_resource_details(self, query: str) -> bool:
+        """Return True when low-level resource facts are likely required."""
+        query_lower = (query or "").lower()
+        detail_indicators = [
+            "disk size", "size gb", "sku", "vm sku", "vm size", "instance size",
+            "backup", "retention", "retention policy", "restore", "recovery point",
+            "cost", "pricing", "estimate", "iops", "throughput",
+            "storage type", "lrs", "zrs", "performance",
+        ]
+        return any(term in query_lower for term in detail_indicators)
+
+    def _load_resource_index(self, subscription_id: str) -> Dict[str, Dict[str, Any]]:
+        """Load raw resources from collector output keyed by normalized resource ID."""
+        cached = self._resource_index_cache.get(subscription_id)
+        if cached is not None:
+            return cached
+
+        resource_index: Dict[str, Dict[str, Any]] = {}
+        try:
+            resources_path = get_resources_path(subscription_id)
+            if resources_path.exists():
+                raw = json.loads(resources_path.read_text())
+                resources = raw.get("resources", []) if isinstance(raw, dict) else raw
+                if isinstance(resources, list):
+                    for resource in resources:
+                        if not isinstance(resource, dict):
+                            continue
+                        resource_id = resource.get("id")
+                        if isinstance(resource_id, str) and resource_id.strip():
+                            resource_index[resource_id.strip().lower()] = resource
+        except Exception as exc:
+            LOGGER.debug("Could not load raw resource index for detailed context: %s", exc)
+
+        self._resource_index_cache[subscription_id] = resource_index
+        return resource_index
+
+    def _extract_resource_facts(self, resource: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract compact operational facts from a raw collector resource."""
+        properties = resource.get("properties") if isinstance(resource.get("properties"), dict) else {}
+        sku_data = resource.get("sku") if isinstance(resource.get("sku"), dict) else {}
+        hardware_profile = properties.get("hardwareProfile") if isinstance(properties.get("hardwareProfile"), dict) else {}
+        storage_profile = properties.get("storageProfile") if isinstance(properties.get("storageProfile"), dict) else {}
+        os_disk = storage_profile.get("osDisk") if isinstance(storage_profile.get("osDisk"), dict) else {}
+        managed_disk = os_disk.get("managedDisk") if isinstance(os_disk.get("managedDisk"), dict) else {}
+        backup_policy = properties.get("backupPolicy") if isinstance(properties.get("backupPolicy"), dict) else {}
+        retention_policy = properties.get("retentionPolicy") if isinstance(properties.get("retentionPolicy"), dict) else {}
+
+        facts: Dict[str, Any] = {
+            "name": resource.get("name"),
+            "type": resource.get("type"),
+            "location": resource.get("location"),
+        }
+
+        if sku_data.get("name"):
+            facts["sku_name"] = sku_data.get("name")
+        if sku_data.get("tier"):
+            facts["sku_tier"] = sku_data.get("tier")
+
+        vm_size = hardware_profile.get("vmSize") or properties.get("vmSize")
+        if vm_size:
+            facts["vm_size"] = vm_size
+
+        disk_size_gb = (
+            properties.get("diskSizeGB")
+            or properties.get("diskSizeGb")
+            or os_disk.get("diskSizeGB")
+            or os_disk.get("diskSizeGb")
+        )
+        if disk_size_gb is not None:
+            facts["disk_size_gb"] = disk_size_gb
+
+        storage_account_type = properties.get("storageAccountType") or managed_disk.get("storageAccountType")
+        if storage_account_type:
+            facts["storage_account_type"] = storage_account_type
+
+        retention_days = retention_policy.get("retentionDays") or properties.get("retentionDays")
+        if retention_days is not None:
+            facts["retention_days"] = retention_days
+
+        backup_policy_name = backup_policy.get("name") or properties.get("backupPolicyName")
+        if backup_policy_name:
+            facts["backup_policy"] = backup_policy_name
+
+        return {key: value for key, value in facts.items() if value is not None and value != ""}
+
+    def _collect_target_resource_ids(
+        self,
+        query: str,
+        graph: Dict[str, Any],
+        context: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Find target resource IDs for detailed context extraction."""
+        candidates: List[str] = []
+
+        if context and context.get("selected_resource_id"):
+            candidates.append(str(context.get("selected_resource_id")))
+
+        query_ids = re.findall(r"/subscriptions/[a-z0-9_\-./]+", query or "", flags=re.IGNORECASE)
+        candidates.extend(query_ids)
+
+        if not candidates:
+            nodes = graph.get("nodes", [])
+            top_nodes = sorted(
+                [n for n in nodes if isinstance(n, dict)],
+                key=lambda n: n.get("data", {}).get("criticality_score", 0),
+                reverse=True,
+            )[:3]
+            candidates.extend(str(node.get("id")) for node in top_nodes if node.get("id"))
+
+        deduped: List[str] = []
+        seen = set()
+        for resource_id in candidates:
+            normalized = str(resource_id).strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(str(resource_id).strip())
+
+        return deduped[:5]
+
+    def _build_detailed_resource_context(
+        self,
+        query: str,
+        graph: Dict[str, Any],
+        subscription_id: str,
+        context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Build low-level resource facts section only for detail-heavy queries."""
+        if not self._query_requires_resource_details(query):
+            return "Not required for this query."
+
+        resource_index = self._load_resource_index(subscription_id)
+        if not resource_index:
+            return "Detailed resource inventory unavailable."
+
+        target_resource_ids = self._collect_target_resource_ids(query, graph, context)
+        if not target_resource_ids:
+            return "No target resources identified for detailed context."
+
+        lines: List[str] = []
+        for resource_id in target_resource_ids:
+            resource = resource_index.get(resource_id.lower())
+            if not resource:
+                continue
+            facts = self._extract_resource_facts(resource)
+            if facts:
+                lines.append(f"- {resource_id}: {json.dumps(facts, ensure_ascii=False)}")
+
+        if not lines:
+            return "No low-level facts found for target resources."
+
+        return "\n".join(lines)
 
     @staticmethod
     def _build_node_id_catalog(graph: Dict[str, Any], max_ids: int = 250) -> str:
