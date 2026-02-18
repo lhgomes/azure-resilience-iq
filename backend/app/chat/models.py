@@ -62,6 +62,7 @@ class ChatResponse(BaseModel):
     terraform_code: Optional[str] = None
     terraform_validation: Optional[str] = None
     clarifying_questions: List[str] = Field(default_factory=list)
+    rag_trace: Optional[Dict[str, Any]] = None
     raw_llm_output: Optional[Dict[str, Any]] = None
 
 

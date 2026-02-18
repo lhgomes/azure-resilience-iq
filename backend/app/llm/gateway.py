@@ -33,6 +33,7 @@ class LLMGateway(ABC):
         max_tokens: int,
         model: Optional[str] = None,
         memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a JSON object response from the provider."""
 
@@ -46,6 +47,7 @@ class LLMGateway(ABC):
         max_tokens: int,
         model: Optional[str] = None,
         memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> str:
         """Generate plain text response from the provider."""
 
@@ -70,6 +72,9 @@ class FoundryAgentGateway(LLMGateway):
         self._last_metrics: Optional[Dict[str, Any]] = None
         self._memory_scope = str(self.config.get("memory_scope", "subscription_or_workload")).strip().lower()
         self._agent_id = self.config.get("agent_id")
+        self._chat_agent_id = self.config.get("chat_agent_id")
+        self._resilience_agent_id = self.config.get("resilience_agent_id")
+        self._annotations_agent_id = self.config.get("annotations_agent_id")
         self._gateway_base_url = str(self.config.get("gateway_base_url") or "").strip().rstrip("/")
         self._subscription_key = str(self.config.get("subscription_key") or "").strip()
         self._subscription_header = str(self.config.get("subscription_header_name") or "api-key").strip()
@@ -80,16 +85,6 @@ class FoundryAgentGateway(LLMGateway):
 
     def _init_client(self) -> None:
         if not self._enabled:
-            return
-
-        if not self._agent_id:
-            LOGGER.error(
-                "ai_agent.agent_id (or AZURE_AI_FOUNDRY_AGENT_ID) is required when llm.provider=azure_ai_foundry_agent"
-            )
-            return
-
-        if not str(self._agent_id).startswith("asst"):
-            LOGGER.error("Foundry agent id must be exact asst_* id when using APIM gateway")
             return
 
         if not self._gateway_base_url:
@@ -258,9 +253,27 @@ class FoundryAgentGateway(LLMGateway):
 
         return ""
 
-    def _run_agent(self, *, system_prompt: str, user_prompt: str, memory_key: Optional[str] = None) -> str:
-        if not self._session or not self._agent_id:
+    def _resolve_agent_id(self, override_agent_id: Optional[str] = None) -> Optional[str]:
+        """Resolve assistant id for a request."""
+        if override_agent_id is None:
+            return None
+        selected_value = str(override_agent_id).strip()
+        return selected_value or None
+
+    def _run_agent(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> str:
+        selected_agent_id = self._resolve_agent_id(agent_id)
+        if not self._session or not selected_agent_id:
             raise RuntimeError("Foundry agent gateway is not available")
+
+        if not str(selected_agent_id).startswith("asst"):
+            raise RuntimeError("Foundry agent id must be exact asst_* id when using APIM gateway")
 
         thread_id = self._get_thread_id(memory_key)
         combined_prompt = (
@@ -279,7 +292,7 @@ class FoundryAgentGateway(LLMGateway):
         run = self._http(
             "POST",
             f"/threads/{thread_id}/runs?api-version={self._api_version}",
-            payload={"assistant_id": self._agent_id},
+            payload={"assistant_id": selected_agent_id},
         )
         run_id = str(run.get("id", "") or "")
         if not run_id:
@@ -340,7 +353,17 @@ class FoundryAgentGateway(LLMGateway):
         raise RuntimeError("Foundry agent returned no assistant text output")
 
     def is_available(self) -> bool:
-        return self._enabled and self._session is not None and bool(self._agent_id)
+        any_configured_agent = any(
+            bool(str(value).strip())
+            for value in [
+                self._chat_agent_id,
+                self._resilience_agent_id,
+                self._annotations_agent_id,
+                self._agent_id,
+            ]
+            if value is not None
+        )
+        return self._enabled and self._session is not None and any_configured_agent
 
     def generate_json(
         self,
@@ -351,8 +374,14 @@ class FoundryAgentGateway(LLMGateway):
         max_tokens: int,
         model: Optional[str] = None,
         memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        response_text = self._run_agent(system_prompt=system_prompt, user_prompt=user_prompt, memory_key=memory_key)
+        response_text = self._run_agent(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            memory_key=memory_key,
+            agent_id=agent_id,
+        )
         return self._extract_json_object(response_text)
 
     def generate_text(
@@ -364,8 +393,14 @@ class FoundryAgentGateway(LLMGateway):
         max_tokens: int,
         model: Optional[str] = None,
         memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> str:
-        return self._run_agent(system_prompt=system_prompt, user_prompt=user_prompt, memory_key=memory_key)
+        return self._run_agent(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            memory_key=memory_key,
+            agent_id=agent_id,
+        )
 
     def get_last_metrics(self) -> Optional[Dict[str, Any]]:
         return self._last_metrics

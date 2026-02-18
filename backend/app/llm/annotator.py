@@ -496,9 +496,12 @@ def _call_llm(summary: Dict[str, Any], llm_gateway=None, memory_key: str | None 
     max_tokens = llm_gen_cfg["max_tokens"]
     deployment = llm_gen_cfg.get("model")
     provider_gateway = llm_gateway or create_llm_gateway(settings)
+    annotations_agent_id = settings.get_agent_id_for_flow("annotations")
 
     if not provider_gateway.is_available():
         raise RuntimeError("Configured LLM provider is not available")
+    if not annotations_agent_id:
+        raise RuntimeError("Annotations agent id not configured. Set AI_GATEWAY_ANNOTATIONS_AGENT_ID.")
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -509,6 +512,7 @@ def _call_llm(summary: Dict[str, Any], llm_gateway=None, memory_key: str | None 
                 max_tokens=max_tokens,
                 model=deployment,
                 memory_key=memory_key,
+                agent_id=annotations_agent_id,
             )
 
             return response
