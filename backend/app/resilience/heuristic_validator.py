@@ -124,6 +124,7 @@ class HeuristicValidator:
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
         self.learn_more_defaults = settings.get_learn_more_defaults()
         self.llm_generation_config = settings.get_llm_generation_config()
+        self.resilience_agent_id = settings.get_agent_id_for_flow("resilience")
 
     def _get_llm_gateway(self):
         if self.llm_gateway is None:
@@ -147,6 +148,8 @@ class HeuristicValidator:
         gateway = self._get_llm_gateway()
         if gateway is None:
             raise RuntimeError("LLM gateway is unavailable")
+        if not self.resilience_agent_id:
+            raise RuntimeError("Resilience agent id not configured. Set AI_GATEWAY_RESILIENCE_AGENT_ID.")
 
         return gateway.generate_text(
             system_prompt=system_prompt,
@@ -155,6 +158,7 @@ class HeuristicValidator:
             max_tokens=max_tokens,
             model=deployment,
             memory_key=self.memory_key,
+            agent_id=self.resilience_agent_id,
         )
 
     @staticmethod

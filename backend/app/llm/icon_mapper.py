@@ -178,6 +178,7 @@ def generate_icon_mappings_with_llm(
     llm_gateway: LLMGateway,
     model: Optional[str],
     memory_key: str,
+    agent_id: str,
     batch_size: int = 100
 ) -> Dict[str, str]:
     """Use LLM to generate mappings from resource types to icon paths in batches."""
@@ -237,6 +238,7 @@ Map ALL {len(batch)} resource types in this batch:
                 max_tokens=16000,
                 model=model,
                 memory_key=memory_key,
+                agent_id=agent_id,
             )
 
             if not isinstance(batch_mappings, dict):
@@ -279,6 +281,11 @@ def main():
 
     generation_cfg = settings.get_llm_generation_config()
     deployment = generation_cfg.get("model")
+    annotations_agent_id = settings.get_agent_id_for_flow("annotations")
+    if not annotations_agent_id:
+        print("Annotations agent id not configured; aborting icon generation.")
+        return
+
     memory_key = build_scoped_memory_key(
         subscription_id="tools",
         module="icon_mapper",
@@ -291,6 +298,7 @@ def main():
         llm_gateway,
         deployment,
         memory_key,
+        annotations_agent_id,
     )
     
     if not mappings:

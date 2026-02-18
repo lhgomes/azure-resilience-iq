@@ -52,7 +52,7 @@ async def chat_availability():
     else:
         return {
             "available": False,
-            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, ai_agent.agent_id, and AI_GATEWAY_SUBSCRIPTION_KEY"
+            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, flow-specific agent ids (chat/resilience/annotations), and AI_GATEWAY_SUBSCRIPTION_KEY"
         }
 
 
@@ -68,6 +68,7 @@ def get_chat_service() -> ChatService:
 async def chat_message(
     subscription_id: str,
     request: ChatRequest,
+    include_rag_trace: bool = Query(False, description="Include debug rag_trace diagnostics in response"),
 ):
     """
     Process user message with LLM context.
@@ -120,6 +121,7 @@ async def chat_message(
             subscription_id=subscription_id,
             context=request.context,
             conversation_history=request.conversation_history,
+            include_rag_trace=include_rag_trace,
         )
 
         LOGGER.debug(f"Chat response generated successfully")

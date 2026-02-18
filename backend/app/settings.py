@@ -93,7 +93,9 @@ class AppSettings:
                 "max_nodes_per_batch": 50,
             },
             "ai_agent": {
-                "agent_id": None,
+                "chat_agent_id": None,
+                "resilience_agent_id": None,
+                "annotations_agent_id": None,
                 "gateway_base_url": None,
                 "embedding_base_url": None,
                 "embedding_api_version": "2024-10-21",
@@ -242,11 +244,38 @@ class AppSettings:
                 os.getenv("AI_GATEWAY_EMBEDDING_API_VERSION")
                 or agent_cfg.get("embedding_api_version", "2024-10-21")
             ),
-            "agent_id": os.getenv("AI_GATEWAY_AGENT_ID") or agent_cfg.get("agent_id"),
+            "chat_agent_id": os.getenv("AI_GATEWAY_CHAT_AGENT_ID") or agent_cfg.get("chat_agent_id"),
+            "resilience_agent_id": (
+                os.getenv("AI_GATEWAY_RESILIENCE_AGENT_ID")
+                or agent_cfg.get("resilience_agent_id")
+            ),
+            "annotations_agent_id": (
+                os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_ID")
+                or agent_cfg.get("annotations_agent_id")
+            ),
             "memory_scope": os.getenv("AI_GATEWAY_MEMORY_SCOPE") or agent_cfg.get("memory_scope", "subscription_or_workload"),
             "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
             "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
         }
+
+    def get_agent_id_for_flow(self, flow: str) -> Optional[str]:
+        """Get configured agent id for a chat orchestration flow.
+
+        Flow values:
+        - chat
+        - resilience
+        - annotations
+        """
+        ai_agent_config = self.get_ai_agent_config()
+        flow_map = {
+            "chat": ai_agent_config.get("chat_agent_id"),
+            "resilience": ai_agent_config.get("resilience_agent_id"),
+            "annotations": ai_agent_config.get("annotations_agent_id"),
+        }
+        selected = flow_map.get((flow or "").strip().lower())
+        if selected and str(selected).strip():
+            return str(selected).strip()
+        return None
 
     def is_chat_available(self) -> bool:
         """
@@ -255,7 +284,8 @@ class AppSettings:
         Required configuration (APIM + Foundry mode):
         - llm.enabled=true
         - ai_agent.gateway_base_url
-        - ai_agent.agent_id (or AI_GATEWAY_AGENT_ID)
+                - flow-specific agent ids:
+                    AI_GATEWAY_CHAT_AGENT_ID / AI_GATEWAY_RESILIENCE_AGENT_ID / AI_GATEWAY_ANNOTATIONS_AGENT_ID
         - AI_GATEWAY_SUBSCRIPTION_KEY
 
         Returns:
@@ -263,10 +293,16 @@ class AppSettings:
         """
         ai_agent_config = self.get_ai_agent_config()
 
+        required_flow_ids = [
+            ai_agent_config.get("chat_agent_id"),
+            ai_agent_config.get("resilience_agent_id"),
+            ai_agent_config.get("annotations_agent_id"),
+        ]
+
         required_fields = [
             ai_agent_config.get("gateway_base_url"),
-            ai_agent_config.get("agent_id"),
             ai_agent_config.get("subscription_key"),
+            *required_flow_ids,
         ]
 
         return self.use_real_llm() and all(

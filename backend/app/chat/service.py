@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from typing import List, Optional, Dict, Any, Tuple
+from uuid import uuid4
 
 from app.config import get_resources_path
 from app.settings import get_settings
@@ -25,6 +26,7 @@ class ChatService:
         self.settings = get_settings()
         self.llm_config = self.settings.get_llm_config()
         self.llm_generation_config = self.settings.get_llm_generation_config()
+        self.ai_agent_config = self.settings.get_ai_agent_config()
         
         LOGGER.debug(f"Chat service initialized with LLM config: {self.llm_config}")
         
@@ -39,6 +41,7 @@ class ChatService:
         subscription_id: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        include_rag_trace: bool = False,
     ) -> ChatResponse:
         """
         Process user query with graph context using LLM.
@@ -61,9 +64,26 @@ class ChatService:
         LOGGER.debug(f"Processing chat query: {query[:100]}...")
 
         try:
-            memory_key = self._build_memory_key(subscription_id, context)
+            trace_id = str(uuid4())
+            query_type = self._detect_query_type(query)
+            flow = self._resolve_flow(query_type=query_type, query=query, context=context)
+            target_agent_id = self.settings.get_agent_id_for_flow(flow)
+            if not target_agent_id:
+                return ChatResponse(
+                    message=(
+                        f"Agent configuration missing for '{flow}' flow. "
+                        "Set AI_GATEWAY_CHAT_AGENT_ID, AI_GATEWAY_RESILIENCE_AGENT_ID, "
+                        "and AI_GATEWAY_ANNOTATIONS_AGENT_ID."
+                    )
+                )
+
+            memory_key = self._build_memory_key(subscription_id, context, module_suffix=flow)
             LOGGER.debug("Chat memory key: %s", memory_key)
-            is_valid, reason = self._classify_query_scope(query, memory_key=memory_key)
+            is_valid, reason = self._classify_query_scope(
+                query,
+                memory_key=memory_key,
+                agent_id=target_agent_id,
+            )
             if not is_valid:
                 LOGGER.info("Query rejected by APIM-native scope classifier: %s", query[:100])
                 return ChatResponse(message=reason)
@@ -71,21 +91,19 @@ class ChatService:
             # Normalize graph: convert Edge/Node objects to dicts if needed
             normalized_graph = self._normalize_graph(graph)
             
-            # Detect query type and route appropriately
-            query_type = self._detect_query_type(query)
-            
             # Build prompt with context
             prompt = self._build_prompt(
                 query, normalized_graph, subscription_id, context, conversation_history, query_type
             )
 
             llm_output = self.llm_gateway.generate_json(
-                system_prompt=self._system_prompt(query_type),
+                system_prompt=self._system_prompt(query_type, flow),
                 user_prompt=prompt,
                 temperature=0.7,
                 max_tokens=self.llm_generation_config.get('max_tokens', 2000),
                 model=self.llm_generation_config.get('model'),
                 memory_key=memory_key,
+                agent_id=target_agent_id,
             )
 
             invalid_references = self._collect_invalid_references(llm_output, normalized_graph)
@@ -98,8 +116,10 @@ class ChatService:
                     llm_output=llm_output,
                     graph=normalized_graph,
                     query_type=query_type,
+                    flow=flow,
                     invalid_references=invalid_references,
                     memory_key=memory_key,
+                    agent_id=target_agent_id,
                 )
                 if repaired:
                     llm_output = repaired
@@ -107,7 +127,16 @@ class ChatService:
             llm_metrics = self.llm_gateway.get_last_metrics()
 
             # Validate and enrich response
-            return self._process_llm_response(llm_output, normalized_graph, llm_metrics)
+            return self._process_llm_response(
+                llm_output,
+                normalized_graph,
+                llm_metrics,
+                flow=flow,
+                include_rag_trace=include_rag_trace,
+                target_agent_id=target_agent_id,
+                memory_key=memory_key,
+                trace_id=trace_id,
+            )
 
         except json.JSONDecodeError as e:
             LOGGER.error(f"Failed to parse LLM JSON response: {e}")
@@ -121,7 +150,11 @@ class ChatService:
             )
 
     @staticmethod
-    def _build_memory_key(subscription_id: str, context: Optional[Dict[str, Any]]) -> str:
+    def _build_memory_key(
+        subscription_id: str,
+        context: Optional[Dict[str, Any]],
+        module_suffix: str = "chat",
+    ) -> str:
         """Build memory key scoped to subscription and optional workload."""
         workload_id = None
         if isinstance(context, dict):
@@ -133,8 +166,40 @@ class ChatService:
         return build_scoped_memory_key(
             subscription_id=subscription_id,
             workload_id=str(workload_id).strip() if workload_id else None,
-            module="chat",
+            module=f"chat.{module_suffix}",
         )
+
+    @staticmethod
+    def _resolve_flow(
+        query_type: str,
+        query: str,
+        context: Optional[Dict[str, Any]],
+    ) -> str:
+        """Route query to chat/resilience/annotations specialist flow."""
+        if query_type == 'connections':
+            return 'annotations'
+
+        if query_type in {'findings', 'remediation', 'terraform'}:
+            return 'resilience'
+
+        query_lower = (query or '').lower()
+        annotations_terms = ('topology', 'dependency', 'dependencies', 'relationship', 'relationships', 'criticality')
+        resilience_terms = ('resilien', 'availability', 'fail', 'failing', 'remediat', 'reliability', 'dr', 'disaster')
+
+        if any(term in query_lower for term in annotations_terms):
+            return 'annotations'
+        if any(term in query_lower for term in resilience_terms):
+            return 'resilience'
+
+        tab = ''
+        if isinstance(context, dict):
+            tab = str(context.get('tab') or '').lower()
+        if tab in {'connections', 'dependencies', 'architecture'}:
+            return 'annotations'
+        if tab in {'findings', 'remediation', 'resilience', 'recommendations', 'terraform'}:
+            return 'resilience'
+
+        return 'chat'
 
     def _detect_query_type(self, query: str) -> str:
         """Detect the type of query to route appropriately."""
@@ -151,7 +216,12 @@ class ChatService:
         else:
             return 'general'
 
-    def _classify_query_scope(self, query: str, memory_key: Optional[str] = None) -> Tuple[bool, str]:
+    def _classify_query_scope(
+        self,
+        query: str,
+        memory_key: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """Classify whether a query is in-scope for workload infrastructure analysis."""
         query_lower = (query or "").strip().lower()
         if not query_lower:
@@ -201,6 +271,7 @@ class ChatService:
                 max_tokens=120,
                 model=self.llm_generation_config.get('model'),
                 memory_key=memory_key,
+                agent_id=agent_id,
             )
             in_scope = bool(result.get("in_scope", True))
             reason = str(result.get("reason", "")).strip()
@@ -253,9 +324,18 @@ class ChatService:
         
         return normalized
 
-    def _system_prompt(self, query_type: str) -> str:
+    def _system_prompt(self, query_type: str, flow: str = 'chat') -> str:
         """Get system prompt based on query type."""
-        base_prompt = """
+        flow_intro = {
+            'chat': "You are the Chat/UI orchestrator agent for Azure workload analysis.",
+            'resilience': "You are the Resilience specialist agent for Azure workload analysis.",
+            'annotations': "You are the Annotations specialist agent for workload graph analysis.",
+        }.get(flow, "You are the Chat/UI orchestrator agent for Azure workload analysis.")
+
+        base_prompt = (
+            flow_intro
+            + """
+
 You are an Azure infrastructure architect analyzing a customer's specific workload.
 
 SCOPE AND DATA CONSTRAINTS:
@@ -345,6 +425,7 @@ IMPORTANT NOTES FOR TERRAFORM CODE:
 - When you DO generate Terraform, provide it as a STRING containing valid HCL syntax (not a JSON object)
 - Example terraform_code value: "resource \\"azurerm_managed_disk\\" \\"vm_disk\\" {\\n  name = ...\\n}"
 """
+    )
         
         if query_type == 'findings':
             return base_prompt + """
@@ -779,11 +860,13 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
         llm_output: Dict[str, Any],
         graph: Dict[str, Any],
         query_type: str,
+        flow: str,
         invalid_references: List[str],
         memory_key: str,
+        agent_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """One-shot repair pass to fix invalid IDs while preserving response intent."""
-        repair_system_prompt = self._system_prompt(query_type)
+        repair_system_prompt = self._system_prompt(query_type, flow)
         repair_user_prompt = f"""
 Your previous JSON output contained invalid IDs that are not present in the graph.
 
@@ -811,6 +894,7 @@ TASK:
                 max_tokens=self.llm_generation_config.get('max_tokens', 2000),
                 model=self.llm_generation_config.get('model'),
                 memory_key=memory_key,
+                agent_id=agent_id,
             )
             return repaired if isinstance(repaired, dict) else None
         except Exception as error:
@@ -1241,6 +1325,12 @@ TASK:
         llm_output: Dict[str, Any],
         graph: Dict[str, Any],
         llm_metrics: Optional[Dict[str, Any]] = None,
+        *,
+        flow: str,
+        include_rag_trace: bool,
+        target_agent_id: str,
+        memory_key: str,
+        trace_id: str,
     ) -> ChatResponse:
         """Validate and process LLM response against guardrails."""
         sources: List[ChatSource] = []
@@ -1341,6 +1431,37 @@ TASK:
         # Sanitize message to ensure it's appropriate and not excessively long
         message = self._sanitize_response_message(llm_output.get('message', 'No response'))
 
+        rag_trace: Optional[Dict[str, Any]] = None
+        if include_rag_trace:
+            source_type_counts: Dict[str, int] = {}
+            for source in sources:
+                source_type = (source.type or "unknown").strip() or "unknown"
+                source_type_counts[source_type] = source_type_counts.get(source_type, 0) + 1
+
+            external_types = {"APRL", "MicrosoftLearn"}
+            external_source_types = sorted(
+                source_type
+                for source_type in source_type_counts
+                if source_type in external_types
+            )
+
+            rag_expected = flow == 'resilience'
+            rag_used = bool(external_source_types)
+
+            rag_trace = {
+                "trace_id": trace_id,
+                "flow": flow,
+                "assistant_id": target_agent_id,
+                "memory_key": memory_key,
+                "rag_expected": rag_expected,
+                "rag_used": rag_used,
+                "source_type_counts": source_type_counts,
+                "external_source_types": external_source_types,
+                "external_sources_count": sum(source_type_counts.get(t, 0) for t in external_types),
+                "clarifying_questions_count": len(llm_output.get('clarifying_questions', []) or []),
+                "validation_passed": (rag_used if rag_expected else not rag_used),
+            }
+
         metrics = None
         if isinstance(llm_metrics, dict) and llm_metrics:
             metrics = ChatMetrics(
@@ -1367,5 +1488,6 @@ TASK:
             terraform_code=terraform_code,
             terraform_validation=terraform_validation,
             clarifying_questions=llm_output.get('clarifying_questions', []),
+            rag_trace=rag_trace,
             raw_llm_output=llm_output,
         )
