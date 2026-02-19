@@ -93,16 +93,13 @@ class AppSettings:
                 "max_nodes_per_batch": 50,
             },
             "ai_agent": {
-                "chat_agent_id": None,
-                "resilience_agent_id": None,
-                "annotations_agent_id": None,
+                "chat_agent_reference": None,
+                "resilience_agent_reference": None,
+                "annotations_agent_reference": None,
                 "gateway_base_url": None,
-                "embedding_base_url": None,
-                "embedding_api_version": "2024-10-21",
-                "embedding_subscription_header_name": "api-key",
-                "api_version": "2025-05-01",
+                "embedding_model": "text-embedding-3-small",
+                "reasoning_model": "gpt-4.1",
                 "subscription_header_name": "api-key",
-                "memory_scope": "subscription_or_workload",
                 "run_timeout_seconds": 120,
                 "poll_interval_seconds": 1.5,
             },
@@ -180,13 +177,14 @@ class AppSettings:
     def get_llm_generation_config(self) -> Dict[str, Any]:
         """Get provider-neutral generation settings for LLM calls.
 
-        Priority: generic LLM env/config > defaults.
+        Priority: `LLM_MODEL` override > agent reasoning model.
         """
         llm_cfg = self.get_llm_config()
+        ai_agent_cfg = self.get_ai_agent_config()
         return {
             "model": (
                 os.getenv("LLM_MODEL")
-                or llm_cfg.get("model")
+                or ai_agent_cfg.get("reasoning_model")
             ),
             "max_attempts": int(
                 os.getenv("LLM_MAX_ATTEMPTS")
@@ -221,45 +219,44 @@ class AppSettings:
                 os.getenv("AI_GATEWAY_AGENT_BASE_URL")
                 or agent_cfg.get("gateway_base_url")
             ),
-            "embedding_base_url": (
-                os.getenv("AI_GATEWAY_EMBEDDING_BASE_URL")
-                or agent_cfg.get("embedding_base_url")
-            ),
             "subscription_key": os.getenv("AI_GATEWAY_SUBSCRIPTION_KEY"),
             "subscription_header_name": (
                 os.getenv("AI_GATEWAY_SUBSCRIPTION_HEADER_NAME")
                 or agent_cfg.get("subscription_header_name")
                 or "api-key"
             ),
-            "embedding_subscription_header_name": (
-                os.getenv("AI_GATEWAY_EMBEDDING_SUBSCRIPTION_HEADER_NAME")
-                or agent_cfg.get("embedding_subscription_header_name")
-                or "api-key"
+            "embedding_model": (
+                os.getenv("AI_GATEWAY_EMBEDDING_MODEL")
+                or agent_cfg.get("embedding_model", "text-embedding-3-small")
             ),
-            "api_version": (
-                os.getenv("AI_GATEWAY_API_VERSION")
-                or agent_cfg.get("api_version", "2025-05-01")
+            "reasoning_model": (
+                os.getenv("AI_GATEWAY_REASONING_MODEL")
+                or agent_cfg.get("reasoning_model", "gpt-4.1")
             ),
-            "embedding_api_version": (
-                os.getenv("AI_GATEWAY_EMBEDDING_API_VERSION")
-                or agent_cfg.get("embedding_api_version", "2024-10-21")
+            "chat_agent_reference": (
+                os.getenv("AI_GATEWAY_CHAT_AGENT_REFERENCE")
+                or os.getenv("AI_GATEWAY_CHAT_AGENT_ID")
+                or agent_cfg.get("chat_agent_reference")
+                or agent_cfg.get("chat_agent_id")
             ),
-            "chat_agent_id": os.getenv("AI_GATEWAY_CHAT_AGENT_ID") or agent_cfg.get("chat_agent_id"),
-            "resilience_agent_id": (
-                os.getenv("AI_GATEWAY_RESILIENCE_AGENT_ID")
+            "resilience_agent_reference": (
+                os.getenv("AI_GATEWAY_RESILIENCE_AGENT_REFERENCE")
+                or os.getenv("AI_GATEWAY_RESILIENCE_AGENT_ID")
+                or agent_cfg.get("resilience_agent_reference")
                 or agent_cfg.get("resilience_agent_id")
             ),
-            "annotations_agent_id": (
-                os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_ID")
+            "annotations_agent_reference": (
+                os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE")
+                or os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_ID")
+                or agent_cfg.get("annotations_agent_reference")
                 or agent_cfg.get("annotations_agent_id")
             ),
-            "memory_scope": os.getenv("AI_GATEWAY_MEMORY_SCOPE") or agent_cfg.get("memory_scope", "subscription_or_workload"),
             "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
             "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
         }
 
     def get_agent_id_for_flow(self, flow: str) -> Optional[str]:
-        """Get configured agent id for a chat orchestration flow.
+        """Get configured agent reference for a chat orchestration flow.
 
         Flow values:
         - chat
@@ -268,9 +265,9 @@ class AppSettings:
         """
         ai_agent_config = self.get_ai_agent_config()
         flow_map = {
-            "chat": ai_agent_config.get("chat_agent_id"),
-            "resilience": ai_agent_config.get("resilience_agent_id"),
-            "annotations": ai_agent_config.get("annotations_agent_id"),
+            "chat": ai_agent_config.get("chat_agent_reference"),
+            "resilience": ai_agent_config.get("resilience_agent_reference"),
+            "annotations": ai_agent_config.get("annotations_agent_reference"),
         }
         selected = flow_map.get((flow or "").strip().lower())
         if selected and str(selected).strip():
@@ -285,7 +282,7 @@ class AppSettings:
         - llm.enabled=true
         - ai_agent.gateway_base_url
                 - flow-specific agent ids:
-                    AI_GATEWAY_CHAT_AGENT_ID / AI_GATEWAY_RESILIENCE_AGENT_ID / AI_GATEWAY_ANNOTATIONS_AGENT_ID
+                    AI_GATEWAY_CHAT_AGENT_REFERENCE / AI_GATEWAY_RESILIENCE_AGENT_REFERENCE / AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE
         - AI_GATEWAY_SUBSCRIPTION_KEY
 
         Returns:
@@ -294,9 +291,9 @@ class AppSettings:
         ai_agent_config = self.get_ai_agent_config()
 
         required_flow_ids = [
-            ai_agent_config.get("chat_agent_id"),
-            ai_agent_config.get("resilience_agent_id"),
-            ai_agent_config.get("annotations_agent_id"),
+            ai_agent_config.get("chat_agent_reference"),
+            ai_agent_config.get("resilience_agent_reference"),
+            ai_agent_config.get("annotations_agent_reference"),
         ]
 
         required_fields = [

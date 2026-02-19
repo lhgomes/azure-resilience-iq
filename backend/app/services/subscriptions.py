@@ -19,6 +19,8 @@ UUID_PATTERN = re.compile(
 class SubscriptionInfo(TypedDict):
     id: str
     name: str
+    resource_count: int
+    conversation_id: str | None
 
 
 def list_subscriptions() -> list[SubscriptionInfo]:
@@ -51,11 +53,22 @@ def list_subscriptions() -> list[SubscriptionInfo]:
             with resources_file.open("r", encoding="utf-8") as f:
                 data = json.load(f)
                 subscription_name = data.get("subscription_name") or subscription_id
+                resource_count = len(data.get("resources", [])) if isinstance(data.get("resources"), list) else 0
+                conversation_id = data.get("conversation_id")
         except Exception as e:
             LOGGER.warning(f"Failed to read resources.json for {subscription_id}: {e}")
             subscription_name = subscription_id
+            resource_count = 0
+            conversation_id = None
 
-        subscriptions.append({"id": subscription_id, "name": subscription_name})
+        subscriptions.append(
+            {
+                "id": subscription_id,
+                "name": subscription_name,
+                "resource_count": int(resource_count),
+                "conversation_id": str(conversation_id).strip() if conversation_id else None,
+            }
+        )
 
     # Sort by name for consistent ordering
     subscriptions.sort(key=lambda s: s["name"])

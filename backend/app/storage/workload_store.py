@@ -28,6 +28,7 @@ def _load_workload(path: Path) -> Optional[Workload]:
     view_state_raw = raw.get("view_state") or {}
     created_at = raw.get("created_at") or _now()
     updated_at = raw.get("updated_at") or created_at
+    conversation_id = raw.get("conversation_id")
 
     if not isinstance(name, str) or not name.strip():
         return None
@@ -43,6 +44,7 @@ def _load_workload(path: Path) -> Optional[Workload]:
         view_state=view_state,
         created_at=str(created_at),
         updated_at=str(updated_at),
+        conversation_id=str(conversation_id).strip() if conversation_id else None,
     )
 
 
@@ -88,6 +90,7 @@ def create_workload(name: str, view_state: WorkloadViewState) -> Workload:
         view_state=view_state,
         created_at=created_at,
         updated_at=created_at,
+        conversation_id=None,
     )
     write_json(get_workload_path(workload_id), workload.model_dump())
     return workload
@@ -115,6 +118,7 @@ def update_workload(workload_id: str, *, name: Optional[str] = None, view_state:
         view_state=next_view_state,
         created_at=existing.created_at,
         updated_at=_now(),
+        conversation_id=existing.conversation_id,
     )
     write_json(get_workload_path(workload_id), updated.model_dump())
     return updated

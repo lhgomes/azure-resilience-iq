@@ -71,7 +71,7 @@ const WorkloadView: React.FC = () => {
     () =>
       subscriptions
         .filter(sub => selectedSubscriptions.has(sub.id))
-        .map(sub => ({ id: sub.id, name: sub.name })),
+        .map(sub => ({ id: sub.id, name: sub.name, resource_count: sub.resource_count })),
     [subscriptions, selectedSubscriptions]
   );
   const selectionKey = useMemo(
@@ -113,6 +113,22 @@ const WorkloadView: React.FC = () => {
   const [activeWorkloadState, setActiveWorkloadState] = useState<WorkloadViewState | null>(null);
   const [workloadName, setWorkloadName] = useState("");
   const [workloadError, setWorkloadError] = useState<string | null>(null);
+  const chatSubscriptionId = useMemo(() => {
+    if (singleSubscriptionId) return singleSubscriptionId;
+    if (selectedSubscriptionIds.length === 0) return "";
+    if (activeWorkloadId) return selectedSubscriptionIds[0];
+
+    const selected = subscriptions.filter(sub => selectedSubscriptions.has(sub.id));
+    if (selected.length === 0) return selectedSubscriptionIds[0];
+
+    const ranked = [...selected].sort((a, b) => {
+      const countA = a.resource_count ?? 0;
+      const countB = b.resource_count ?? 0;
+      if (countA !== countB) return countB - countA;
+      return a.id.localeCompare(b.id);
+    });
+    return ranked[0]?.id || selectedSubscriptionIds[0];
+  }, [singleSubscriptionId, selectedSubscriptionIds, activeWorkloadId, subscriptions, selectedSubscriptions]);
 
   // Default both layers to enabled; no URL sync
   const [aiLayerEnabled, setAiLayerEnabled] = useState(true);
@@ -2428,13 +2444,15 @@ const WorkloadView: React.FC = () => {
                       {/* Floating chat badge on Graph Tab */}
                       {isChatAvailable && (
                         <ChatPanel
-                          subscriptionId={singleSubscriptionId ?? ""}
+                          subscriptionId={chatSubscriptionId}
                           refreshToken={chatRefreshToken}
                           getResourceLabel={getResourceLabel}
                           context={{
                             tab: "graph",
                             selected_resource_id: selectedNode?.id,
                             selected_edge_id: selectedEdge?.id,
+                            selected_subscriptions: selectedSubscriptionIds,
+                            active_workload_id: activeWorkloadId,
                           }}
                           onResourceHighlight={(resourceIds) => {
                             if (resourceIds.length > 0 && graphCanvasRef.current) {
@@ -2483,13 +2501,15 @@ const WorkloadView: React.FC = () => {
                     </div>
                     {isChatAvailable && (
                       <ChatPanel
-                        subscriptionId={singleSubscriptionId ?? ""}
+                        subscriptionId={chatSubscriptionId}
                         refreshToken={chatRefreshToken}
                         getResourceLabel={getResourceLabel}
                         context={{
                           tab: "overview",
                           selected_resource_id: selectedNode?.id,
                           view_level: viewLevel,
+                          selected_subscriptions: selectedSubscriptionIds,
+                          active_workload_id: activeWorkloadId,
                         }}
                         onResourceHighlight={(resourceIds) => {
                           if (resourceIds.length > 0 && graphCanvasRef.current) {

@@ -3,6 +3,8 @@ export type SubscriptionId = string;
 export interface SubscriptionInfo {
   id: string;
   name: string;
+  resource_count?: number;
+  conversation_id?: string | null;
 }
 
 export interface RawGraphNode {
@@ -100,6 +102,7 @@ export interface WorkloadSummary {
   name: string;
   created_at: string;
   updated_at: string;
+  conversation_id?: string | null;
 }
 
 export interface WorkloadRecord extends WorkloadSummary {

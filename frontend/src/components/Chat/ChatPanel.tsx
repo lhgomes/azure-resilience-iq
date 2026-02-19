@@ -640,8 +640,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       </div>
                       {msg.response.suggested_edges.map((edge: SuggestedEdge, i: number) => (
                         <div key={i} className="edge-suggestion">
-                          <div className="edge-info">
-                            <strong>{edge.source}</strong> → <strong>{edge.target}</strong>
+                          <div className="edge-info" title={`${edge.source} → ${edge.target}`}>
+                            <strong>{resolveResourceLabel(edge.source)}</strong> → <strong>{resolveResourceLabel(edge.target)}</strong>
                           </div>
                           <div className="edge-details">
                             <span className="relationship">{edge.relationship}</span>

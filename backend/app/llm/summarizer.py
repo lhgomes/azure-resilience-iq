@@ -1,3 +1,4 @@
+import uuid
 from typing import Any, Dict, List, Set
 
 
@@ -24,12 +25,19 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
     safe_nodes: List[Dict[str, Any]] = []
     id_to_short: Dict[str, str] = {}
 
+    def ensure_short_id(node_id: str, candidate: Any) -> str:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if not isinstance(node_id, str) or not node_id.strip():
+            return "unknown"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, node_id.strip()))
+
     for n in nodes_raw:
         nd = as_dict(n)
         node_id = nd.get("id") or ""
         meta = nd.get("metadata") or {}
         short_id = nd.get("short_id") or meta.get("short_id")
-        short_id = short_id or node_id  # fallback only if missing
+        short_id = ensure_short_id(node_id, short_id)
         id_to_short[node_id] = short_id
 
         safe_nodes.append(

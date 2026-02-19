@@ -58,7 +58,6 @@ def main() -> int:
     parser.add_argument("--resilience-name", default="resilience-iq-agent-resilience")
     parser.add_argument("--annotations-name", default="resilience-iq-agent-annotations")
     parser.add_argument("--base-url", default=os.getenv("AI_GATEWAY_AGENT_BASE_URL", ""))
-    parser.add_argument("--api-version", default=os.getenv("AI_GATEWAY_API_VERSION", "2025-05-01"))
     parser.add_argument(
         "--subscription-header-name",
         default=os.getenv("AI_GATEWAY_SUBSCRIPTION_HEADER_NAME", "api-key"),
@@ -79,7 +78,6 @@ def main() -> int:
     try:
         base_url = _require(args.base_url or ai_cfg.get("gateway_base_url"), "AI gateway base URL")
         base_url = base_url.rstrip("/")
-        api_version = _require(args.api_version or ai_cfg.get("api_version"), "API version")
         subscription_key = _require(
             args.subscription_key or ai_cfg.get("subscription_key"),
             "AI gateway subscription key",
@@ -92,7 +90,7 @@ def main() -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
-    url = f"{base_url}/assistants?api-version={api_version}"
+    url = f"{base_url}/assistants"
     headers = {
         "Content-Type": "application/json",
         header_name: subscription_key,

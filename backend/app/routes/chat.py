@@ -4,7 +4,7 @@ Exposes LLM-powered chat capabilities for graph exploration and remediation guid
 """
 
 from fastapi import APIRouter, HTTPException, Query, Body
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import logging
 
 from app.chat.models import ChatRequest, ChatResponse
@@ -30,6 +30,74 @@ chat_router = APIRouter(
 _chat_service = None
 
 
+def _dedupe_by_key(items: List[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
+    seen: set[str] = set()
+    output: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_key = item.get(key)
+        if not item_key:
+            continue
+        item_key_str = str(item_key)
+        if item_key_str in seen:
+            continue
+        seen.add(item_key_str)
+        output.append(item)
+    return output
+
+
+def _merge_graph_payloads(payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged_nodes: List[Dict[str, Any]] = []
+    merged_edges: List[Dict[str, Any]] = []
+    merged_llm_nodes: List[Dict[str, Any]] = []
+    merged_llm_edges: List[Dict[str, Any]] = []
+    merged_node_overrides: Dict[str, Any] = {}
+    merged_edge_overrides: Dict[str, Any] = {}
+    merged_resilience_evals: Dict[str, Any] = {}
+    merged_resilience_overrides: Dict[str, Any] = {}
+
+    for payload in payloads:
+        merged_nodes.extend(payload.get("nodes", []) or [])
+        merged_edges.extend(payload.get("edges", []) or [])
+        merged_llm_nodes.extend((payload.get("llm_annotations") or {}).get("nodes", []) or [])
+        merged_llm_edges.extend((payload.get("llm_annotations") or {}).get("edges", []) or [])
+        merged_node_overrides.update(payload.get("node_overrides") or {})
+        merged_edge_overrides.update(payload.get("edge_overrides") or {})
+        merged_resilience_evals.update((payload.get("resilience_evaluations") or {}).get("evaluations", {}) or {})
+        merged_resilience_overrides.update(payload.get("resilience_overrides") or {})
+
+    llm_edge_seen: set[str] = set()
+    deduped_llm_edges: List[Dict[str, Any]] = []
+    for edge in merged_llm_edges:
+        if not isinstance(edge, dict):
+            continue
+        dedupe_key = "|".join(
+            [
+                str(edge.get("source") or ""),
+                str(edge.get("target") or ""),
+                str(edge.get("relationship") or ""),
+            ]
+        )
+        if dedupe_key in llm_edge_seen:
+            continue
+        llm_edge_seen.add(dedupe_key)
+        deduped_llm_edges.append(edge)
+
+    return {
+        "nodes": _dedupe_by_key(merged_nodes, "id"),
+        "edges": _dedupe_by_key(merged_edges, "id"),
+        "llm_annotations": {
+            "nodes": _dedupe_by_key(merged_llm_nodes, "node_id"),
+            "edges": deduped_llm_edges,
+        },
+        "node_overrides": merged_node_overrides,
+        "edge_overrides": merged_edge_overrides,
+        "resilience_evaluations": {"evaluations": merged_resilience_evals},
+        "resilience_overrides": merged_resilience_overrides,
+    }
+
+
 @chat_router.get("/availability")
 async def chat_availability():
     """
@@ -52,7 +120,7 @@ async def chat_availability():
     else:
         return {
             "available": False,
-            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, flow-specific agent ids (chat/resilience/annotations), and AI_GATEWAY_SUBSCRIPTION_KEY"
+            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, flow-specific agent references (chat/resilience/annotations), and AI_GATEWAY_SUBSCRIPTION_KEY"
         }
 
 
@@ -105,12 +173,31 @@ async def chat_message(
                 detail="Subscription ID mismatch"
             )
 
-        # Get graph
-        graph = get_workload_graph(subscription_id)
-        if not graph:
-            raise HTTPException(status_code=404, detail="Graph not found")
+        selected_subscriptions: List[str] = []
+        if isinstance(request.context, dict):
+            raw_selected = request.context.get("selected_subscriptions")
+            if isinstance(raw_selected, list):
+                selected_subscriptions = [str(item).strip() for item in raw_selected if str(item).strip()]
 
-        LOGGER.info(f"Processing chat query for subscription {subscription_id}")
+        if len(selected_subscriptions) >= 2:
+            payloads: List[Dict[str, Any]] = []
+            for selected_subscription_id in selected_subscriptions:
+                graph_payload = get_workload_graph(selected_subscription_id)
+                if graph_payload:
+                    payloads.append(graph_payload)
+            if not payloads:
+                raise HTTPException(status_code=404, detail="Graph not found")
+            graph = _merge_graph_payloads(payloads)
+        else:
+            graph = get_workload_graph(subscription_id)
+            if not graph:
+                raise HTTPException(status_code=404, detail="Graph not found")
+
+        LOGGER.info(
+            "Processing chat query for subscription %s (selected_subscriptions=%s)",
+            subscription_id,
+            selected_subscriptions,
+        )
         LOGGER.debug(f"Query: {request.message[:100]}...")
 
         # Process with chat service
