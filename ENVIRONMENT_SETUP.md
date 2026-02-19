@@ -13,15 +13,14 @@ llm:
 
 ai_agent:
   gateway_base_url: "https://<apim-host>/<agent-api-base>"
-  agent_id: "asst_<foundry-agent-id>"
-  api_version: "2025-05-01"
   subscription_header_name: "api-key"
-  memory_scope: "subscription_or_workload"
-
-  # Optional: APIM embeddings endpoint used by ingestion/RAG tooling
-  embedding_base_url: "https://<apim-host>/<openai-api-base>"
-  embedding_api_version: "2024-10-21"
-  embedding_subscription_header_name: "api-key"
+  reasoning_model: "gpt-4.1"
+  embedding_model: "text-embedding-3-small"
+  chat_agent_reference: "chat-agent"
+  resilience_agent_reference: "resilience-agent"
+  annotations_agent_reference: "annotations-agent"
+  run_timeout_seconds: 120
+  poll_interval_seconds: 1.5
 ```
 
 ### 2. Configure `backend/.env`
@@ -32,6 +31,15 @@ AZURE_SEARCH_ADMIN_KEY=<your-search-admin-key>
 AZURE_SEARCH_INDEX_NAME=<your-index-name>
 
 AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
+
+# Optional APIM + Agent overrides
+AI_GATEWAY_AGENT_BASE_URL=https://<apim-host>/<agent-api-base>
+AI_GATEWAY_SUBSCRIPTION_HEADER_NAME=api-key
+AI_GATEWAY_REASONING_MODEL=gpt-4.1
+AI_GATEWAY_EMBEDDING_MODEL=text-embedding-3-small
+AI_GATEWAY_CHAT_AGENT_REFERENCE=chat-agent
+AI_GATEWAY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
 ```
 
 `AI_GATEWAY_SUBSCRIPTION_KEY` is required to call APIM routes.
@@ -100,10 +108,10 @@ llm:
 ```yaml
 ai_agent:
   gateway_base_url: "..."
-  agent_id: "asst_..."
-  api_version: "2025-05-01"
+  chat_agent_reference: "chat-agent"
+  resilience_agent_reference: "resilience-agent"
+  annotations_agent_reference: "annotations-agent"
   subscription_header_name: "api-key"
-  memory_scope: "subscription_or_workload"
 ```
 
 ### Resilience
@@ -118,6 +126,6 @@ resilience:
 ## Notes
 
 - `.env` is gitignored. Never commit credentials.
-- `.env.example` is tracked. Use it as a template.
+- `.env.sample` is tracked. Use it as a template.
 - APRL deterministic evaluation remains the source of truth.
 - Agent memory is used as continuity/context; memory keys are scoped by subscription/workload/module.
