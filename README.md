@@ -55,14 +55,14 @@ llm:
 
 ai_agent:
   gateway_base_url: "https://<apim-host>/<agent-api-base>"
-  agent_id: "asst_<foundry-agent-id>"
-  api_version: "2025-05-01"
   subscription_header_name: "api-key"
-  memory_scope: "subscription_or_workload"
-
-  embedding_base_url: "https://<apim-host>/<openai-api-base>"
-  embedding_api_version: "2024-10-21"
-  embedding_subscription_header_name: "api-key"
+  reasoning_model: "gpt-4.1"
+  embedding_model: "text-embedding-3-small"
+  chat_agent_reference: "chat-agent"
+  resilience_agent_reference: "resilience-agent"
+  annotations_agent_reference: "annotations-agent"
+  run_timeout_seconds: 120
+  poll_interval_seconds: 1.5
 ```
 
 Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
@@ -73,16 +73,20 @@ The application includes an **AI-powered chat assistant** that helps analyze inf
 
 **Create Environment File**:
 
-Create a `backend/.env` file (copy from `backend/.env.example` if available) and add:
+Create a `backend/.env` file (copy from `backend/.env.sample` if available) and add:
 
 ```env
 # Required APIM Key
 AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
 
-# Optional Embeddings Overrides (for ingestion tooling)
-AI_GATEWAY_EMBEDDING_BASE_URL=https://<apim-host>/<openai-api-base>
-AI_GATEWAY_EMBEDDING_API_VERSION=2024-10-21
-AI_GATEWAY_EMBEDDING_SUBSCRIPTION_HEADER_NAME=api-key
+# Optional APIM + Agent overrides
+AI_GATEWAY_AGENT_BASE_URL=https://<apim-host>/<agent-api-base>
+AI_GATEWAY_SUBSCRIPTION_HEADER_NAME=api-key
+AI_GATEWAY_REASONING_MODEL=gpt-4.1
+AI_GATEWAY_EMBEDDING_MODEL=text-embedding-3-small
+AI_GATEWAY_CHAT_AGENT_REFERENCE=chat-agent
+AI_GATEWAY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
 ```
 
 **Required Environment Variable**:
@@ -767,13 +771,15 @@ Set these in `backend/config/app_config.yaml`.
 | `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
 | `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
 | `ai_agent.gateway_base_url` | Yes (if LLM enabled) | - | APIM base URL for Foundry Agent threads/runs/messages |
-| `ai_agent.agent_id` | Yes (if LLM enabled) | - | Foundry agent id (`asst_*`) |
-| `ai_agent.api_version` | No | `2025-05-01` | Foundry agent API version via APIM |
 | `ai_agent.subscription_header_name` | No | `api-key` | APIM subscription header name |
+| `ai_agent.reasoning_model` / `AI_GATEWAY_REASONING_MODEL` | No | `gpt-4.1` | Reasoning model used by APIM agent execution |
+| `ai_agent.embedding_model` / `AI_GATEWAY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
+| `ai_agent.chat_agent_reference` / `AI_GATEWAY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
+| `ai_agent.resilience_agent_reference` / `AI_GATEWAY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
+| `ai_agent.annotations_agent_reference` / `AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
+| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for APIM/agent runs |
+| `ai_agent.poll_interval_seconds` | No | `1.5` | Poll interval while waiting for run completion |
 | `AI_GATEWAY_SUBSCRIPTION_KEY` | Yes (if LLM enabled) | - | APIM subscription key |
-| `ai_agent.embedding_base_url` | No | - | APIM OpenAI-style base URL for embeddings ingestion |
-| `ai_agent.embedding_api_version` | No | `2024-10-21` | API version for embeddings ingestion |
-| `ai_agent.embedding_subscription_header_name` | No | `api-key` | APIM header name for embeddings ingestion |
 | `data.dir` | No | `./data` | Base directory for collected artifacts |
 | `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
 
@@ -930,7 +936,7 @@ All LLM outputs are validated before being returned:
 ### LLM Annotation Issues
 
 **Problem**: "LLM gateway unavailable" or agent calls fail
-- **Solution**: Ensure `llm.enabled: true`, `ai_agent.gateway_base_url`, `ai_agent.agent_id`, and `AI_GATEWAY_SUBSCRIPTION_KEY` are correctly configured.
+- **Solution**: Ensure `llm.enabled: true`, `ai_agent.gateway_base_url`, all flow-specific agent references (`chat/resilience/annotations`), and `AI_GATEWAY_SUBSCRIPTION_KEY` are correctly configured.
 
 **Problem**: No annotations generated
 - **Solution**: Confirm `llm.enabled` is `true`, APIM base URL is valid, and the APIM subscription key is active.
@@ -938,7 +944,7 @@ All LLM outputs are validated before being returned:
 ### Chat Issues
 
 **Problem**: Chat feature not visible in UI
-- **Solution**: Check `llm.enabled`, `ai_agent.gateway_base_url`, `ai_agent.agent_id`, and `AI_GATEWAY_SUBSCRIPTION_KEY`.
+- **Solution**: Check `llm.enabled`, `ai_agent.gateway_base_url`, flow-specific agent references (`chat/resilience/annotations`), and `AI_GATEWAY_SUBSCRIPTION_KEY`.
 - **Verification**: Check `/api/chat/availability` endpoint - it should return `{"available": true}`
 
 **Problem**: Queries rejected as out-of-scope
