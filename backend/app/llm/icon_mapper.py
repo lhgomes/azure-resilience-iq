@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from app.settings import load_settings
-from app.llm.gateway import create_llm_gateway, LLMGateway
-from app.llm.memory_scope import build_scoped_memory_key
+from app.llm.model_client import APIMModelClient, create_model_client
 
 
 def get_all_icon_files(icons_dir: Path) -> Dict[str, List[str]]:
@@ -175,10 +174,8 @@ def get_microsoft_resource_types() -> Set[str]:
 def generate_icon_mappings_with_llm(
     resource_types: List[str],
     icon_categories: Dict[str, List[str]],
-    llm_gateway: LLMGateway,
+    model_client: APIMModelClient,
     model: Optional[str],
-    memory_key: str,
-    agent_id: str,
     batch_size: int = 100
 ) -> Dict[str, str]:
     """Use LLM to generate mappings from resource types to icon paths in batches."""
@@ -194,40 +191,27 @@ def generate_icon_mappings_with_llm(
         print(f"\nProcessing batch {batch_num}/{total_batches} ({len(batch)} resource types)...")
         
         # Prepare the prompt for this batch
-        prompt = f"""You are an expert in Azure resource types and icon mapping.
+        prompt = f"""Map each Azure resource type to the best icon path.
 
-I have a batch of {len(batch)} Azure resource types and {sum(len(icons) for icons in icon_categories.values())} icon files.
-
-Azure Resource Types for this batch:
+Resource types ({len(batch)}):
 {json.dumps(batch, indent=2)}
 
-Available Icon Categories and Files (showing sample):
-{json.dumps({k: v[:5] + (['...'] if len(v) > 5 else []) for k, v in list(icon_categories.items())[:15]}, indent=2)}
-
-Full icon list available in all categories:
+Available icon files by category:
 {json.dumps(icon_categories, indent=2)}
 
-Your task: Create a JSON mapping from each Azure resource type to the BEST matching icon file path.
-
 Rules:
-1. Map resource type (e.g., "microsoft.app/containerapps") to icon path (e.g., "containers/02989-icon-service-Container-Apps-Environments.svg")
-2. Choose the most semantically appropriate icon for each resource type
-3. Parse the resource type: "microsoft.CATEGORY/RESOURCETYPE" - use CATEGORY and RESOURCETYPE to find matches
-4. Icon filenames often match service names (e.g., "Container-Apps", "Virtual-Machines", "Kubernetes")
-5. If no good match exists, use "general/10001-icon-service-All-Resources.svg"
-6. Output format: category folder + "/" + icon filename
+1. Output key = resource type, value = category/icon-filename.svg
+2. Choose the closest semantic icon based on provider/type name
+3. If no good match exists, use general/10001-icon-service-All-Resources.svg
+4. Return mappings for all resource types in this batch
 
-Output ONLY valid JSON (no markdown, no explanation):
+Return valid JSON only (no markdown):
 {{
-  "microsoft.app/containerapps": "containers/02989-icon-service-Container-Apps-Environments.svg",
-  ...
-}}
-
-Map ALL {len(batch)} resource types in this batch:
-"""
+    "microsoft.app/containerapps": "containers/02989-icon-service-Container-Apps-Environments.svg"
+}}"""
 
         try:
-            batch_mappings = llm_gateway.generate_json(
+            batch_mappings = model_client.generate_json(
                 system_prompt=(
                     "You are an expert system that generates accurate Azure resource type to icon mappings. "
                     "Output only valid JSON without markdown formatting. "
@@ -237,8 +221,6 @@ Map ALL {len(batch)} resource types in this batch:
                 temperature=0.3,
                 max_tokens=16000,
                 model=model,
-                memory_key=memory_key,
-                agent_id=agent_id,
             )
 
             if not isinstance(batch_mappings, dict):
@@ -273,32 +255,24 @@ def main():
     print(f"\nFound {len(icon_categories)} icon categories")
     print(f"Using {len(resource_types)} Azure resource types from Microsoft ARI documentation")
     
-    # Initialize APIM + Foundry gateway
-    llm_gateway = create_llm_gateway(settings)
-    if not llm_gateway.is_available():
-        print("APIM/Foundry LLM gateway unavailable; aborting icon generation.")
+    # Initialize direct APIM model client
+    model_client = create_model_client(settings)
+    if not model_client.is_available():
+        print("APIM model client unavailable; aborting icon generation.")
         return
 
-    generation_cfg = settings.get_llm_generation_config()
-    deployment = generation_cfg.get("model")
-    annotations_agent_id = settings.get_agent_id_for_flow("annotations")
-    if not annotations_agent_id:
-        print("Annotations agent id not configured; aborting icon generation.")
+    ai_agent_cfg = settings.get_ai_agent_config()
+    deployment = ai_agent_cfg.get("reasoning_model") or settings.get_llm_generation_config().get("model")
+    if not deployment:
+        print("Reasoning model not configured; set ai_agent.reasoning_model.")
         return
 
-    memory_key = build_scoped_memory_key(
-        subscription_id="tools",
-        module="icon_mapper",
-    )
-    
     # Generate mappings with LLM
     mappings = generate_icon_mappings_with_llm(
         sorted(resource_types),
         icon_categories,
-        llm_gateway,
+        model_client,
         deployment,
-        memory_key,
-        annotations_agent_id,
     )
     
     if not mappings:

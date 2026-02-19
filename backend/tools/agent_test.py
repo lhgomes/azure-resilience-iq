@@ -163,7 +163,6 @@ def main() -> int:
     parser.add_argument("--question", default="Summarize your purpose in 2 sentences.")
     parser.add_argument("--require-json", action="store_true")
     parser.add_argument("--must-contain", action="append", default=[])
-    parser.add_argument("--api-version", default=os.getenv("AI_GATEWAY_API_VERSION", "2025-05-01"))
     parser.add_argument("--base-url", default=os.getenv("AI_GATEWAY_AGENT_BASE_URL", ""))
     parser.add_argument("--subscription-key-header", default=os.getenv("AI_GATEWAY_SUBSCRIPTION_HEADER_NAME", "api-key"))
     parser.add_argument("--timeout-seconds", type=int, default=120)
@@ -210,8 +209,6 @@ def main() -> int:
     common_headers = {"Content-Type": "application/json"}
     if "--subscription-key-header" not in sys.argv and ai_agent_cfg.get("subscription_header_name"):
         args.subscription_key_header = str(ai_agent_cfg.get("subscription_header_name"))
-    if "--api-version" not in sys.argv and ai_agent_cfg.get("api_version"):
-        args.api_version = str(ai_agent_cfg.get("api_version"))
 
     header_name = (args.subscription_key_header or "").strip()
     if header_name:
@@ -223,7 +220,7 @@ def main() -> int:
     thread = {}
     thread_url = ""
     for candidate in base_candidates:
-        attempt_url = f"{candidate}/threads?api-version={args.api_version}"
+        attempt_url = f"{candidate}/threads"
         try:
             thread = _http(session, "POST", attempt_url, headers=common_headers, payload={})
             selected_base = candidate
@@ -238,7 +235,7 @@ def main() -> int:
         print("ERROR: APIM route not found for any candidate base URL.", file=sys.stderr)
         print("Tried:", file=sys.stderr)
         for candidate in base_candidates:
-            print(f"  - {_redact_url(f'{candidate}/threads?api-version={args.api_version}')}", file=sys.stderr)
+            print(f"  - {_redact_url(f'{candidate}/threads')}", file=sys.stderr)
         print(
             "Set AI_GATEWAY_AGENT_BASE_URL to your exact APIM API base path (for example https://...azure-api.net/<api-suffix>).",
             file=sys.stderr,
@@ -252,7 +249,7 @@ def main() -> int:
         print("ERROR: Thread creation did not return thread id", file=sys.stderr)
         return 1
 
-    message_url = f"{selected_base}/threads/{thread_id}/messages?api-version={args.api_version}"
+    message_url = f"{selected_base}/threads/{thread_id}/messages"
     _http(
         session,
         "POST",
@@ -261,7 +258,7 @@ def main() -> int:
         payload={"role": "user", "content": args.question},
     )
 
-    run_create_url = f"{selected_base}/threads/{thread_id}/runs?api-version={args.api_version}"
+    run_create_url = f"{selected_base}/threads/{thread_id}/runs"
     run = _http(
         session,
         "POST",
@@ -274,7 +271,7 @@ def main() -> int:
         print("ERROR: Run creation did not return run id", file=sys.stderr)
         return 1
 
-    run_get_url = f"{selected_base}/threads/{thread_id}/runs/{run_id}?api-version={args.api_version}"
+    run_get_url = f"{selected_base}/threads/{thread_id}/runs/{run_id}"
     run_state = _poll_run(
         session,
         run_url=run_get_url,
@@ -289,7 +286,7 @@ def main() -> int:
         print(f"ERROR: run failed: {run_state.get('last_error')}", file=sys.stderr)
         return 1
 
-    messages_url = f"{selected_base}/threads/{thread_id}/messages?api-version={args.api_version}"
+    messages_url = f"{selected_base}/threads/{thread_id}/messages"
     messages_payload = _http(session, "GET", messages_url, headers=common_headers)
     messages = _iter_messages(messages_payload)
     answer = _find_latest_agent_text(messages)

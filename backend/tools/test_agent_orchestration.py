@@ -178,12 +178,16 @@ def run_test_case(
     if status != 200:
         errors.append(f"HTTP {status} from {url}")
         if body_text:
+            errors.append(f"request url: {url}")
+            errors.append(f"raw request: {json.dumps(payload)[:500]}")
             errors.append(f"response body: {body_text[:500]}")
         return False, errors, body_json
 
     if not isinstance(body_json, dict):
         errors.append("response is not a JSON object")
         if body_text:
+            errors.append(f"request url: {url}")
+            errors.append(f"raw request: {json.dumps(payload)[:500]}")
             errors.append(f"raw response: {body_text[:500]}")
         return False, errors, None
 
@@ -193,7 +197,9 @@ def run_test_case(
     errors.extend(_validate_rag_trace(case.name, body_json, validate_rag))
 
     if show_body:
-        print(json.dumps(body_json, indent=2)[:3000])
+        print(f"request url: {url}")
+        print(f"raw request: {json.dumps(payload, indent=2)[:3000]}")
+        print(f"raw response: {json.dumps(body_json, indent=2)[:3000]}")
 
     return len(errors) == 0, errors, body_json
 

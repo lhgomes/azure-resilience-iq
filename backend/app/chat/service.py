@@ -13,7 +13,17 @@ from app.config import get_resources_path
 from app.settings import get_settings
 from app.chat.models import ChatResponse, SuggestedEdge, CriticalityInsight, ChatSource, ChatMetrics
 from app.llm.gateway import create_llm_gateway
-from app.llm.memory_scope import build_scoped_memory_key
+from app.storage.conversation_store import (
+    get_subscription_conversation_id,
+    get_workload_conversation_id,
+    is_subscription_context_seeded,
+    is_workload_context_seeded,
+    set_subscription_conversation_id,
+    set_subscription_context_seeded,
+    set_workload_conversation_id,
+    set_workload_context_seeded,
+)
+from app.storage.workload_store import get_workload as get_saved_workload
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +42,7 @@ class ChatService:
         
         self.llm_gateway = create_llm_gateway(self.settings)
         self._resource_index_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-        LOGGER.info("Using APIM-native scope classifier guardrails")
+        LOGGER.info("Using embedded-agent instructions with runtime context prompts")
 
     async def process_query(
         self,
@@ -62,48 +72,59 @@ class ChatService:
             )
 
         LOGGER.debug(f"Processing chat query: {query[:100]}...")
+        trace_id = str(uuid4())
+        flow = "chat"
 
         try:
-            trace_id = str(uuid4())
             query_type = self._detect_query_type(query)
-            flow = self._resolve_flow(query_type=query_type, query=query, context=context)
-            target_agent_id = self.settings.get_agent_id_for_flow(flow)
+            target_agent_id = self.settings.get_agent_id_for_flow("chat")
             if not target_agent_id:
                 return ChatResponse(
                     message=(
-                        f"Agent configuration missing for '{flow}' flow. "
-                        "Set AI_GATEWAY_CHAT_AGENT_ID, AI_GATEWAY_RESILIENCE_AGENT_ID, "
-                        "and AI_GATEWAY_ANNOTATIONS_AGENT_ID."
+                        "Agent configuration missing for chat flow. "
+                        "Set AI_GATEWAY_CHAT_AGENT_REFERENCE."
                     )
                 )
 
-            memory_key = self._build_memory_key(subscription_id, context, module_suffix=flow)
-            LOGGER.debug("Chat memory key: %s", memory_key)
+            normalized_graph = self._normalize_graph(graph)
+            scope = self._resolve_conversation_scope(subscription_id, context, normalized_graph)
+            conversation_id = self._load_conversation_id(scope["scope_type"], scope["scope_id"])
+            context_seeded = self._is_conversation_context_seeded(scope["scope_type"], scope["scope_id"])
+            LOGGER.debug(
+                "Chat conversation scope=%s id=%s anchor_subscription=%s conversation_id=%s context_seeded=%s",
+                scope["scope_type"],
+                scope["scope_id"],
+                scope["anchor_subscription_id"],
+                conversation_id,
+                context_seeded,
+            )
             is_valid, reason = self._classify_query_scope(
                 query,
-                memory_key=memory_key,
                 agent_id=target_agent_id,
+                conversation_id=conversation_id,
             )
             if not is_valid:
-                LOGGER.info("Query rejected by APIM-native scope classifier: %s", query[:100])
+                LOGGER.info("Query rejected by local scope guardrails: %s", query[:100])
                 return ChatResponse(message=reason)
 
-            # Normalize graph: convert Edge/Node objects to dicts if needed
-            normalized_graph = self._normalize_graph(graph)
-            
             # Build prompt with context
             prompt = self._build_prompt(
-                query, normalized_graph, subscription_id, context, conversation_history, query_type
+                query,
+                normalized_graph,
+                subscription_id,
+                context,
+                query_type,
+                include_full_context=not context_seeded,
             )
 
             llm_output = self.llm_gateway.generate_json(
-                system_prompt=self._system_prompt(query_type, flow),
+                system_prompt=self._system_prompt(query_type),
                 user_prompt=prompt,
                 temperature=0.7,
                 max_tokens=self.llm_generation_config.get('max_tokens', 2000),
                 model=self.llm_generation_config.get('model'),
-                memory_key=memory_key,
                 agent_id=target_agent_id,
+                conversation_id=conversation_id,
             )
 
             invalid_references = self._collect_invalid_references(llm_output, normalized_graph)
@@ -118,13 +139,27 @@ class ChatService:
                     query_type=query_type,
                     flow=flow,
                     invalid_references=invalid_references,
-                    memory_key=memory_key,
                     agent_id=target_agent_id,
+                    conversation_id=conversation_id,
                 )
                 if repaired:
                     llm_output = repaired
 
             llm_metrics = self.llm_gateway.get_last_metrics()
+            generated_conversation_id = None
+            if isinstance(llm_metrics, dict):
+                generated_conversation_id = llm_metrics.get("conversation_id")
+            if generated_conversation_id and str(generated_conversation_id).strip():
+                self._persist_conversation_id(
+                    scope_type=scope["scope_type"],
+                    scope_id=scope["scope_id"],
+                    conversation_id=str(generated_conversation_id).strip(),
+                )
+            if not context_seeded:
+                self._mark_conversation_context_seeded(
+                    scope_type=scope["scope_type"],
+                    scope_id=scope["scope_id"],
+                )
 
             # Validate and enrich response
             return self._process_llm_response(
@@ -134,28 +169,82 @@ class ChatService:
                 flow=flow,
                 include_rag_trace=include_rag_trace,
                 target_agent_id=target_agent_id,
-                memory_key=memory_key,
+                scope_type=scope["scope_type"],
+                scope_id=scope["scope_id"],
+                conversation_id=generated_conversation_id or conversation_id,
                 trace_id=trace_id,
             )
 
         except json.JSONDecodeError as e:
             LOGGER.error(f"Failed to parse LLM JSON response: {e}")
             return ChatResponse(
-                message="I had trouble understanding the response. Please try again."
+                message="I had trouble understanding the response. Please try again.",
+                rag_trace={
+                    "trace_id": trace_id,
+                    "flow": flow,
+                    "error": "invalid_json",
+                    "rag_expected": flow == "resilience",
+                } if include_rag_trace else None,
             )
         except Exception as e:
             LOGGER.error(f"Chat service error: {e}", exc_info=True)
             return ChatResponse(
-                message=f"Error processing query: {str(e)}"
+                message=f"Error processing query: {str(e)}",
+                rag_trace={
+                    "trace_id": trace_id,
+                    "flow": flow,
+                    "error": str(e),
+                    "rag_expected": flow == "resilience",
+                } if include_rag_trace else None,
             )
 
     @staticmethod
-    def _build_memory_key(
+    def _extract_selected_subscriptions(context: Optional[Dict[str, Any]]) -> List[str]:
+        if not isinstance(context, dict):
+            return []
+        selected = context.get("selected_subscriptions")
+        if not isinstance(selected, list):
+            return []
+        values = [str(item).strip() for item in selected if str(item).strip()]
+        # keep deterministic order with first occurrence
+        seen: set[str] = set()
+        ordered: List[str] = []
+        for sub_id in values:
+            if sub_id in seen:
+                continue
+            seen.add(sub_id)
+            ordered.append(sub_id)
+        return ordered
+
+    @staticmethod
+    def _count_nodes_by_subscription(graph: Dict[str, Any]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for node in graph.get("nodes", []) or []:
+            if not isinstance(node, dict):
+                continue
+            node_sub = (
+                node.get("subscription_id")
+                or (node.get("metadata") or {}).get("subscription_id")
+                or (node.get("data") or {}).get("subscription_id")
+            )
+            if not node_sub:
+                continue
+            sub_id = str(node_sub).strip()
+            if not sub_id:
+                continue
+            counts[sub_id] = counts.get(sub_id, 0) + 1
+        return counts
+
+    def _resolve_conversation_scope(
+        self,
         subscription_id: str,
         context: Optional[Dict[str, Any]],
-        module_suffix: str = "chat",
-    ) -> str:
-        """Build memory key scoped to subscription and optional workload."""
+        graph: Dict[str, Any],
+    ) -> Dict[str, str]:
+        selected_subscriptions = self._extract_selected_subscriptions(context)
+        if not selected_subscriptions:
+            selected_subscriptions = [subscription_id]
+
         workload_id = None
         if isinstance(context, dict):
             workload_id = (
@@ -163,48 +252,66 @@ class ChatService:
                 or context.get('selected_workload_id')
                 or context.get('active_workload_id')
             )
-        return build_scoped_memory_key(
-            subscription_id=subscription_id,
-            workload_id=str(workload_id).strip() if workload_id else None,
-            module=f"chat.{module_suffix}",
-        )
+        if workload_id:
+            clean_workload_id = str(workload_id).strip()
+            if clean_workload_id and get_saved_workload(clean_workload_id):
+                anchor_subscription = selected_subscriptions[0]
+                return {
+                    "scope_type": "workload",
+                    "scope_id": clean_workload_id,
+                    "anchor_subscription_id": anchor_subscription,
+                }
+
+        if len(selected_subscriptions) >= 2:
+            counts = self._count_nodes_by_subscription(graph)
+            ranked = sorted(
+                selected_subscriptions,
+                key=lambda sub_id: (-counts.get(sub_id, 0), sub_id),
+            )
+            anchor_subscription = ranked[0]
+            return {
+                "scope_type": "subscription",
+                "scope_id": anchor_subscription,
+                "anchor_subscription_id": anchor_subscription,
+            }
+
+        anchor_subscription = selected_subscriptions[0]
+        return {
+            "scope_type": "subscription",
+            "scope_id": anchor_subscription,
+            "anchor_subscription_id": anchor_subscription,
+        }
 
     @staticmethod
-    def _resolve_flow(
-        query_type: str,
-        query: str,
-        context: Optional[Dict[str, Any]],
-    ) -> str:
-        """Route query to chat/resilience/annotations specialist flow."""
-        if query_type == 'connections':
-            return 'annotations'
+    def _load_conversation_id(scope_type: str, scope_id: str) -> Optional[str]:
+        if scope_type == "workload":
+            return get_workload_conversation_id(scope_id)
+        return get_subscription_conversation_id(scope_id)
 
-        if query_type in {'findings', 'remediation', 'terraform'}:
-            return 'resilience'
+    @staticmethod
+    def _persist_conversation_id(scope_type: str, scope_id: str, conversation_id: str) -> None:
+        if scope_type == "workload":
+            set_workload_conversation_id(scope_id, conversation_id)
+            return
+        set_subscription_conversation_id(scope_id, conversation_id)
 
-        query_lower = (query or '').lower()
-        annotations_terms = ('topology', 'dependency', 'dependencies', 'relationship', 'relationships', 'criticality')
-        resilience_terms = ('resilien', 'availability', 'fail', 'failing', 'remediat', 'reliability', 'dr', 'disaster')
+    @staticmethod
+    def _is_conversation_context_seeded(scope_type: str, scope_id: str) -> bool:
+        if scope_type == "workload":
+            return is_workload_context_seeded(scope_id)
+        return is_subscription_context_seeded(scope_id)
 
-        if any(term in query_lower for term in annotations_terms):
-            return 'annotations'
-        if any(term in query_lower for term in resilience_terms):
-            return 'resilience'
-
-        tab = ''
-        if isinstance(context, dict):
-            tab = str(context.get('tab') or '').lower()
-        if tab in {'connections', 'dependencies', 'architecture'}:
-            return 'annotations'
-        if tab in {'findings', 'remediation', 'resilience', 'recommendations', 'terraform'}:
-            return 'resilience'
-
-        return 'chat'
+    @staticmethod
+    def _mark_conversation_context_seeded(scope_type: str, scope_id: str) -> None:
+        if scope_type == "workload":
+            set_workload_context_seeded(scope_id, True)
+            return
+        set_subscription_context_seeded(scope_id, True)
 
     def _detect_query_type(self, query: str) -> str:
         """Detect the type of query to route appropriately."""
         query_lower = query.lower()
-        
+
         if any(word in query_lower for word in ['failing', 'recommendation', 'check', 'issue', 'wrong']):
             return 'findings'
         elif any(word in query_lower for word in ['fix', 'remediat', 'resolv', 'how', 'steps']):
@@ -219,10 +326,13 @@ class ChatService:
     def _classify_query_scope(
         self,
         query: str,
-        memory_key: Optional[str] = None,
         agent_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """Classify whether a query is in-scope for workload infrastructure analysis."""
+        """Classify whether a query is in-scope for workload infrastructure analysis.
+
+        This uses lightweight local guardrails only to avoid a preflight LLM call.
+        """
         query_lower = (query or "").strip().lower()
         if not query_lower:
             return False, "Please enter a question about your workload resources, risks, or remediation."
@@ -234,335 +344,147 @@ class ChatService:
         if any(keyword in query_lower for keyword in off_topic_keywords):
             return False, "Please ask about your Azure workload resources, dependencies, findings, or remediation."
 
-        in_scope_keywords = [
-            "resource", "resources", "workload", "architecture", "dependency", "dependencies",
-            "resilience", "availability", "zone", "critical", "criticality", "important",
-            "top", "risk", "issue", "failing", "failure", "fix", "remediation", "terraform",
-            "recommendation", "database", "storage", "vm", "network", "load balancer",
-        ]
-        if any(keyword in query_lower for keyword in in_scope_keywords):
-            return True, ""
-
-        classifier_system_prompt = (
-            "You are a scope classifier for Azure workload analysis. "
-            "Accept only infrastructure/workload questions (resources, dependencies, failures, remediation, "
-            "architecture, terraform). Reject training/certification/career/general-chat/off-topic questions. "
-            "Return JSON only."
-        )
-        classifier_user_prompt = (
-            "Classify if this query is in-scope for workload infrastructure analysis.\n"
-            "Return exactly this JSON schema:\n"
-            '{"in_scope": true|false, "reason": "short reason"}\n\n'
-            "Examples in-scope:\n"
-            "- What are the top 3 most important resources?\n"
-            "- Which resources are failing resilience checks?\n"
-            "- How do I remediate storage availability issues?\n"
-            "Examples out-of-scope:\n"
-            "- How do I pass Azure certification?\n"
-            "- Tell me a joke\n\n"
-            f"Query:\n{query}"
-        )
-
-        try:
-            result = self.llm_gateway.generate_json(
-                system_prompt=classifier_system_prompt,
-                user_prompt=classifier_user_prompt,
-                temperature=0.0,
-                max_tokens=120,
-                model=self.llm_generation_config.get('model'),
-                memory_key=memory_key,
-                agent_id=agent_id,
-            )
-            in_scope = bool(result.get("in_scope", True))
-            reason = str(result.get("reason", "")).strip()
-            if in_scope:
-                return True, ""
-            if not reason:
-                reason = "Please ask about your Azure workload resources, issues, dependencies, or remediation."
-            return False, reason
-        except Exception as error:
-            LOGGER.warning("Scope classifier failed; allowing query (fail-open): %s", error)
-            return True, ""
+        return True, ""
 
     def _sanitize_response_message(self, message: str) -> str:
         """
         Sanitize response message to remove any off-topic content.
-        
+
         Checks for patterns that might indicate the LLM is answering off-topic questions.
         """
         max_length = 10000
         if len(message) > max_length:
             LOGGER.warning(f"Response message unusually long ({len(message)} chars), truncating")
             message = message[:max_length] + "\n\n(Message truncated due to length)"
-        
+
         return message
 
     def _normalize_graph(self, graph: Dict[str, Any]) -> Dict[str, Any]:
         """
         Normalize graph by converting Pydantic models to dictionaries.
-        
+
         The graph from get_workload_graph() may contain Edge and Node objects
         that need to be serialized for use in prompts.
         """
         normalized = dict(graph)
-        
-        # Normalize nodes
+
         if 'nodes' in normalized:
             nodes = normalized['nodes']
             normalized['nodes'] = [
                 n.model_dump() if hasattr(n, 'model_dump') else n
                 for n in nodes
             ]
-        
-        # Normalize edges
+
         if 'edges' in normalized:
             edges = normalized['edges']
             normalized['edges'] = [
                 e.model_dump() if hasattr(e, 'model_dump') else e
                 for e in edges
             ]
-        
+
         return normalized
 
-    def _system_prompt(self, query_type: str, flow: str = 'chat') -> str:
-        """Get system prompt based on query type."""
-        flow_intro = {
-            'chat': "You are the Chat/UI orchestrator agent for Azure workload analysis.",
-            'resilience': "You are the Resilience specialist agent for Azure workload analysis.",
-            'annotations': "You are the Annotations specialist agent for workload graph analysis.",
-        }.get(flow, "You are the Chat/UI orchestrator agent for Azure workload analysis.")
+    @staticmethod
+    def _first_non_empty(*values: Any) -> Any:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+        return None
 
-        base_prompt = (
-            flow_intro
-            + """
+    @staticmethod
+    def _node_metadata(node: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(node, dict):
+            return {}
+        metadata = node.get('metadata')
+        return metadata if isinstance(metadata, dict) else {}
 
-You are an Azure infrastructure architect analyzing a customer's specific workload.
+    @staticmethod
+    def _node_data(node: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(node, dict):
+            return {}
+        data = node.get('data')
+        return data if isinstance(data, dict) else {}
 
-SCOPE AND DATA CONSTRAINTS:
-===========================
+    def _node_display_name(self, node: Dict[str, Any]) -> str:
+        metadata = self._node_metadata(node)
+        data = self._node_data(node)
+        return str(
+            self._first_non_empty(
+                metadata.get('display_name'),
+                data.get('label'),
+                node.get('name'),
+                node.get('id'),
+                'Unknown',
+            )
+        )
 
-WORKLOAD SCOPE:
-- You ONLY answer questions about the infrastructure shown in this graph
-- You ANSWER questions about:
-  * Resources in the graph and their configurations
-  * Issues, findings, and remediation for these resources
-  * Architecture improvements and resilience enhancements
-  * Cost implications of suggested changes (e.g., ZRS vs LRS pricing)
-  * Performance impact of configuration changes
-  * Operational impact of improvements
-  * Terraform code generation for these resources
-- You do NOT provide general Azure training, certifications, or career advice  
-- You do NOT answer questions completely unrelated to Azure infrastructure
-- If asked about topics outside infrastructure/workload analysis, respond with:
-  "I'm focused on analyzing your infrastructure. That question is outside my scope.
-   Please ask about your workload, resources, issues, or improvements."
+    def _node_resource_type(self, node: Dict[str, Any]) -> str:
+        metadata = self._node_metadata(node)
+        data = self._node_data(node)
+        return str(
+            self._first_non_empty(
+                metadata.get('azure_type'),
+                data.get('resourceType'),
+                node.get('type'),
+                'Unknown',
+            )
+        )
 
-DATA SOURCES:
-- Use ONLY official Microsoft documentation (Microsoft Learn, Azure Docs)
-- Reference specific Microsoft documentation when providing guidance
-- Do NOT invent resources, relationships, or data
-- Do NOT suggest resources that aren't in the provided graph
-- All suggestions must be grounded in the graph data
+    def _node_criticality(self, node: Dict[str, Any]) -> Any:
+        metadata = self._node_metadata(node)
+        data = self._node_data(node)
+        return self._first_non_empty(
+            metadata.get('criticality_score'),
+            data.get('criticality_score'),
+        )
 
-Your core role:
-1. Analyze THIS workload's resource relationships and architecture
-2. Explain failures based on checks in the graph
-3. Suggest remediation steps grounded in graph data
-4. Generate Terraform code for improvements
-5. Help users understand their infrastructure
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
-IMPORTANT CONSTRAINTS:
-- Only reference resources that exist in the provided graph
-- Never invent resources or relationships
-- Base all suggestions on provided graph/context
-- Provide confidence scores (0-1) for all suggestions
-- Be technical but clear in explanations
-- All outputs must be valid JSON
-- For `resources_to_highlight`, you MUST return exact node IDs from the graph only
-- For `criticality_insights[].node_id`, you MUST return exact node IDs from the graph only
-- Never use display names (e.g., VM-test-1) in ID fields; use full node IDs exactly as provided
+    def _edge_relationship(self, edge: Dict[str, Any]) -> str:
+        data = edge.get('data') if isinstance(edge.get('data'), dict) else {}
+        metadata = edge.get('metadata') if isinstance(edge.get('metadata'), dict) else {}
+        return str(
+            self._first_non_empty(
+                edge.get('relationship'),
+                metadata.get('relationship'),
+                data.get('relationship'),
+                'relates_to',
+            )
+        )
 
-EDGE SUGGESTION RULES (critical):
-- ONLY suggest edges between resources that logically connect
-- A resource CANNOT depend on itself (source != target)
-- Storage disks from different VMs should NOT have depends_on relationship
-- Network interfaces from different VMs should NOT have depends_on relationship
-- Managed disks can only logically connect to their parent VM or to backup/replication services
-- Do NOT suggest edges just because resources exist - they must have a real architectural relationship
+    def _edge_confidence(self, edge: Dict[str, Any], default: float = 1.0) -> float:
+        data = edge.get('data') if isinstance(edge.get('data'), dict) else {}
+        metadata = edge.get('metadata') if isinstance(edge.get('metadata'), dict) else {}
+        raw_value = self._first_non_empty(
+            edge.get('confidence'),
+            metadata.get('confidence'),
+            data.get('confidence'),
+        )
+        return self._to_float(raw_value, default)
 
-EXAMPLES OF INVALID EDGES (will be rejected):
-- ❌ Disk A from VM1 depends_on Disk B from VM2 (wrong: different VMs)
-- ❌ /subscriptions/xxx/VM1 depends_on /subscriptions/xxx/VM1 (wrong: self-loop)
-- ❌ Two random managed disks with depends_on (wrong: no relationship)
+    def _system_prompt(self, query_type: str) -> str:
+        """Minimal runtime hint; policy/contract lives in embedded agent instructions."""
+        query_hint = {
+            'findings': "focus on failed findings and remediation priority",
+            'remediation': "focus on concrete remediation steps",
+            'terraform': "focus on Terraform output only if explicitly requested",
+            'connections': "focus on topology/dependency relationships",
+            'general': "focus on direct answer to user intent",
+        }.get(query_type, "focus on direct answer to user intent")
 
-EXAMPLES OF VALID EDGES:
-- ✅ Application depends_on Database (different resource types, logical)
-- ✅ Frontend depends_on API Backend (different VMs, logical)
-- ✅ VM depends_on Virtual Network (different types, logical)
-
-RESPONSE FORMAT (always JSON):
-{
-  "message": "Your conversational response to the user",
-  "suggested_edges": [],
-  "resources_to_highlight": ["node_id1", "node_id2"],
-  "clarifying_questions": [],
-  "remediation_guide": null,
-  "terraform_code": null,
-  "recommendations": [],
-  "criticality_insights": []
-}
-
-IMPORTANT NOTES FOR EDGE SUGGESTIONS:
-- Only suggest edges if the user is explicitly asking about connections/relationships
-- For findings/remediation questions, focus on answering those - edges are optional
-- When you DO suggest edges, ensure they are LOGICAL (not disks from different VMs, etc.)
-- If no edges are needed for the query, return empty array: "suggested_edges": []
-- Each edge MUST connect different logical resources (not different disks from same VM)
-
-IMPORTANT NOTES FOR TERRAFORM CODE:
-- Only generate terraform_code if the user is explicitly asking for it
-- For findings/remediation/connections questions, focus on the question - return null for terraform_code
-- When you DO generate Terraform, provide it as a STRING containing valid HCL syntax (not a JSON object)
-- Example terraform_code value: "resource \\"azurerm_managed_disk\\" \\"vm_disk\\" {\\n  name = ...\\n}"
-"""
-    )
-        
-        if query_type == 'findings':
-            return base_prompt + """
-For findings queries, focus on:
-- Explaining why resources fail checks
-- Assessing business impact
-- Showing affected dependencies
-- Recommending remediation priority
-
-IMPORTANT: Base findings only on FAILED FINDINGS in the prompt. Do not infer issues from criticality alone.
-EDGE SUGGESTIONS: Return empty array [] - focus on answering the findings question.
-TERRAFORM CODE: Return null - focus on findings analysis, not code generation.
-"""
-        elif query_type == 'remediation':
-            return base_prompt + """
-For remediation queries, provide:
-- Step-by-step fix instructions
-- Effort and complexity estimation
-- Prerequisites and dependencies
-- Risk assessment
-- Validation procedures
-
-EDGE SUGGESTIONS: Return empty array [] - focus on remediation steps.
-TERRAFORM CODE: Return null - focus on remediation guidance, not code generation.
-If the user asks for Terraform for remediation, clarify and suggest they ask a terraform-specific question.
-"""
-        elif query_type == 'terraform':
-            return base_prompt + """
-For Terraform queries, generate:
-- Valid, production-ready HCL code
-- Resource definitions following Azure best practices
-- Input variables for customization
-- Output values for validation
-- Implementation notes and prerequisites
-
-EDGE SUGGESTIONS: Return empty array [] - focus on code generation.
-
-CRITICAL - You MUST validate your Terraform code BEFORE responding:
-
-BEFORE RETURNING TERRAFORM CODE, check EVERY line:
-1. Is storage_account_type = "..." a FLAT attribute? (NOT inside a sku { } block)
-   - Valid: storage_account_type = "Premium_ZRS"
-   - Invalid: sku { name = "Premium_ZRS" }
-2. Is create_option = "..." a FLAT attribute? (NOT inside creation_data { } block)
-   - Valid: create_option = "Empty"
-   - Invalid: creation_data { create_option = "Empty" }
-3. Do NOT invent attributes. Only use documented attributes from Terraform Azure Provider:
-   - For azurerm_managed_disk: name, resource_group_name, location, disk_size_gb, storage_account_type, create_option, zones, source_resource_id, etc.
-   - REJECT any attributes like: sku, creation_data, zone_resilient, tier (these don't exist for this resource)
-4. If using ZRS storage type: OMIT the zones parameter (ZRS is automatic across all zones)
-5. Run through this checklist for EVERY resource in your code
-
-FAILED FINDINGS are your requirements - your code MUST address them:
-- If finding says "use ZRS": code MUST have storage_account_type = "..._ZRS"
-- If finding says "zone redundancy": code MUST NOT have zones parameter (use ZRS instead)
-
-SELF-VALIDATION BEFORE RESPONSE:
-- Storage type uses _ZRS suffix for zone redundancy? ✓
-- No zones parameter when using ZRS? ✓
-- All attributes use storage_account_type (flat), not sku { } (block)? ✓
-- No invented attributes (sku, creation_data, zone_resilient)? ✓
-- Code references Microsoft Learn docs from failed findings? ✓
-
-Only return code if ALL checks pass. If unsure about an attribute, omit it.
-
-Suggest clarifying questions about deployment context first before generating code.
-"""
-        elif query_type == 'connections':
-            return base_prompt + """
-For connections queries, focus on:
-- Identifying relationships between resources
-- Analyzing dependency chains
-- Suggesting missing logical connections
-- Explaining why connections exist
-
-EDGE SUGGESTIONS REQUIRED:
-- ACTIVELY suggest logical edges based on resource types and architecture
-- A database should typically connect to an application tier
-- Load balancers should connect to backend pools
-- Networks should connect to VMs
-- BUT NEVER suggest illogical edges (e.g., disk A from VM1 depends_on disk B from VM2)
-- Provide high-confidence suggestions only (>0.7)
-
-Return suggested_edges with all relevant connections you identify.
-
-TERRAFORM CODE: Return null - focus on connections analysis, not infrastructure code generation.
-"""
-        else:
-            # General query type - don't force edge suggestions
-            return base_prompt + """
-For general queries:
-- Answer the user's question about their infrastructure
-- Focus on what the user asked, not on suggesting new edges
-- Only suggest edges if the user is asking about connections/relationships
-- Otherwise, return empty suggested_edges array
-
-COST AND PERFORMANCE QUESTIONS:
-If the user asks about cost or performance implications:
-- Provide general guidance based on Azure pricing and performance characteristics
-- Reference official Microsoft documentation for pricing details
-- Explain performance differences between configuration options (e.g., LRS vs ZRS, Standard vs Premium)
-- Clarify when exact pricing requires Azure Pricing Calculator
-- These questions ARE within scope - help the user understand trade-offs
-
-TERRAFORM CODE: Return null unless the user specifically asks for infrastructure-as-code.
-If asking for terraform, suggest they ask a terraform-specific question.
-
-RECOMMENDATIONS FOR CHANGE REQUESTS:
-If the user asks for "top changes", "recommendations", "improvements", etc.:
-- Populate the recommendations field with SPECIFIC, ACTIONABLE changes
-- Each recommendation should include:
-  * Description: What needs to change
-  * Resource(s): Which specific resources are affected - USE DISPLAY NAMES from the node summary (NOT resource IDs)
-  * Priority: high/medium/low
-  * Impact: Expected benefit (resilience improvement, cost reduction, etc.)
-  * Effort: Estimation (low/medium/high)
-  * Details: Why this change is needed
-
-CRITICAL: In the "resources" array, use the DISPLAY NAME exactly as shown in the TOP RESOURCES summary.
-For example, if the summary shows "VM-Test-1 OS Disk (Microsoft.Compute/disks)", 
-use "VM-Test-1 OS Disk" in the resources array, NOT the full resource ID.
-
-Example format:
-"recommendations": [
-  {
-    "description": "Enable zone redundancy on VM-Test-1 disk",
-    "resources": ["VM-Test-1 OS Disk"],
-    "priority": "high",
-    "impact": "Improves availability during zone failures",
-    "effort": "medium",
-    "details": "VM currently has single-zone storage. Use Premium_ZRS storage type."
-  }
-]
-
-Focus on providing helpful, focused answers to the specific question.
-EDGE SUGGESTIONS: Return [] unless the user asks about connections.
-"""
+        return (
+            "Embedded agent instructions are authoritative for role, routing, RAG policy, and output schema. "
+            f"Runtime context: flow=chat-orchestrator; query_focus={query_hint}. "
+            "Use only provided workload context; do not invent resources or relationships."
+        )
 
     def _build_prompt(
         self,
@@ -570,46 +492,51 @@ EDGE SUGGESTIONS: Return [] unless the user asks about connections.
         graph: Dict[str, Any],
         subscription_id: str,
         context: Optional[Dict[str, Any]],
-        conversation_history: Optional[List[Dict[str, str]]],
         query_type: str,
+        include_full_context: bool,
     ) -> str:
-        """Build detailed prompt with graph context."""
-        # Summarize graph
-        nodes_summary = self._summarize_nodes(graph.get('nodes', []))
-        edges_summary = self._summarize_edges(graph.get('edges', []))
-        llm_baseline_summary = self._build_llm_baseline_summary(graph)
-        failed_findings_summary = self._summarize_failed_findings(graph)
-        allowed_node_ids = self._build_node_id_catalog(graph)
-        detailed_resource_context = self._build_detailed_resource_context(
-            query=query,
-            graph=graph,
-            subscription_id=subscription_id,
-            context=context,
-        )
+        """Build prompt with optional full graph context for first-turn grounding only."""
+        if include_full_context:
+            nodes_summary = self._summarize_nodes(graph.get('nodes', []))
+            edges_summary = self._summarize_edges(graph.get('edges', []))
+            llm_baseline_summary = self._build_llm_baseline_summary(graph)
+            failed_findings_summary = self._summarize_failed_findings(graph)
+            allowed_node_ids = self._build_node_id_catalog(graph)
+            detailed_resource_context = self._build_detailed_resource_context(
+                query=query,
+                graph=graph,
+                subscription_id=subscription_id,
+                context=context,
+            )
 
-        prompt = f"""
-INFRASTRUCTURE CONTEXT:
-Graph has {len(graph.get('nodes', []))} resources and {len(graph.get('edges', []))} relationships.
+            prompt = f"""
+WORKLOAD CONTEXT:
+Resources={len(graph.get('nodes', []))}, Relationships={len(graph.get('edges', []))}
 
-TOP RESOURCES (by criticality):
+Top resources by criticality:
 {nodes_summary}
 
-KEY RELATIONSHIPS:
+Key relationships:
 {edges_summary}
 
-FAILED FINDINGS (authoritative - use these for issue prioritization):
+Failed findings (authoritative):
 {failed_findings_summary}
 
-LLM BASELINE ANALYSIS (from prior run):
+Prior LLM baseline:
 {llm_baseline_summary}
 
-DETAILED RESOURCE CONTEXT (auto-included only when needed):
+Detailed resource facts (when required):
 {detailed_resource_context}
 
-ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insights.node_id):
+Allowed node IDs (authoritative for references):
 {allowed_node_ids}
 
 """
+        else:
+            prompt = (
+                "CONVERSATION CONTEXT: Reuse prior conversation context for this scope. "
+                "Do not request a full graph replay unless strictly necessary.\n"
+            )
         
         # Add context if available
         if context:
@@ -621,18 +548,9 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
                     None
                 )
                 if selected_node:
-                    selected_data = selected_node.get('data', {}) if isinstance(selected_node, dict) else {}
-                    selected_name = (
-                        selected_data.get('label')
-                        or selected_node.get('name')
-                        or selected_resource_id
-                    )
-                    selected_type = (
-                        selected_data.get('resourceType')
-                        or selected_node.get('type')
-                        or 'Unknown'
-                    )
-                    selected_criticality = selected_data.get('criticality_score')
+                    selected_name = self._node_display_name(selected_node)
+                    selected_type = self._node_resource_type(selected_node)
+                    selected_criticality = self._node_criticality(selected_node)
                     prompt += "Selected resource details:\n"
                     prompt += f"- name: {selected_name}\n"
                     prompt += f"- type: {selected_type}\n"
@@ -644,13 +562,6 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
                 prompt += f"In UI tab: {context['tab']}\n"
 
         prompt += f"\nUSER QUERY: {query}\n"
-
-        # Add conversation history for context
-        if conversation_history and len(conversation_history) > 0:
-            prompt += "\nRECENT CONVERSATION:\n"
-            for msg in conversation_history[-3:]:  # Last 3 messages
-                role = "User" if msg.get('role') == 'user' else "Assistant"
-                prompt += f"{role}: {msg.get('content', '')}\n"
 
         return prompt
 
@@ -747,6 +658,7 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
     ) -> List[str]:
         """Find target resource IDs for detailed context extraction."""
         candidates: List[str] = []
+        query_lower = (query or "").lower()
 
         if context and context.get("selected_resource_id"):
             candidates.append(str(context.get("selected_resource_id")))
@@ -754,11 +666,27 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
         query_ids = re.findall(r"/subscriptions/[a-z0-9_\-./]+", query or "", flags=re.IGNORECASE)
         candidates.extend(query_ids)
 
+        if query_lower:
+            for node in graph.get("nodes", []):
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                if not node_id:
+                    continue
+                display_name = self._node_display_name(node)
+                if not isinstance(display_name, str) or not display_name.strip():
+                    continue
+                name_lower = display_name.strip().lower()
+                if len(name_lower) < 3:
+                    continue
+                if name_lower in query_lower:
+                    candidates.append(str(node_id))
+
         if not candidates:
             nodes = graph.get("nodes", [])
             top_nodes = sorted(
                 [n for n in nodes if isinstance(n, dict)],
-                key=lambda n: n.get("data", {}).get("criticality_score", 0),
+                key=lambda n: self._to_float(self._node_criticality(n), 0.0),
                 reverse=True,
             )[:3]
             candidates.extend(str(node.get("id")) for node in top_nodes if node.get("id"))
@@ -862,29 +790,28 @@ ALLOWED NODE IDS (authoritative for resources_to_highlight and criticality_insig
         query_type: str,
         flow: str,
         invalid_references: List[str],
-        memory_key: str,
         agent_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """One-shot repair pass to fix invalid IDs while preserving response intent."""
-        repair_system_prompt = self._system_prompt(query_type, flow)
+        repair_system_prompt = self._system_prompt(query_type)
         repair_user_prompt = f"""
-Your previous JSON output contained invalid IDs that are not present in the graph.
+    Fix invalid graph references in the previous JSON output.
 
-INVALID REFERENCES TO FIX:
-{chr(10).join(f'- {item}' for item in invalid_references)}
+    Invalid references:
+    {chr(10).join(f'- {item}' for item in invalid_references)}
 
-ALLOWED NODE IDS:
-{self._build_node_id_catalog(graph)}
+    Allowed node IDs:
+    {self._build_node_id_catalog(graph)}
 
-PREVIOUS JSON OUTPUT:
-{json.dumps(llm_output, ensure_ascii=False)}
+    Previous JSON output:
+    {json.dumps(llm_output, ensure_ascii=False)}
 
-TASK:
-- Return corrected JSON only.
-- Keep the same overall answer intent.
-- Replace invalid IDs with valid IDs when certain, otherwise remove those entries.
-- Do not invent IDs.
-"""
+    Return corrected JSON only.
+    Keep intent unchanged.
+    Replace invalid IDs only when certain; otherwise remove those entries.
+    Do not invent IDs.
+    """
 
         try:
             repaired = self.llm_gateway.generate_json(
@@ -893,8 +820,8 @@ TASK:
                 temperature=0.0,
                 max_tokens=self.llm_generation_config.get('max_tokens', 2000),
                 model=self.llm_generation_config.get('model'),
-                memory_key=memory_key,
                 agent_id=agent_id,
+                conversation_id=conversation_id,
             )
             return repaired if isinstance(repaired, dict) else None
         except Exception as error:
@@ -917,10 +844,9 @@ TASK:
             node_id = item.get("node_id")
             ann = item.get("annotations") or {}
             node = nodes_by_id.get(node_id, {})
-            data = node.get("data", {})
-            name = ann.get("display_name") or data.get("label") or node.get("name") or node_id
-            service = ann.get("azure_service_name") or data.get("resourceType") or node.get("type")
-            score = ann.get("criticality_score")
+            name = ann.get("display_name") or self._node_display_name(node) or node_id
+            service = ann.get("azure_service_name") or self._node_resource_type(node)
+            score = self._first_non_empty(ann.get("criticality_score"), self._node_criticality(node))
             reason = ann.get("reason")
             line = f"- {name} ({service})"
             if score is not None:
@@ -965,8 +891,7 @@ TASK:
             if not node_id or node_id in seen:
                 return
             node = nodes_by_id.get(node_id, {})
-            data = node.get("data", {})
-            label = data.get("label") or node.get("name") or node_id
+            label = self._node_display_name(node) or node_id
             references.append({"id": node_id, "label": label})
             seen.add(node_id)
 
@@ -996,9 +921,8 @@ TASK:
                 continue
 
             node = nodes_by_id.get(resource_id, {})
-            data = node.get("data", {})
-            name = data.get("label") or node.get("name") or resource_id
-            resource_type = data.get("resourceType") or node.get("type") or "Unknown"
+            name = self._node_display_name(node) or resource_id
+            resource_type = self._node_resource_type(node)
 
             # Extract detailed check information for each failed check
             check_details = []
@@ -1074,16 +998,15 @@ TASK:
         # Sort by criticality
         sorted_nodes = sorted(
             nodes,
-            key=lambda n: n.get('data', {}).get('criticality_score', 0),
+            key=lambda n: self._to_float(self._node_criticality(n), 0.0),
             reverse=True
         )[:15]
 
         summary = []
         for node in sorted_nodes:
-            data = node.get('data', {})
-            label = data.get('label', 'Unknown')
-            resource_type = data.get('resourceType', 'Unknown')
-            criticality = data.get('criticality_score', 'unknown')
+            label = self._node_display_name(node)
+            resource_type = self._node_resource_type(node)
+            criticality = self._first_non_empty(self._node_criticality(node), 'unknown')
             summary.append(
                 f"- {label} ({resource_type}) [Criticality: {criticality}]"
             )
@@ -1099,8 +1022,8 @@ TASK:
         for edge in edges[:25]:  # Limit to first 25
             source = edge.get('source', '...')
             target = edge.get('target', '...')
-            rel = edge.get('data', {}).get('relationship', 'relates_to')
-            confidence = edge.get('data', {}).get('confidence', 1.0)
+            rel = self._edge_relationship(edge)
+            confidence = self._edge_confidence(edge, 1.0)
             summary.append(f"- {source} --[{rel}:{confidence:.2f}]--> {target}")
 
         return '\n'.join(summary) if summary else "No relationships found"
@@ -1239,12 +1162,9 @@ TASK:
         
         source_node = nodes_by_id.get(source_id, {})
         target_node = nodes_by_id.get(target_id, {})
-        
-        source_data = source_node.get('data', {}) if isinstance(source_node, dict) else {}
-        target_data = target_node.get('data', {}) if isinstance(target_node, dict) else {}
-        
-        source_type = source_data.get('resourceType', '').lower()
-        target_type = target_data.get('resourceType', '').lower()
+
+        source_type = self._node_resource_type(source_node).lower()
+        target_type = self._node_resource_type(target_node).lower()
         
         # Rule 2: Storage disks from different VMs shouldn't have depends_on
         # Example: managed_disks from different VMs
@@ -1320,6 +1240,38 @@ TASK:
             LOGGER.debug(f"Error extracting parent resource from {resource_id}: {e}")
         
         return None
+
+    @staticmethod
+    def _normalize_relationship_name(value: Any) -> str:
+        normalized = str(value or "related").strip().lower()
+        return normalized or "related"
+
+    def _build_existing_edge_index(
+        self,
+        graph: Dict[str, Any],
+    ) -> Tuple[set[Tuple[str, str]], set[Tuple[str, str, str]]]:
+        """Build normalized lookup sets for existing graph edges."""
+        pair_keys: set[Tuple[str, str]] = set()
+        relationship_keys: set[Tuple[str, str, str]] = set()
+
+        for existing_edge in graph.get('edges', []) or []:
+            if not isinstance(existing_edge, dict):
+                continue
+
+            source = str(existing_edge.get('source') or '').strip().lower()
+            target = str(existing_edge.get('target') or '').strip().lower()
+            if not source or not target:
+                continue
+
+            relationship = self._normalize_relationship_name(
+                self._edge_relationship(existing_edge)
+            )
+
+            pair_keys.add((source, target))
+            relationship_keys.add((source, target, relationship))
+
+        return pair_keys, relationship_keys
+
     def _process_llm_response(
         self,
         llm_output: Dict[str, Any],
@@ -1329,7 +1281,9 @@ TASK:
         flow: str,
         include_rag_trace: bool,
         target_agent_id: str,
-        memory_key: str,
+        scope_type: str,
+        scope_id: str,
+        conversation_id: Optional[str],
         trace_id: str,
     ) -> ChatResponse:
         """Validate and process LLM response against guardrails."""
@@ -1356,8 +1310,13 @@ TASK:
         # Validate suggested edges
         suggested_edges = []
         nodes_by_id = {n['id']: n for n in graph.get('nodes', [])}
+        existing_edge_pairs, existing_edge_relationships = self._build_existing_edge_index(graph)
+        seen_suggested_edges: set[Tuple[str, str, str]] = set()
 
         for edge in llm_output.get('suggested_edges', []):
+            if not isinstance(edge, dict):
+                continue
+
             source = edge.get('source')
             target = edge.get('target')
             relationship = edge.get('relationship', 'related')
@@ -1377,6 +1336,29 @@ TASK:
                     f"filtering out"
                 )
                 continue
+
+            normalized_source = str(source).strip().lower()
+            normalized_target = str(target).strip().lower()
+            normalized_relationship = self._normalize_relationship_name(relationship)
+
+            # Check 3: Suppress already-existing relationships from current graph
+            if (
+                (normalized_source, normalized_target) in existing_edge_pairs
+                or (normalized_source, normalized_target, normalized_relationship) in existing_edge_relationships
+            ):
+                LOGGER.info(
+                    "Filtered duplicate edge suggestion already present in graph: %s -> %s (%s)",
+                    source,
+                    target,
+                    relationship,
+                )
+                continue
+
+            # Check 4: Suppress duplicate suggestions returned in the same response
+            suggestion_key = (normalized_source, normalized_target, normalized_relationship)
+            if suggestion_key in seen_suggested_edges:
+                continue
+            seen_suggested_edges.add(suggestion_key)
 
             suggested_edges.append(SuggestedEdge(
                 source=source,
@@ -1409,7 +1391,7 @@ TASK:
                     node_id=node_id,
                     suggested_score=min(10, max(1, insight.get('suggested_score', 5))),
                     reason=insight.get('reason', ''),
-                    current_score=nodes_by_id[node_id].get('data', {}).get('criticality_score'),
+                    current_score=self._node_criticality(nodes_by_id[node_id]),
                 ))
             else:
                 LOGGER.warning(f"LLM suggested criticality insight for non-existent node: {node_id}")
@@ -1451,8 +1433,10 @@ TASK:
             rag_trace = {
                 "trace_id": trace_id,
                 "flow": flow,
-                "assistant_id": target_agent_id,
-                "memory_key": memory_key,
+                "agent_reference": target_agent_id,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "conversation_id": conversation_id,
                 "rag_expected": rag_expected,
                 "rag_used": rag_used,
                 "source_type_counts": source_type_counts,

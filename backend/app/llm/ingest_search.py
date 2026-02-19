@@ -9,8 +9,8 @@ Usage example:
 Required configuration (env or args):
 - AZURE_SEARCH_ENDPOINT
 - AZURE_SEARCH_ADMIN_KEY
-- --embedding-deployment
-- APIM gateway configuration for embeddings (via args or AI_GATEWAY_* env/config)
+- --embedding-model (or AI_GATEWAY_EMBEDDING_MODEL / ai_agent.embedding_model)
+- APIM model configuration (ai_agent.gateway_base_url + AI_GATEWAY_SUBSCRIPTION_KEY)
 """
 
 from __future__ import annotations
@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-import requests
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 
 from app.logger import get_logger, setup_logging
+from app.llm.model_client import create_model_client
 from app.settings import get_settings, load_settings
 
 LOGGER = get_logger(__name__)
@@ -212,53 +212,21 @@ def _build_chunk_records(
 
 def _embed_records(
     records: List[Dict[str, Any]],
-    embedding_base_url: str,
-    embedding_api_version: str,
-    subscription_header_name: str,
-    subscription_key: str,
-    embedding_deployment: str,
+    model_client,
+    embedding_model: str,
     batch_size: int,
 ) -> None:
-    if not embedding_base_url:
-        raise RuntimeError("Missing embedding base URL for APIM embeddings")
-    if not subscription_key:
-        raise RuntimeError("Missing APIM subscription key for embeddings")
-
-    base_url = embedding_base_url.rstrip("/")
-    if not re.search(r"/openai/?$", base_url, flags=re.IGNORECASE):
-        base_url = f"{base_url}/openai"
-
-    embeddings_url = (
-        f"{base_url}/deployments/{embedding_deployment}/embeddings"
-        f"?api-version={embedding_api_version}"
-    )
+    if not model_client or not model_client.is_available():
+        raise RuntimeError("APIM model client is not available for embeddings")
 
     batch_size = max(1, min(batch_size, 32))
     for start in range(0, len(records), batch_size):
         batch = records[start:start + batch_size]
         inputs = [item["content"] for item in batch]
-        response = requests.post(
-            embeddings_url,
-            headers={
-                "Content-Type": "application/json",
-                subscription_header_name: subscription_key,
-            },
-            json={"input": inputs},
-            timeout=60,
+        vectors = model_client.embed_texts(
+            inputs=inputs,
+            embedding_model=embedding_model,
         )
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"APIM embeddings call failed ({response.status_code}): {response.text[:800]}"
-            )
-
-        payload = response.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list):
-            raise RuntimeError("Invalid embeddings response format: missing data list")
-
-        vectors = [item.get("embedding") for item in data if isinstance(item, dict)]
-        if len(vectors) != len(batch):
-            raise RuntimeError("Embedding response size mismatch")
         for item, vector in zip(batch, vectors):
             item["contentVector"] = vector
 
@@ -293,11 +261,7 @@ def main() -> int:
     parser.add_argument("--index-name", default=None, help="Azure AI Search index name")
     parser.add_argument("--search-endpoint", default=None, help="Azure AI Search endpoint")
     parser.add_argument("--search-admin-key", default=None, help="Azure AI Search admin key")
-    parser.add_argument("--embedding-deployment", required=True, help="Azure OpenAI embedding deployment name")
-    parser.add_argument("--embedding-base-url", default=None, help="APIM base URL for embeddings endpoint")
-    parser.add_argument("--embedding-api-version", default=None, help="API version for embeddings endpoint")
-    parser.add_argument("--embedding-subscription-header", default=None, help="APIM subscription header name for embeddings")
-    parser.add_argument("--embedding-subscription-key", default=None, help="APIM subscription key for embeddings")
+    parser.add_argument("--embedding-model", default=None, help="Embedding model/deployment name")
     parser.add_argument("--chunk-chars", type=int, default=2200, help="Chunk size in characters")
     parser.add_argument("--overlap-chars", type=int, default=250, help="Chunk overlap in characters")
     parser.add_argument("--embed-batch-size", type=int, default=16, help="Embedding batch size")
@@ -320,34 +284,13 @@ def main() -> int:
     search_admin_key = args.search_admin_key or os.getenv("AZURE_SEARCH_ADMIN_KEY")
     ai_agent_cfg = settings.get_ai_agent_config()
     index_name = args.index_name or os.getenv("AZURE_SEARCH_INDEX_NAME") or ai_agent_cfg.get("index_name")
+    model_client = create_model_client(settings)
 
-    embedding_base_url = (
-        args.embedding_base_url
-        or os.getenv("AI_GATEWAY_EMBEDDING_BASE_URL")
-        or ai_agent_cfg.get("embedding_base_url")
-        or ai_agent_cfg.get("gateway_base_url")
+    embedding_model = (
+        args.embedding_model
+        or os.getenv("AI_GATEWAY_EMBEDDING_MODEL")
+        or ai_agent_cfg.get("embedding_model")
     )
-    embedding_api_version = (
-        args.embedding_api_version
-        or os.getenv("AI_GATEWAY_EMBEDDING_API_VERSION")
-        or ai_agent_cfg.get("embedding_api_version")
-        or ai_agent_cfg.get("api_version")
-        or "2024-05-01-preview"
-    )
-    embedding_subscription_header = (
-        args.embedding_subscription_header
-        or os.getenv("AI_GATEWAY_EMBEDDING_SUBSCRIPTION_HEADER_NAME")
-        or ai_agent_cfg.get("embedding_subscription_header_name")
-        or ai_agent_cfg.get("subscription_header_name")
-        or "api-key"
-    )
-    embedding_subscription_key = (
-        args.embedding_subscription_key
-        or os.getenv("AI_GATEWAY_EMBEDDING_SUBSCRIPTION_KEY")
-        or ai_agent_cfg.get("subscription_key")
-    )
-
-    embedding_deployment = args.embedding_deployment
 
     if not args.local_path and not args.url_file:
         LOGGER.error("At least one input source is required: --local-path and/or --url-file")
@@ -368,33 +311,32 @@ def main() -> int:
 
     LOGGER.info("Collected %d documents, generated %d chunks", len(documents), len(records))
 
-    if args.dry_run:
-        LOGGER.info("Dry run enabled. Skipping embeddings and upload.")
-        return 0
-
-    if not search_endpoint or not search_admin_key or not index_name:
-        LOGGER.error("Missing search configuration. Provide endpoint/key/index via args or env vars.")
-        return 1
-
-    if not embedding_base_url or not embedding_subscription_key:
+    if not embedding_model:
         LOGGER.error(
-            "Missing APIM embedding configuration. Provide --embedding-base-url and --embedding-subscription-key "
-            "or set AI_GATEWAY_EMBEDDING_BASE_URL/AI_GATEWAY_EMBEDDING_SUBSCRIPTION_KEY "
-            "(fallbacks to ai_agent.gateway_base_url and AI_GATEWAY_SUBSCRIPTION_KEY)."
+            "Missing embedding model configuration. Provide --embedding-model "
+            "or set AI_GATEWAY_EMBEDDING_MODEL (or ai_agent.embedding_model)."
         )
+        return 1
+    if not model_client.is_available():
+        LOGGER.error("APIM model client unavailable. Configure ai_agent.gateway_base_url and AI_GATEWAY_SUBSCRIPTION_KEY.")
         return 1
 
     try:
-        LOGGER.info("Generating embeddings with deployment '%s'", embedding_deployment)
+        LOGGER.info("Generating embeddings with model '%s'", embedding_model)
         _embed_records(
             records=records,
-            embedding_base_url=embedding_base_url,
-            embedding_api_version=embedding_api_version,
-            subscription_header_name=embedding_subscription_header,
-            subscription_key=embedding_subscription_key,
-            embedding_deployment=embedding_deployment,
+            model_client=model_client,
+            embedding_model=embedding_model,
             batch_size=args.embed_batch_size,
         )
+
+        if args.dry_run:
+            LOGGER.info("Dry run enabled. Embeddings generated; skipping upload.")
+            return 0
+
+        if not search_endpoint or not search_admin_key or not index_name:
+            LOGGER.error("Missing search configuration. Provide endpoint/key/index via args or env vars.")
+            return 1
 
         LOGGER.info("Uploading %d chunks to index '%s'", len(records), index_name)
         _upload_records(

@@ -21,15 +21,18 @@ def _random_marker(prefix: str) -> str:
     return f"{prefix}-{suffix}"
 
 
-def _ask(gateway, key: str, prompt: str, model: str | None) -> str:
-    return gateway.generate_text(
+def _ask(gateway, prompt: str, model: str | None, conversation_id: str | None = None) -> tuple[str, str | None]:
+    response = gateway.generate_text(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=prompt,
         temperature=0.0,
         max_tokens=64,
         model=model,
-        memory_key=key,
+        conversation_id=conversation_id,
     ).strip()
+    metrics = gateway.get_last_metrics()
+    generated_conversation_id = metrics.get("conversation_id") if isinstance(metrics, dict) else None
+    return response, generated_conversation_id
 
 
 def main() -> int:
@@ -55,40 +58,73 @@ def main() -> int:
     key_a = f"{args.sub_a}|{args.wl_a}"
     key_b = f"{args.sub_b}|{args.wl_b}"
 
-    print(f"Testing memory key A: {key_a}")
-    print(f"Testing memory key B: {key_b}")
+    print(f"Testing conversation stream A: {key_a}")
+    print(f"Testing conversation stream B: {key_b}")
+
+    conversation_a = None
+    conversation_b = None
 
     # Seed memory A
-    ack_a = _ask(gateway, key_a, f"Remember marker {marker_a}. Reply only {marker_a}", args.model)
+    ack_a, conversation_a = _ask(
+        gateway,
+        f"Remember marker {marker_a}. Reply only {marker_a}",
+        args.model,
+        conversation_a,
+    )
     if marker_a not in ack_a:
         print(f"ERROR: Failed to seed key A memory. Response: {ack_a}", file=sys.stderr)
         return 1
 
     # Recall memory A
-    recall_a = _ask(gateway, key_a, "What marker is remembered? Reply marker or NONE", args.model)
+    recall_a, conversation_a = _ask(
+        gateway,
+        "What marker is remembered? Reply marker or NONE",
+        args.model,
+        conversation_a,
+    )
     if marker_a not in recall_a:
         print(f"ERROR: Key A did not recall its marker. Response: {recall_a}", file=sys.stderr)
         return 1
 
     # Key B should not know marker A
-    recall_b_before = _ask(gateway, key_b, "What marker is remembered? Reply marker or NONE", args.model)
+    recall_b_before, conversation_b = _ask(
+        gateway,
+        "What marker is remembered? Reply marker or NONE",
+        args.model,
+        conversation_b,
+    )
     if marker_a in recall_b_before:
         print(f"ERROR: Memory bleed detected: key B saw marker A. Response: {recall_b_before}", file=sys.stderr)
         return 1
 
     # Seed and recall key B
-    ack_b = _ask(gateway, key_b, f"Remember marker {marker_b}. Reply only {marker_b}", args.model)
+    ack_b, conversation_b = _ask(
+        gateway,
+        f"Remember marker {marker_b}. Reply only {marker_b}",
+        args.model,
+        conversation_b,
+    )
     if marker_b not in ack_b:
         print(f"ERROR: Failed to seed key B memory. Response: {ack_b}", file=sys.stderr)
         return 1
 
-    recall_b = _ask(gateway, key_b, "What marker is remembered? Reply marker or NONE", args.model)
+    recall_b, conversation_b = _ask(
+        gateway,
+        "What marker is remembered? Reply marker or NONE",
+        args.model,
+        conversation_b,
+    )
     if marker_b not in recall_b:
         print(f"ERROR: Key B did not recall its marker. Response: {recall_b}", file=sys.stderr)
         return 1
 
     # Ensure key A still isolated
-    recall_a_after = _ask(gateway, key_a, "What marker is remembered? Reply marker or NONE", args.model)
+    recall_a_after, conversation_a = _ask(
+        gateway,
+        "What marker is remembered? Reply marker or NONE",
+        args.model,
+        conversation_a,
+    )
     if marker_b in recall_a_after:
         print(f"ERROR: Memory bleed detected: key A saw marker B. Response: {recall_a_after}", file=sys.stderr)
         return 1

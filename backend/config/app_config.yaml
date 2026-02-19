@@ -21,25 +21,19 @@ llm:
 #   AI_GATEWAY_AGENT_BASE_URL
 #   AI_GATEWAY_SUBSCRIPTION_KEY
 #   AI_GATEWAY_SUBSCRIPTION_HEADER_NAME
-#   AI_GATEWAY_API_VERSION
-#   AI_GATEWAY_CHAT_AGENT_ID
-#   AI_GATEWAY_RESILIENCE_AGENT_ID
-#   AI_GATEWAY_ANNOTATIONS_AGENT_ID
-#   AI_GATEWAY_MEMORY_SCOPE
+#   AI_GATEWAY_REASONING_MODEL
+#   AI_GATEWAY_EMBEDDING_MODEL
+#   AI_GATEWAY_CHAT_AGENT_REFERENCE
+#   AI_GATEWAY_RESILIENCE_AGENT_REFERENCE
+#   AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE
 ai_agent:
-  gateway_base_url: "https://resilience-iq-api.azure-api.net/ResilienceIQ/api/projects/resilience-iq-project"
-  embedding_base_url: "https://resilience-iq-api.azure-api.net/ResilienceIQ/openai"
-  embedding_api_version: "2024-10-21"
-  embedding_subscription_header_name: "api-key"
-  # Flow-specific assistant ids for backend orchestration.
-  chat_agent_id: "asst_lRxtTuJn3kqUQKro71DtDIwY"
-  resilience_agent_id: "asst_0tifj1O2yZfwUtajQV119hpR"
-  annotations_agent_id: "asst_8IRSMF2qnhTFr7HIHhfFD9b1"
-  api_version: "2025-05-01"
-  subscription_header_name: "api-key"
-  # subscription_or_workload keeps one shared thread per process (stateful memory)
-  # stateless creates a new thread per request
-  memory_scope: "subscription_or_workload"
+  gateway_base_url: "https://resilience-iq-apim.azure-api.net"
+  subscription_header_name: "Ocp-Apim-Subscription-Key"
+  embedding_model: "text-embedding-3-small"
+  reasoning_model: "gpt-4.1"
+  chat_agent_reference: "chat-agent"
+  resilience_agent_reference: "resilience-agent"
+  annotations_agent_reference: "annotations-agent"
   run_timeout_seconds: 120
   poll_interval_seconds: 1.5
 
