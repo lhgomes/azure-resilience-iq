@@ -88,6 +88,7 @@ export interface ChatMessage {
 export interface ChatContext {
   selected_resource_id?: string;
   selected_recommendation_id?: string;
+  referenced_resource_ids?: string[];
   tab?: 'overview' | 'findings' | 'graph' | 'workloads';
   [key: string]: any;
 }
@@ -133,7 +134,8 @@ export class LLMChatService {
   async sendMessage(
     message: string,
     context?: ChatContext,
-    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+    referencedResourceIds?: string[]
   ): Promise<ChatResponse> {
     try {
       const response = await fetch(
@@ -148,6 +150,7 @@ export class LLMChatService {
             subscription_id: this.subscriptionId,
             context,
             conversation_history: conversationHistory,
+            referenced_resource_ids: referencedResourceIds,
           }),
         }
       );

@@ -47,6 +47,7 @@ class ChatRequest(BaseModel):
     subscription_id: str
     context: Optional[Dict[str, Any]] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
+    referenced_resource_ids: Optional[List[str]] = None
 
 
 class ChatResponse(BaseModel):

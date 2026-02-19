@@ -9,7 +9,7 @@ import re
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import uuid4
 
-from app.config import get_resources_path
+from app.config import get_resources_path, get_node_overrides_path
 from app.settings import get_settings
 from app.chat.models import ChatResponse, SuggestedEdge, CriticalityInsight, ChatSource, ChatMetrics
 from app.llm.gateway import create_llm_gateway
@@ -42,6 +42,7 @@ class ChatService:
         
         self.llm_gateway = create_llm_gateway(self.settings)
         self._resource_index_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._node_override_index_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
         LOGGER.info("Using embedded-agent instructions with runtime context prompts")
 
     async def process_query(
@@ -51,6 +52,7 @@ class ChatService:
         subscription_id: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        referenced_resource_ids: Optional[List[str]] = None,
         include_rag_trace: bool = False,
     ) -> ChatResponse:
         """
@@ -108,12 +110,18 @@ class ChatService:
                 return ChatResponse(message=reason)
 
             # Build prompt with context
+            effective_referenced_resource_ids = self._collect_referenced_resource_ids(
+                query=query,
+                context=context,
+                referenced_resource_ids=referenced_resource_ids,
+            )
             prompt = self._build_prompt(
                 query,
                 normalized_graph,
                 subscription_id,
                 context,
                 query_type,
+                effective_referenced_resource_ids,
                 include_full_context=not context_seeded,
             )
 
@@ -483,7 +491,9 @@ class ChatService:
         return (
             "Embedded agent instructions are authoritative for role, routing, RAG policy, and output schema. "
             f"Runtime context: flow=chat-orchestrator; query_focus={query_hint}. "
-            "Use only provided workload context; do not invent resources or relationships."
+            "Use only provided workload context; do not invent resources or relationships. "
+            "Recommendation contract: when returning recommendations, every item MUST include a valid 'recommendation_id' "
+            "from the authoritative findings context. Do not emit title-only or free-text recommendations."
         )
 
     def _build_prompt(
@@ -493,6 +503,7 @@ class ChatService:
         subscription_id: str,
         context: Optional[Dict[str, Any]],
         query_type: str,
+        referenced_resource_ids: Optional[List[str]],
         include_full_context: bool,
     ) -> str:
         """Build prompt with optional full graph context for first-turn grounding only."""
@@ -501,12 +512,17 @@ class ChatService:
             edges_summary = self._summarize_edges(graph.get('edges', []))
             llm_baseline_summary = self._build_llm_baseline_summary(graph)
             failed_findings_summary = self._summarize_failed_findings(graph)
+            recommendation_id_catalog = self._build_recommendation_id_catalog(graph)
             allowed_node_ids = self._build_node_id_catalog(graph)
             detailed_resource_context = self._build_detailed_resource_context(
                 query=query,
                 graph=graph,
                 subscription_id=subscription_id,
                 context=context,
+            )
+            referenced_resource_context = self._build_referenced_resource_context(
+                referenced_resource_ids=referenced_resource_ids,
+                subscription_id=subscription_id,
             )
 
             prompt = f"""
@@ -522,11 +538,17 @@ Key relationships:
 Failed findings (authoritative):
 {failed_findings_summary}
 
+Authoritative recommendation IDs (use these IDs only in recommendations):
+{recommendation_id_catalog}
+
 Prior LLM baseline:
 {llm_baseline_summary}
 
 Detailed resource facts (when required):
 {detailed_resource_context}
+
+Explicitly referenced resources (# mentions):
+{referenced_resource_context}
 
 Allowed node IDs (authoritative for references):
 {allowed_node_ids}
@@ -561,9 +583,65 @@ Allowed node IDs (authoritative for references):
             if context.get('tab'):
                 prompt += f"In UI tab: {context['tab']}\n"
 
+        if referenced_resource_ids:
+            referenced_resource_context = self._build_referenced_resource_context(
+                referenced_resource_ids=referenced_resource_ids,
+                subscription_id=subscription_id,
+            )
+            prompt += "Referenced resources (# mentions):\n"
+            prompt += f"{referenced_resource_context}\n"
+
         prompt += f"\nUSER QUERY: {query}\n"
 
         return prompt
+
+    def _collect_referenced_resource_ids(
+        self,
+        query: str,
+        context: Optional[Dict[str, Any]],
+        referenced_resource_ids: Optional[List[str]],
+    ) -> List[str]:
+        """Collect resource IDs explicitly referenced by user via # mentions or context."""
+        candidates: List[str] = []
+
+        if isinstance(referenced_resource_ids, list):
+            candidates.extend(str(item).strip() for item in referenced_resource_ids if str(item).strip())
+
+        if isinstance(context, dict):
+            context_refs = context.get("referenced_resource_ids")
+            if isinstance(context_refs, list):
+                candidates.extend(str(item).strip() for item in context_refs if str(item).strip())
+
+        candidates.extend(self._extract_hash_referenced_resource_ids_from_query(query))
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for resource_id in candidates:
+            normalized = resource_id.strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(resource_id.strip())
+
+        return deduped
+
+    @staticmethod
+    def _extract_hash_referenced_resource_ids_from_query(query: str) -> List[str]:
+        """Extract #/subscriptions/... references from user query text."""
+        if not query:
+            return []
+        matches = re.findall(r"#(/subscriptions/[a-z0-9_\-./]+)", query, flags=re.IGNORECASE)
+        return [f"/{match.lstrip('/')}" for match in matches if str(match).strip()]
+
+    @staticmethod
+    def _extract_subscription_id_from_resource_id(resource_id: str) -> Optional[str]:
+        """Extract subscription ID from an Azure resource ID."""
+        if not resource_id:
+            return None
+        match = re.match(r"^/subscriptions/([a-z0-9\-]+)/", resource_id.strip(), flags=re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1)
 
     def _query_requires_resource_details(self, query: str) -> bool:
         """Return True when low-level resource facts are likely required."""
@@ -600,6 +678,64 @@ Allowed node IDs (authoritative for references):
 
         self._resource_index_cache[subscription_id] = resource_index
         return resource_index
+
+    def _load_node_override_index(self, subscription_id: str) -> Dict[str, Dict[str, Any]]:
+        """Load node overrides keyed by normalized resource ID."""
+        cached = self._node_override_index_cache.get(subscription_id)
+        if cached is not None:
+            return cached
+
+        override_index: Dict[str, Dict[str, Any]] = {}
+        try:
+            node_overrides_path = get_node_overrides_path(subscription_id)
+            if node_overrides_path.exists():
+                raw = json.loads(node_overrides_path.read_text())
+                if isinstance(raw, dict):
+                    for resource_id, override in raw.items():
+                        if isinstance(resource_id, str) and resource_id.strip() and isinstance(override, dict):
+                            override_index[resource_id.strip().lower()] = override
+        except Exception as exc:
+            LOGGER.debug("Could not load node overrides for detailed context: %s", exc)
+
+        self._node_override_index_cache[subscription_id] = override_index
+        return override_index
+
+    def _build_referenced_resource_context(
+        self,
+        referenced_resource_ids: Optional[List[str]],
+        subscription_id: str,
+    ) -> str:
+        """Build full collector+override context for explicitly referenced resources."""
+        if not referenced_resource_ids:
+            return "None."
+
+        lines: List[str] = []
+        seen: set[str] = set()
+        for resource_id in referenced_resource_ids:
+            normalized_id = str(resource_id).strip().lower()
+            if not normalized_id or normalized_id in seen:
+                continue
+            seen.add(normalized_id)
+
+            resource_subscription = self._extract_subscription_id_from_resource_id(str(resource_id)) or subscription_id
+            resource_index = self._load_resource_index(resource_subscription)
+            node_override_index = self._load_node_override_index(resource_subscription)
+
+            raw_resource = resource_index.get(normalized_id)
+            node_override = node_override_index.get(normalized_id)
+
+            if not raw_resource and not node_override:
+                lines.append(f"- {resource_id}: not found in collector resources or node overrides")
+                continue
+
+            payload = {
+                "resource_id": str(resource_id).strip(),
+                "resource": raw_resource,
+                "node_override": node_override,
+            }
+            lines.append(f"- {resource_id}: {json.dumps(payload, ensure_ascii=False)}")
+
+        return "\n".join(lines) if lines else "None."
 
     def _extract_resource_facts(self, resource: Dict[str, Any]) -> Dict[str, Any]:
         """Extract compact operational facts from a raw collector resource."""
@@ -928,6 +1064,7 @@ Allowed node IDs (authoritative for references):
             check_details = []
             for check in failed_checks[:3]:
                 # Extract problem description and context
+                recommendation_id = str(check.get("recommendation_id") or "").strip()
                 description = check.get("description", "")
                 long_description = check.get("long_description", "").strip()
                 impact = check.get("impact", "").lower()
@@ -937,6 +1074,8 @@ Allowed node IDs (authoritative for references):
                 
                 # Build detailed check summary
                 detail_parts = [description]
+                if recommendation_id:
+                    detail_parts.append(f"[recommendation_id: {recommendation_id}]")
                 if long_description:
                     # Take first 150 chars of long description for context
                     context_snippet = long_description.replace("\n", " ")[:150]
@@ -973,6 +1112,152 @@ Allowed node IDs (authoritative for references):
             return "No failed findings available."
 
         return "\n".join(failed_items)
+
+    @staticmethod
+    def _normalize_recommendation_text(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    def _build_recommendation_id_catalog(self, graph: Dict[str, Any], max_ids: int = 250) -> str:
+        """Build authoritative recommendation ID catalog for strict recommendation matching."""
+        authoritative = self._extract_authoritative_recommendations(graph)
+        recommendation_ids = sorted(authoritative.keys(), key=lambda rid: rid.lower())
+
+        if not recommendation_ids:
+            return "(none)"
+
+        if len(recommendation_ids) > max_ids:
+            truncated = recommendation_ids[:max_ids]
+            return "\n".join(f"- {recommendation_id}" for recommendation_id in truncated) + "\n- ..."
+
+        return "\n".join(f"- {recommendation_id}" for recommendation_id in recommendation_ids)
+
+    def _extract_authoritative_recommendations(self, graph: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Build authoritative recommendation catalog from resilience evaluations."""
+        evaluations = (graph.get("resilience_evaluations") or {}).get("evaluations", {})
+        catalog: Dict[str, Dict[str, Any]] = {}
+
+        for payload in evaluations.values():
+            if not isinstance(payload, dict):
+                continue
+            checks = payload.get("checks", [])
+            if not isinstance(checks, list):
+                continue
+
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                recommendation_id = str(check.get("recommendation_id") or "").strip()
+                if not recommendation_id:
+                    continue
+
+                item = catalog.get(recommendation_id)
+                if item is None:
+                    item = {
+                        "recommendation_id": recommendation_id,
+                        "title": str(check.get("description") or recommendation_id),
+                        "description": str(check.get("description") or ""),
+                        "category": check.get("category"),
+                        "impact": check.get("impact"),
+                        "potential_benefits": check.get("potential_benefits"),
+                        "learn_more": check.get("learn_more"),
+                        "failed_count": 0,
+                        "pending_count": 0,
+                        "pass_count": 0,
+                    }
+                    catalog[recommendation_id] = item
+
+                status = self._normalize_recommendation_text(check.get("status"))
+                if status == "fail":
+                    item["failed_count"] = int(item.get("failed_count") or 0) + 1
+                elif status == "pending":
+                    item["pending_count"] = int(item.get("pending_count") or 0) + 1
+                elif status == "pass":
+                    item["pass_count"] = int(item.get("pass_count") or 0) + 1
+
+                if not item.get("description") and check.get("description"):
+                    item["description"] = str(check.get("description"))
+                    item["title"] = str(check.get("description"))
+                if not item.get("category") and check.get("category"):
+                    item["category"] = check.get("category")
+                if not item.get("impact") and check.get("impact"):
+                    item["impact"] = check.get("impact")
+                if not item.get("potential_benefits") and check.get("potential_benefits"):
+                    item["potential_benefits"] = check.get("potential_benefits")
+                if not item.get("learn_more") and check.get("learn_more"):
+                    item["learn_more"] = check.get("learn_more")
+
+        return catalog
+
+    def _normalize_recommendations(
+        self,
+        recommendations_raw: Any,
+        graph: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Normalize LLM recommendations against authoritative resilience recommendations using ID-only matching."""
+        authoritative = self._extract_authoritative_recommendations(graph)
+        if not authoritative:
+            return []
+
+        recommendations_list = recommendations_raw if isinstance(recommendations_raw, list) else [recommendations_raw]
+        selected_ids: List[str] = []
+        seen_ids: set[str] = set()
+
+        def add_selected_id(rec_id: str) -> None:
+            normalized_id = self._normalize_recommendation_text(rec_id)
+            if not normalized_id:
+                return
+            matched_id = next((k for k in authoritative.keys() if self._normalize_recommendation_text(k) == normalized_id), None)
+            if not matched_id or matched_id in seen_ids:
+                return
+            selected_ids.append(matched_id)
+            seen_ids.add(matched_id)
+
+        for rec in recommendations_list:
+            rec_id = ""
+
+            if isinstance(rec, dict):
+                rec_id = str(rec.get("recommendation_id") or rec.get("id") or "").strip()
+
+            if rec_id:
+                add_selected_id(rec_id)
+
+        if not selected_ids:
+            ranked_authoritative = sorted(
+                authoritative.values(),
+                key=lambda item: (
+                    -(int(item.get("failed_count") or 0)),
+                    -(int(item.get("pending_count") or 0)),
+                    self._normalize_recommendation_text(item.get("title")),
+                ),
+            )
+            for item in ranked_authoritative:
+                rec_id = str(item.get("recommendation_id") or "").strip()
+                if not rec_id or rec_id in seen_ids:
+                    continue
+                selected_ids.append(rec_id)
+                seen_ids.add(rec_id)
+                if len(selected_ids) >= 5:
+                    break
+
+        result: List[Dict[str, Any]] = []
+        for recommendation_id in selected_ids:
+            item = authoritative.get(recommendation_id)
+            if not item:
+                continue
+            result.append({
+                "recommendation_id": item.get("recommendation_id"),
+                "title": item.get("title") or item.get("description") or item.get("recommendation_id"),
+                "description": item.get("description") or item.get("title") or item.get("recommendation_id"),
+                "category": item.get("category"),
+                "impact": item.get("impact"),
+                "potential_benefits": item.get("potential_benefits"),
+                "learn_more": item.get("learn_more"),
+                "failed_count": item.get("failed_count", 0),
+                "pending_count": item.get("pending_count", 0),
+                "pass_count": item.get("pass_count", 0),
+            })
+
+        return result
 
     def get_baseline_summary(self, graph: Dict[str, Any]) -> str:
         """Public helper to build baseline summary for chat initialization."""
@@ -1397,12 +1682,7 @@ Allowed node IDs (authoritative for references):
                 LOGGER.warning(f"LLM suggested criticality insight for non-existent node: {node_id}")
 
         recommendations_raw = llm_output.get('recommendations', [])
-        recommendations: List[Dict[str, Any]] = []
-        for rec in recommendations_raw if isinstance(recommendations_raw, list) else [recommendations_raw]:
-            if isinstance(rec, dict):
-                recommendations.append(rec)
-            elif isinstance(rec, str):
-                recommendations.append({"text": rec})
+        recommendations = self._normalize_recommendations(recommendations_raw, graph)
 
         # Extract terraform code and convert to string if needed
         terraform_code = self._extract_terraform_code(llm_output)

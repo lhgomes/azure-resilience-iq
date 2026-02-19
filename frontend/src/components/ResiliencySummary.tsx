@@ -52,6 +52,8 @@ interface ResiliencySummaryProps {
   resourceGroupFilter?: Set<string>;
   serviceFilter?: Set<string>;
   validationSourceFilter?: Set<string>;
+  highlightRecommendationId?: string;
+  highlightRecommendationTitle?: string;
   onOverrideSaved?: (override: ResiliencyOverride) => void;
   onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
   onShowInGraph?: (resourceId: string) => void;
@@ -228,6 +230,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   resourceGroupFilter,
   serviceFilter,
   validationSourceFilter,
+  highlightRecommendationId,
+  highlightRecommendationTitle,
   onOverrideSaved,
   onOverrideDeleted,
   onShowInGraph,
@@ -246,6 +250,25 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   const [visibleTooltip, setVisibleTooltip] = useState<string | null>(null);
   const [resourceModalOpen, setResourceModalOpen] = useState(false);
   const [selectedResource, setSelectedResource] = useState<{ resourceId: string; resourceName: string; finding: any } | null>(null);
+
+  const getRecommendationRowId = (recommendationId: string): string => {
+    return `finding-rec-${recommendationId.replace(/[^a-zA-Z0-9\-_.:]/g, "_")}`;
+  };
+
+  const normalizeRecommendationText = (value?: string): string => {
+    return (value || "").trim().toLowerCase();
+  };
+
+  const isHighlightedRecommendation = (recommendationId?: string, description?: string): boolean => {
+    const normalizedHighlightId = normalizeRecommendationText(highlightRecommendationId);
+    const normalizedHighlightTitle = normalizeRecommendationText(highlightRecommendationTitle);
+    const normalizedId = normalizeRecommendationText(recommendationId);
+    const normalizedDescription = normalizeRecommendationText(description);
+
+    if (normalizedHighlightId && normalizedHighlightId === normalizedId) return true;
+    if (normalizedHighlightTitle && normalizedHighlightTitle === normalizedDescription) return true;
+    return false;
+  };
 
   // Fetch weights from backend once and reuse across all calculations
   const [categoryWeights, setCategoryWeights] = useState<Record<string, number>>(DEFAULT_WEIGHTS.categoryWeights);
@@ -1216,6 +1239,31 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       return 0;
     });
   }, [findingsWithContribution, sortColumn, sortDirection]);
+
+  useEffect(() => {
+    if (!highlightRecommendationId && !highlightRecommendationTitle) return;
+
+    setFilterStatus("all");
+    setFilterCategory(null);
+    setFilterImpact(null);
+    setFilterValidationSource(null);
+    setFilterSubscription(null);
+    setResourceFilter("");
+  }, [highlightRecommendationId, highlightRecommendationTitle]);
+
+  useEffect(() => {
+    if (!highlightRecommendationId && !highlightRecommendationTitle) return;
+
+    const target = groupedRecommendations.find(group =>
+      isHighlightedRecommendation(group.recommendation_id, group.description)
+    );
+    if (!target) return;
+
+    const element = document.getElementById(getRecommendationRowId(target.recommendation_id));
+    if (!element) return;
+
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [highlightRecommendationId, highlightRecommendationTitle, groupedRecommendations]);
 
   // Handler to open resource modal
   const handleResourceClick = (finding: any) => {
@@ -2531,9 +2579,14 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
               {groupedRecommendations.map((group, idx) => (
                 <tr
                   key={group.recommendation_id}
+                  id={getRecommendationRowId(group.recommendation_id)}
                   style={{
                     borderBottom: "1px solid #e5e7eb",
-                    background: idx % 2 === 0 ? "#fff" : "#f9fafb",
+                    background: isHighlightedRecommendation(group.recommendation_id, group.description)
+                      ? "#dbeafe"
+                      : idx % 2 === 0
+                        ? "#fff"
+                        : "#f9fafb",
                   }}
                 >
                   {showSubscriptionColumn && (
