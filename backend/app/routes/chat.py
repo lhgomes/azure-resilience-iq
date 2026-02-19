@@ -145,6 +145,7 @@ async def chat_message(
     {
       "message": "What's failing on this resource?",
       "subscription_id": "...",
+            "referenced_resource_ids": ["/subscriptions/.../resourceGroups/.../providers/..."],
       "context": {
         "selected_resource_id": "...",
         "tab": "findings"
@@ -208,6 +209,7 @@ async def chat_message(
             subscription_id=subscription_id,
             context=request.context,
             conversation_history=request.conversation_history,
+            referenced_resource_ids=request.referenced_resource_ids,
             include_rag_trace=include_rag_trace,
         )
 

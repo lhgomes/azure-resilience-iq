@@ -172,11 +172,21 @@ const WorkloadView: React.FC = () => {
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const [selectedRecommendationFocus, setSelectedRecommendationFocus] = useState<{ id?: string; title?: string } | null>(null);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
     [pendingRefreshSubscriptions]
   );
+
+  const handleRecommendationSelect = useCallback((recommendationId: string, recommendationTitle?: string) => {
+    if (!recommendationId && !recommendationTitle) return;
+    setSelectedRecommendationFocus({
+      id: recommendationId || undefined,
+      title: recommendationTitle || undefined,
+    });
+    setActiveTabIndex(1);
+  }, []);
 
   const markSubscriptionDirty = useCallback((subscriptionId: string | null) => {
     if (!subscriptionId) return;
@@ -878,6 +888,29 @@ const WorkloadView: React.FC = () => {
     if (!node) return undefined;
     const meta = (node as any)?.metadata ?? (node as any)?.data ?? {};
     return meta.display_name || meta.label || (node as any)?.name || nodeId;
+  }, [graph, viewGraph]);
+
+  const mentionableResources = useMemo(() => {
+    const sourceNodes = (graph?.nodes && graph.nodes.length > 0)
+      ? graph.nodes
+      : (viewGraph?.nodes || []);
+
+    const seen = new Set<string>();
+    const items: Array<{ id: string; label?: string }> = [];
+
+    sourceNodes.forEach((node: any) => {
+      const nodeId = String(node?.id || '').trim();
+      if (!nodeId) return;
+      const key = nodeId.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      const meta = (node?.metadata ?? node?.data ?? {}) as any;
+      const label = meta.display_name || meta.label || node?.name || undefined;
+      items.push({ id: nodeId, label });
+    });
+
+    return items;
   }, [graph, viewGraph]);
 
   // Persist subscription selection
@@ -2447,6 +2480,8 @@ const WorkloadView: React.FC = () => {
                           subscriptionId={chatSubscriptionId}
                           refreshToken={chatRefreshToken}
                           getResourceLabel={getResourceLabel}
+                          mentionableResources={mentionableResources}
+                          onRecommendationSelect={handleRecommendationSelect}
                           context={{
                             tab: "graph",
                             selected_resource_id: selectedNode?.id,
@@ -2493,6 +2528,8 @@ const WorkloadView: React.FC = () => {
                           resourceGroupFilter={resourceGroupFilter}
                           serviceFilter={serviceFilter}
                           validationSourceFilter={validationSourceFilter}
+                          highlightRecommendationId={selectedRecommendationFocus?.id}
+                          highlightRecommendationTitle={selectedRecommendationFocus?.title}
                           onOverrideSaved={handleOverrideSaved}
                           onOverrideDeleted={handleOverrideDeleted}
                           onShowInGraph={handleShowInGraph}
@@ -2504,6 +2541,8 @@ const WorkloadView: React.FC = () => {
                         subscriptionId={chatSubscriptionId}
                         refreshToken={chatRefreshToken}
                         getResourceLabel={getResourceLabel}
+                        mentionableResources={mentionableResources}
+                        onRecommendationSelect={handleRecommendationSelect}
                         context={{
                           tab: "overview",
                           selected_resource_id: selectedNode?.id,

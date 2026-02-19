@@ -8,11 +8,17 @@ import {
 } from '../../services/chatService';
 import './ChatPanel.css';
 
+interface MentionableResource {
+  id: string;
+  label?: string;
+}
+
 export interface ChatPanelProps {
   subscriptionId: string;
   context?: ChatContext;
   onResourceHighlight?: (resourceIds: string[]) => void;
   onEdgeSuggest?: (edges: SuggestedEdge[]) => void;
+  onRecommendationSelect?: (recommendationId: string, recommendationTitle?: string) => void;
   height?: number;
   isMinimized?: boolean;
   mode?: 'floating' | 'embedded';
@@ -20,6 +26,7 @@ export interface ChatPanelProps {
   showBadgeWhenClosed?: boolean;
   showCloseButton?: boolean;
   getResourceLabel?: (resourceId: string) => string | undefined;
+  mentionableResources?: MentionableResource[];
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -27,6 +34,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   context,
   onResourceHighlight,
   onEdgeSuggest,
+  onRecommendationSelect,
   height = 500,
   isMinimized = false,
   mode = 'floating',
@@ -34,6 +42,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   showBadgeWhenClosed = false,
   showCloseButton = false,
   getResourceLabel,
+  mentionableResources = [],
 }: ChatPanelProps): ReactNode => {
   const [messages, setMessages] = useState<ChatMessageType[]>([]);
   const [input, setInput] = useState('');
@@ -50,6 +59,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const chatService = useRef<LLMChatService | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastSubscriptionIdRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [mentionQuery, setMentionQuery] = useState<string>('');
+  const [mentionStart, setMentionStart] = useState<number | null>(null);
+  const [isMentionOpen, setIsMentionOpen] = useState(false);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [mentionTokenMap, setMentionTokenMap] = useState<Record<string, string>>({});
 
   const buildWelcomeMessage = (baselineSummary?: string): ChatMessageType => {
     const cleaned = (baselineSummary || '').trim();
@@ -91,6 +106,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const resolveResourceLabel = (id: string, fallback?: string): string => {
     return fallback || getResourceLabel?.(id) || id;
+  };
+
+  const resolveRecommendationId = (recommendation: any): string => {
+    const candidate = recommendation?.recommendation_id || recommendation?.id || '';
+    return typeof candidate === 'string' ? candidate.trim() : String(candidate || '').trim();
+  };
+
+  const resolveRecommendationTitle = (recommendation: any): string => {
+    const candidate = recommendation?.title || recommendation?.description || recommendation?.recommendation_id || recommendation?.id || 'Recommendation';
+    return typeof candidate === 'string' ? candidate.trim() : String(candidate || 'Recommendation').trim();
   };
 
   const renderResourceChips = (items: Array<{ id: string; label?: string }>): ReactNode => {
@@ -246,18 +271,149 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const getResourceShortName = (resourceId: string): string => {
+    const normalized = String(resourceId || '').replace(/\/+$/, '');
+    const segments = normalized.split('/').filter(Boolean);
+    return segments.length > 0 ? segments[segments.length - 1] : resourceId;
+  };
+
+  const getResourceGroupName = (resourceId: string): string => {
+    const match = String(resourceId || '').match(/\/resourcegroups\/([^/]+)/i);
+    if (!match || !match[1]) return 'N/A';
+    return match[1];
+  };
+
+  const extractMentionTokens = (text: string): string[] => {
+    const matches = text.match(/#([^\s#]+)/g) || [];
+    return matches
+      .map((match: string) => match.slice(1).replace(/[.,;:!?]+$/, '').trim())
+      .filter((token: string) => token.length > 0);
+  };
+
+  const resolveMentionTokenToResourceId = (token: string): string | null => {
+    const normalizedToken = token.trim().toLowerCase();
+    if (!normalizedToken) return null;
+
+    if (normalizedToken.startsWith('/subscriptions/')) {
+      return token.startsWith('/') ? token : `/${token}`;
+    }
+
+    const mapped = mentionTokenMap[normalizedToken];
+    if (mapped) {
+      return mapped;
+    }
+
+    const exactMatches = mentionableResources.filter((resource: MentionableResource) => {
+      const shortName = getResourceShortName(resource.id).toLowerCase();
+      const label = resolveResourceLabel(resource.id, resource.label).toLowerCase();
+      return shortName === normalizedToken || label === normalizedToken;
+    });
+    if (exactMatches.length === 1) {
+      return exactMatches[0].id;
+    }
+
+    const idMatches = mentionableResources.filter((resource: MentionableResource) =>
+      resource.id.toLowerCase().endsWith(`/${normalizedToken}`)
+    );
+    if (idMatches.length === 1) {
+      return idMatches[0].id;
+    }
+
+    return null;
+  };
+
+  const extractReferencedResourceIds = (text: string): string[] => {
+    const mentionTokens = extractMentionTokens(text);
+    const ids: string[] = [];
+
+    mentionTokens.forEach((token: string) => {
+      const resolvedId = resolveMentionTokenToResourceId(token);
+      if (resolvedId) ids.push(resolvedId);
+    });
+
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    ids.forEach((resourceId: string) => {
+      const key = resourceId.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      deduped.push(resourceId);
+    });
+    return deduped;
+  };
+
+  const filteredMentionResources = mentionableResources
+    .filter((item: MentionableResource) => {
+      if (!mentionQuery.trim()) return true;
+      const queryLower = mentionQuery.trim().toLowerCase();
+      const label = resolveResourceLabel(item.id, item.label).toLowerCase();
+      return item.id.toLowerCase().includes(queryLower) || label.includes(queryLower);
+    })
+    .slice(0, 8);
+
+  const updateMentionState = (value: string, caretPosition: number): void => {
+    const beforeCaret = value.slice(0, caretPosition);
+    const match = beforeCaret.match(/(?:^|\s)#([^#\s]*)$/);
+    if (!match) {
+      setIsMentionOpen(false);
+      setMentionQuery('');
+      setMentionStart(null);
+      setActiveMentionIndex(0);
+      return;
+    }
+
+    const tokenStart = beforeCaret.lastIndexOf('#');
+    setMentionStart(tokenStart);
+    setMentionQuery(match[1] || '');
+    setIsMentionOpen(true);
+    setActiveMentionIndex(0);
+  };
+
+  const applyMentionSelection = (resource: MentionableResource): void => {
+    if (mentionStart === null || !inputRef.current) return;
+
+    const textarea = inputRef.current;
+    const selectionStart = textarea.selectionStart ?? input.length;
+    const shortName = getResourceShortName(resource.id);
+    const mentionToken = `#${shortName} `;
+    const nextValue = `${input.slice(0, mentionStart)}${mentionToken}${input.slice(selectionStart)}`;
+    const nextCaret = mentionStart + mentionToken.length;
+
+    setInput(nextValue);
+    setMentionTokenMap((prev: Record<string, string>) => ({
+      ...prev,
+      [shortName.toLowerCase()]: resource.id,
+    }));
+    setIsMentionOpen(false);
+    setMentionQuery('');
+    setMentionStart(null);
+    setActiveMentionIndex(0);
+
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
   const handleSendMessage = async (): Promise<void> => {
     if (!input.trim() || isLoading || !chatService.current) return;
+
+    const currentInput = input;
+    const referencedResourceIds = extractReferencedResourceIds(currentInput);
 
     const userMessage: ChatMessageType = {
       id: `msg-${Date.now()}`,
       role: 'user',
-      content: input,
+      content: currentInput,
       timestamp: new Date(),
     };
 
     setMessages((prev: ChatMessageType[]) => [...prev, userMessage]);
     setInput('');
+    setMentionTokenMap({});
+    setIsMentionOpen(false);
+    setMentionQuery('');
+    setMentionStart(null);
     setIsLoading(true);
     setError(null);
 
@@ -271,9 +427,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         }));
 
       const response = await chatService.current.sendMessage(
-        input,
+        currentInput,
         context,
-        conversationHistory
+        conversationHistory,
+        referencedResourceIds
       );
 
       const assistantMessage: ChatMessageType = {
@@ -312,7 +469,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
-  const handleKeyPress = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (isMentionOpen && filteredMentionResources.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveMentionIndex((prev: number) => (prev + 1) % filteredMentionResources.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveMentionIndex((prev: number) =>
+          prev === 0 ? filteredMentionResources.length - 1 : prev - 1
+        );
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsMentionOpen(false);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        applyMentionSelection(filteredMentionResources[activeMentionIndex]);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -320,7 +502,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   };
 
   const handleTextChange = (e: ChangeEvent<HTMLTextAreaElement>): void => {
-    setInput(e.target.value);
+    const value = e.target.value;
+    setInput(value);
+    setMentionTokenMap((prev: Record<string, string>) => {
+      const activeTokens = new Set(extractMentionTokens(value).map((token: string) => token.toLowerCase()));
+      const next: Record<string, string> = {};
+      Object.entries(prev).forEach(([token, resourceId]) => {
+        if (activeTokens.has(token)) {
+          next[token] = resourceId;
+        }
+      });
+      return next;
+    });
+    updateMentionState(value, e.target.selectionStart ?? value.length);
   };
 
   const handleCopyCode = async (code: string): Promise<void> => {
@@ -550,42 +744,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       </div>
                       {msg.response.recommendations.map((rec: any, i: number) => (
                         <div key={i} className="recommendation-item">
-                          <div className="rec-description">
-                            <strong>{rec.description}</strong>
-                          </div>
-                          {rec.resources && rec.resources.length > 0 && (
-                            <div className="rec-resources">
-                              <span className="rec-label">Resources:</span>
-                              <div className="chat-inline-refs">
-                                {renderResourceChips(
-                                  rec.resources.map((nameOrId: string) => ({
-                                    id: nameOrId,
-                                    label: nameOrId,
-                                  }))
-                                )}
-                              </div>
-                            </div>
-                          )}
-                          <div className="rec-metadata">
-                            {rec.priority && (
-                              <span className={`priority priority-${rec.priority}`}>
-                                Priority: {rec.priority}
-                              </span>
-                            )}
-                            {rec.effort && (
-                              <span className="effort">Effort: {rec.effort}</span>
-                            )}
-                          </div>
-                          {rec.impact && (
-                            <div className="rec-impact">
-                              <span className="rec-label">Impact:</span> {rec.impact}
-                            </div>
-                          )}
-                          {rec.details && (
-                            <div className="rec-details">
-                              <span className="rec-label">Details:</span> {rec.details}
-                            </div>
-                          )}
+                          <button
+                            type="button"
+                            className="recommendation-link"
+                            onClick={() => {
+                              const recommendationId = resolveRecommendationId(rec);
+                              const recommendationTitle = resolveRecommendationTitle(rec);
+                              if (!recommendationId && !recommendationTitle) return;
+                              onRecommendationSelect?.(recommendationId, recommendationTitle);
+                            }}
+                            title="Open in Findings"
+                          >
+                            {resolveRecommendationTitle(rec)}
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -606,11 +777,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         >
                           {source.title || source.url}
                         </a>
-                        {source.type && (
+                        {/* {source.type && (
                           <div className="rec-metadata">
                             <span className="effort">Type: {source.type}</span>
                           </div>
-                        )}
+                        )} */}
                       </div>
                     ))}
                   </div>
@@ -713,20 +884,46 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       {error && <div className="chat-error">{error}</div>}
 
       <div className="chat-input-area">
-        <textarea
-          value={input}
-          onChange={handleTextChange}
-          onKeyPress={handleKeyPress}
-          placeholder="Ask about your infrastructure, issues, or fixes..."
-          disabled={isLoading}
-          rows={2}
-        />
+        <div className="chat-input-wrapper">
+          <div className="chat-composer">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={handleTextChange}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask about your infrastructure, issues, or fixes... Use # to reference a resource."
+              disabled={isLoading}
+              rows={1}
+            />
+          </div>
+
+          {isMentionOpen && filteredMentionResources.length > 0 && (
+            <div className="chat-mention-menu">
+              {filteredMentionResources.map((resource: MentionableResource, index: number) => (
+                <button
+                  key={resource.id}
+                  className={`chat-mention-item ${index === activeMentionIndex ? 'active' : ''}`}
+                  type="button"
+                  onMouseDown={(event: React.MouseEvent<HTMLButtonElement>) => {
+                    event.preventDefault();
+                    applyMentionSelection(resource);
+                  }}
+                  title={resource.id}
+                >
+                  <span className="chat-mention-label">{resolveResourceLabel(resource.id, resource.label)}</span>
+                  <span className="chat-mention-id">RG: {getResourceGroupName(resource.id)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <button
           onClick={(): Promise<void> => handleSendMessage()}
           disabled={!input.trim() || isLoading}
           className="send-button"
+          aria-label="Send message"
         >
-          Send
+          <img src="/send-button.png" alt="Send" className="send-button-image" />
         </button>
       </div>
 
