@@ -169,10 +169,17 @@ const WorkloadView: React.FC = () => {
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const skipFilterResetRef = useRef(false);
   const pendingWorkloadApplyRef = useRef(false);
+  const suppressNextNodeDrawerOpenRef = useRef(false);
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [selectedRecommendationFocus, setSelectedRecommendationFocus] = useState<{ id?: string; title?: string } | null>(null);
+
+  useEffect(() => {
+    if (activeTabIndex !== 1) return;
+    setSelectedNode(null);
+    setSelectedEdge(null);
+  }, [activeTabIndex]);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
@@ -515,14 +522,57 @@ const WorkloadView: React.FC = () => {
     // Validation overrides should not trigger Refresh Annotations & Scores
   }, [removeResiliencyOverride, applyOptimisticOverrideRemoval]);
 
-  const handleShowInGraph = useCallback((resourceId: string) => {
-    // Switch to the Graph tab
+  const handleOpenResourceDetails = (resourceId: string) => {
+    const targetResourceId = String(resourceId || "").trim();
+    if (!targetResourceId) return;
+
+    const allNodes = [...(viewGraph?.nodes ?? []), ...(graph?.nodes ?? [])];
+    const matchedNode = allNodes.find((node) =>
+      String(node?.id ?? "").toLowerCase() === targetResourceId.toLowerCase()
+    );
+    if (!matchedNode) return;
+
+    setSelectedNode(buildSelectedNodeData(matchedNode));
+    setSelectedEdge(null);
+    setActiveSubscriptionId(resolveSubscriptionIdForNode(matchedNode.id));
+  };
+
+  const handleShowInGraph = (resourceId: string) => {
+    const targetResourceId = String(resourceId || "").trim();
+    if (!targetResourceId) return;
+
+    const matchedNode = (graph?.nodes ?? []).find((node) =>
+      String(node?.id ?? "").toLowerCase() === targetResourceId.toLowerCase()
+    );
+    const resolvedNodeId = matchedNode?.id ?? targetResourceId;
+
+    suppressNextNodeDrawerOpenRef.current = true;
+
     setActiveTabIndex(0);
-    // Select the node in the graph to highlight it and open the node drawer
-    setTimeout(() => {
-      graphCanvasRef.current?.selectNode(resourceId);
-    }, 100);
-  }, []);
+
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    const trySelectNode = () => {
+      const canvas = graphCanvasRef.current;
+      if (canvas) {
+        canvas.selectNode(resolvedNodeId);
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        window.setTimeout(trySelectNode, 50);
+      }
+    };
+
+    window.setTimeout(trySelectNode, 0);
+  };
+
+  const handleChatResourceHighlight = (resourceIds: string[]) => {
+    if (!resourceIds.length) return;
+    handleOpenResourceDetails(resourceIds[0]);
+  };
 
   const fetchZonalResiliency = useCallback(async () => {
     if (selectedSubscriptionIds.length === 0) return;
@@ -785,6 +835,16 @@ const WorkloadView: React.FC = () => {
         return node;
       }
 
+      const passedChecks = typeof evaluation.passed_checks === "number"
+        ? evaluation.passed_checks
+        : checks.filter((check: any) => String(check?.status || "").toLowerCase() === "pass").length;
+      const failedChecks = typeof evaluation.failed_checks === "number"
+        ? evaluation.failed_checks
+        : checks.filter((check: any) => String(check?.status || "").toLowerCase() === "fail").length;
+      const totalChecks = typeof evaluation.total_checks === "number"
+        ? evaluation.total_checks
+        : checks.length;
+
       const elementWeight = getElementWeight(nodeId, annotationMap);
       const score = calculateResiliencyScore(checks, elementWeight, resilienceWeights);
 
@@ -796,6 +856,10 @@ const WorkloadView: React.FC = () => {
           resilience: {
             ...resilience,
             resilience_score: score,
+            checks,
+            passed_checks: passedChecks,
+            failed_checks: failedChecks,
+            total_checks: totalChecks,
           },
         },
       };
@@ -912,6 +976,21 @@ const WorkloadView: React.FC = () => {
 
     return items;
   }, [graph, viewGraph]);
+
+  const chatTabContext = useMemo<"graph" | "overview" | "workloads">(() => {
+    if (activeTabIndex === 1) return "overview";
+    if (activeTabIndex === 0) return "graph";
+    return "workloads";
+  }, [activeTabIndex]);
+
+  const chatContext = useMemo(() => ({
+    tab: chatTabContext,
+    selected_resource_id: selectedNode?.id,
+    selected_edge_id: chatTabContext === "graph" ? selectedEdge?.id : undefined,
+    view_level: chatTabContext === "overview" ? viewLevel : undefined,
+    selected_subscriptions: selectedSubscriptionIds,
+    active_workload_id: activeWorkloadId,
+  }), [chatTabContext, selectedNode?.id, selectedEdge?.id, viewLevel, selectedSubscriptionIds, activeWorkloadId]);
 
   // Persist subscription selection
   useEffect(() => {
@@ -1149,6 +1228,13 @@ const WorkloadView: React.FC = () => {
       setSelectedNode(null);
       setSelectedEdge(null);
       setActiveSubscriptionId(null);
+      return;
+    }
+    if (suppressNextNodeDrawerOpenRef.current) {
+      suppressNextNodeDrawerOpenRef.current = false;
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      setActiveSubscriptionId(resolveSubscriptionIdForNode(nodeId));
       return;
     }
     if (!viewGraph) return;
@@ -2271,7 +2357,8 @@ const WorkloadView: React.FC = () => {
             display: "flex",
             gap: 12,
             alignItems: "center",
-            color: "#323130"
+            color: "#323130",
+            flexWrap: "wrap",
           }}
         >
           <button
@@ -2295,8 +2382,8 @@ const WorkloadView: React.FC = () => {
           >
             {sidebarOpen ? <ArrowCollapseAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} /> : <ArrowExpandAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} />}
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resiliency IQ</h2>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: "1 1 220px", minWidth: 180 }}>Azure Resiliency IQ</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button
               onClick={() => {
                 fetchGraph();
@@ -2474,34 +2561,6 @@ const WorkloadView: React.FC = () => {
                           }}
                         />
                       </ReactFlowProvider>
-                      {/* Floating chat badge on Graph Tab */}
-                      {isChatAvailable && (
-                        <ChatPanel
-                          subscriptionId={chatSubscriptionId}
-                          refreshToken={chatRefreshToken}
-                          getResourceLabel={getResourceLabel}
-                          mentionableResources={mentionableResources}
-                          onRecommendationSelect={handleRecommendationSelect}
-                          context={{
-                            tab: "graph",
-                            selected_resource_id: selectedNode?.id,
-                            selected_edge_id: selectedEdge?.id,
-                            selected_subscriptions: selectedSubscriptionIds,
-                            active_workload_id: activeWorkloadId,
-                          }}
-                          onResourceHighlight={(resourceIds) => {
-                            if (resourceIds.length > 0 && graphCanvasRef.current) {
-                              handleShowInGraph(resourceIds[0]);
-                            }
-                          }}
-                          onEdgeSuggest={(edges) => {
-                            console.log("Chat suggested edges:", edges);
-                          }}
-                          height={600}
-                          isMinimized={true}
-                          mode="floating"
-                        />
-                      )}
                     </div>
                   </div>
                 ),
@@ -2533,36 +2592,10 @@ const WorkloadView: React.FC = () => {
                           onOverrideSaved={handleOverrideSaved}
                           onOverrideDeleted={handleOverrideDeleted}
                           onShowInGraph={handleShowInGraph}
+                          onResourceSelect={handleOpenResourceDetails}
                         />
                       </div>
                     </div>
-                    {isChatAvailable && (
-                      <ChatPanel
-                        subscriptionId={chatSubscriptionId}
-                        refreshToken={chatRefreshToken}
-                        getResourceLabel={getResourceLabel}
-                        mentionableResources={mentionableResources}
-                        onRecommendationSelect={handleRecommendationSelect}
-                        context={{
-                          tab: "overview",
-                          selected_resource_id: selectedNode?.id,
-                          view_level: viewLevel,
-                          selected_subscriptions: selectedSubscriptionIds,
-                          active_workload_id: activeWorkloadId,
-                        }}
-                        onResourceHighlight={(resourceIds) => {
-                          if (resourceIds.length > 0 && graphCanvasRef.current) {
-                            handleShowInGraph(resourceIds[0]);
-                          }
-                        }}
-                        onEdgeSuggest={(edges) => {
-                          console.log("Chat suggested edges:", edges);
-                        }}
-                        height={600}
-                        isMinimized={true}
-                        mode="floating"
-                      />
-                    )}
                   </>
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
@@ -2591,6 +2624,7 @@ const WorkloadView: React.FC = () => {
                     graphData={graph ?? undefined}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    onResourceSelect={handleOpenResourceDetails}
                   />
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
@@ -2602,6 +2636,24 @@ const WorkloadView: React.FC = () => {
             defaultTab={0}
           />
         </div>
+
+        {isChatAvailable && hasSelection && (
+          <ChatPanel
+            subscriptionId={chatSubscriptionId}
+            refreshToken={chatRefreshToken}
+            getResourceLabel={getResourceLabel}
+            mentionableResources={mentionableResources}
+            onRecommendationSelect={handleRecommendationSelect}
+            context={chatContext}
+            onResourceHighlight={handleChatResourceHighlight}
+            onEdgeSuggest={(edges) => {
+              console.log("Chat suggested edges:", edges);
+            }}
+            height={800}
+            isMinimized={true}
+            mode="floating"
+          />
+        )}
       </div>
 
       {/* Right drawer */}
@@ -2621,6 +2673,8 @@ const WorkloadView: React.FC = () => {
           node={selectedNode}
           aiLayerEnabled={aiLayerEnabled}
           userLayerEnabled={userLayerEnabled}
+          showShowInGraph={activeTabIndex !== 0}
+          onShowInGraph={() => handleShowInGraph(selectedNode.id)}
           onClose={() => setSelectedNode(null)}
           onSave={handleSaveNode}
           onReset={() => handleResetNode(selectedNode.id)}

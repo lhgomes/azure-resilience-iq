@@ -674,6 +674,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
 
     const baseNodes: Node[] = layoutedNodes.map(n => {
+      const isSelectedNode = selectedNodeIds.includes(n.id);
       const groupId = groupMembership.get(n.id);
       
       if (!groupId) {
@@ -703,11 +704,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
             break; // Only adjust once
           }
         }
-        return { ...n, position: adjustedPos, zIndex: 10 };
+        return { ...n, position: adjustedPos, zIndex: 10, selected: isSelectedNode };
       }
 
-      const g = groups.find(x => x.id === groupId);
-      if (!g) return { ...n, zIndex: 10 };
+        const g = groups.find(x => x.id === groupId);
+        if (!g) return { ...n, zIndex: 10, selected: isSelectedNode };
 
       const bounds = groupBounds.get(g.id);
       const rect = bounds?.rect ?? g.rect;
@@ -724,6 +725,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         position: rel,
         hidden: g.collapsed,
         zIndex: 1,
+        selected: isSelectedNode,
         data: {
           ...(typeof n.data === 'object' ? n.data : {}),
           groupId: groupId,
@@ -744,7 +746,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     });
 
     return [...survivingGroups, ...baseNodes];
-  }, [layoutedNodes, groups, rfEdges, groupMembership, toggleGroupCollapsed, removeMemberFromLocalGroups]);
+  }, [layoutedNodes, groups, rfEdges, groupMembership, toggleGroupCollapsed, removeMemberFromLocalGroups, selectedNodeIds]);
 
   const composedEdges = useMemo((): Edge[] => {
     // Filter out edges targeting group IDs (groups are visual containers, not graph nodes)
@@ -857,6 +859,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
       }
     },
     selectNode: (nodeId: string) => {
+      setSelectedNodeIds([nodeId]);
+      setSelectedGroupId(null);
+      manualGroupSelectionRef.current = null;
+
       // Update ReactFlow nodes to mark the target node as selected
       setFlowNodes(nodes => 
         nodes.map(node => ({
@@ -1120,7 +1126,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
         return;
       }
       const graphNode = visibleNodes.find(n => n.id === node.id);
-      if (graphNode) onNodeSelected?.(node.id);
+      if (graphNode) {
+        setSelectedNodeIds([node.id]);
+        setSelectedGroupId(null);
+        manualGroupSelectionRef.current = null;
+        onNodeSelected?.(node.id);
+      }
     },
     [visibleNodes, onNodeSelected]
   );
@@ -1441,6 +1452,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
   );
 
   const handlePaneClick = useCallback(() => {
+    setSelectedNodeIds([]);
     onNodeSelected?.(null);
     onEdgeSelected?.(null);
     manualGroupSelectionRef.current = null;

@@ -229,7 +229,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           width: "180px",
           textAlign: "center",
           boxShadow: selected 
-            ? "0 0 0 4px rgba(245, 158, 11, 0.3), 0 0 30px rgba(245, 158, 11, 0.8), 0 8px 16px rgba(0,0,0,0.2)" 
+            ? "0 0 0 5px rgba(245, 158, 11, 0.42), 0 0 0 12px rgba(245, 158, 11, 0.18), 0 0 42px 12px rgba(245, 158, 11, 0.55), 0 12px 24px rgba(0,0,0,0.24)" 
             : "0 4px 12px rgba(0,0,0,0.15)",
           cursor: "pointer",
           transition: "all 0.2s ease",
@@ -237,7 +237,7 @@ const AzureNode: React.FC<AzureNodeProps> = ({ data, isConnectable, selected }) 
           overflow: "hidden",
           display: "flex",
           flexDirection: "column",
-          transform: selected ? "scale(1.05)" : "scale(1)",
+          transform: selected ? "scale(1.03)" : "scale(1)",
         }}
       >
         {isVirtual && (
