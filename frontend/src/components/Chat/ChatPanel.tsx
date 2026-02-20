@@ -443,11 +443,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       setMessages((prev: ChatMessageType[]) => [...prev, assistantMessage]);
 
-      // Handle highlights
-      if (response.resources_to_highlight && onResourceHighlight) {
-        onResourceHighlight(response.resources_to_highlight);
-      }
-
       // Handle edge suggestions
       if (response.suggested_edges && onEdgeSuggest) {
         onEdgeSuggest(response.suggested_edges);
@@ -585,7 +580,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       <button
         className={`chat-toggle ${mode === 'embedded' ? 'chat-toggle-embedded' : ''}`}
         onClick={(): void => setIsOpen(true)}
-        title="Open chat assistant"
+        title="Open Resilience IQ Agent"
       >
         <img src="/copilot-logo.png" alt="Chat assistant" className="chat-toggle-icon" />
       </button>
@@ -600,7 +595,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     <div className={`chat-panel ${mode}`} style={{ height: mode === 'floating' ? `${height}px` : '100%' }}>
       {(mode === 'floating' || showCloseButton) && (
         <div className="chat-header">
-          <h3>Assistant</h3>
+          <h3>Resilience IQ Agent</h3>
           <button
             className="chat-close"
             onClick={(): void => setIsOpen(false)}
@@ -722,7 +717,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   msg.response.resources_to_highlight.length > 0 && (
                     <div className="message-highlight">
                       <small>
-                        Highlighting {msg.response.resources_to_highlight.length}{' '}
+                        Mentioned {msg.response.resources_to_highlight.length}{' '}
                         resource(s)
                       </small>
                       <div className="chat-inline-refs">

@@ -57,6 +57,7 @@ interface ResiliencySummaryProps {
   onOverrideSaved?: (override: ResiliencyOverride) => void;
   onOverrideDeleted?: (resilienceCheckId: string, resourceId?: string) => void;
   onShowInGraph?: (resourceId: string) => void;
+  onResourceSelect?: (resourceId: string) => void;
 }
 
 const buildOverrideMap = (overrides?: Record<string, ResiliencyOverride>) => {
@@ -235,6 +236,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   onOverrideSaved,
   onOverrideDeleted,
   onShowInGraph,
+  onResourceSelect,
 }) => {
   const [expandedResource, setExpandedResource] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pass" | "fail" | "pending">("fail");
@@ -248,8 +250,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   const [resourceFilter, setResourceFilter] = useState("");
   const [userOverrides, setUserOverrides] = useState<Record<string, { status: "pass" | "fail" | "pending"; validation_source: string; resilience_check_id?: string }>>({});
   const [visibleTooltip, setVisibleTooltip] = useState<string | null>(null);
-  const [resourceModalOpen, setResourceModalOpen] = useState(false);
-  const [selectedResource, setSelectedResource] = useState<{ resourceId: string; resourceName: string; finding: any } | null>(null);
 
   const getRecommendationRowId = (recommendationId: string): string => {
     return `finding-rec-${recommendationId.replace(/[^a-zA-Z0-9\-_.:]/g, "_")}`;
@@ -1267,13 +1267,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
 
   // Handler to open resource modal
   const handleResourceClick = (finding: any) => {
-    const effectiveName = getEffectiveResourceName(finding.resourceId, finding.resourceName || "");
-    setSelectedResource({
-      resourceId: finding.resourceId,
-      resourceName: effectiveName,
-      finding: finding,
-    });
-    setResourceModalOpen(true);
+    onResourceSelect?.(finding.resourceId);
   };
 
   const handleStatusOverride = async (
@@ -2942,293 +2936,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
             </div>
           )}
         </div>
-
-        {/* Resource Detail Modal */}
-        {resourceModalOpen && selectedResource && (
-          <div
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              background: "rgba(0, 0, 0, 0.5)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 10000,
-              padding: "20px",
-            }}
-            onClick={() => setResourceModalOpen(false)}
-          >
-            <div
-              style={{
-                background: "#fff",
-                borderRadius: "12px",
-                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
-                maxWidth: "600px",
-                width: "100%",
-                maxHeight: "80vh",
-                overflow: "auto",
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Modal Header */}
-              <div
-                style={{
-                  padding: "24px",
-                  borderBottom: "1px solid #e5e7eb",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  gap: "16px",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: "18px", fontWeight: 700, color: "#111827", marginBottom: "8px" }}>
-                    Resource Details
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "13px",
-                      color: "#6b7280",
-                      wordBreak: "break-all",
-                      fontFamily: "monospace",
-                      background: "#f9fafb",
-                      padding: "8px 12px",
-                      borderRadius: "6px",
-                      marginTop: "8px",
-                    }}
-                  >
-                    {selectedResource.resourceId}
-                  </div>
-                </div>
-                <button
-                  onClick={() => setResourceModalOpen(false)}
-                  style={{
-                    width: "32px",
-                    height: "32px",
-                    borderRadius: "6px",
-                    border: "1px solid #d1d5db",
-                    background: "#fff",
-                    color: "#6b7280",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                  }}
-                  title="Close"
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Modal Body */}
-              <div style={{ padding: "24px" }}>
-                <div style={{ marginBottom: "24px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
-                    Resource Name
-                  </div>
-                  <div style={{ fontSize: "15px", color: "#111827", fontWeight: 500 }}>
-                    {selectedResource.resourceName}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: "24px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
-                    Service Category
-                  </div>
-                  <div style={{ fontSize: "14px", color: "#111827" }}>
-                    {annotationMap.get(selectedResource.resourceId)?.azure_service_category || selectedResource.resourceId.split("/")[7] || "Unknown"}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: "24px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: 600, color: "#374151", marginBottom: "8px" }}>
-                    Status for this Recommendation
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                    <span
-                      style={{
-                        padding: "6px 12px",
-                        borderRadius: "6px",
-                        background: selectedResource.finding.status === "pass" ? "#ecfdf5" : selectedResource.finding.status === "pending" ? "#f3f4f6" : "#fee2e2",
-                        color: getStatusColor(selectedResource.finding.status),
-                        fontWeight: 600,
-                        fontSize: "13px",
-                      }}
-                    >
-                      {selectedResource.finding.status.toUpperCase()}
-                    </span>
-                    {(selectedResource.finding.status === "fail" || selectedResource.finding.status === "pending") && (
-                      <button
-                        onClick={() => {
-                          handleStatusOverride(
-                            selectedResource.resourceId,
-                            selectedResource.finding.recommendation_id,
-                            selectedResource.finding.resilience_check_id,
-                            selectedResource.finding.status
-                          );
-                          setResourceModalOpen(false);
-                        }}
-                        style={{
-                          padding: "6px 16px",
-                          borderRadius: "6px",
-                          border: "1px solid #10b981",
-                          background: "#10b981",
-                          color: "#fff",
-                          cursor: "pointer",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "6px",
-                        }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
-                        Override to Pass
-                      </button>
-                    )}
-                    {selectedResource.finding.status === "pass" && selectedResource.finding.validation_source?.toLowerCase() === "user" && (
-                      <button
-                        onClick={() => {
-                          handleDeleteOverride(
-                            selectedResource.resourceId,
-                            selectedResource.finding.recommendation_id,
-                            selectedResource.finding.resilience_check_id
-                          );
-                          setResourceModalOpen(false);
-                        }}
-                        style={{
-                          padding: "6px 16px",
-                          borderRadius: "6px",
-                          border: "1px solid #ef4444",
-                          background: "#ef4444",
-                          color: "#fff",
-                          cursor: "pointer",
-                          fontSize: "12px",
-                          fontWeight: 600,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "6px",
-                        }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                        Remove Override
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Azure Portal Link & Show in Graph */}
-                <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
-                  {(() => {
-                    const node = graphData?.nodes?.find(n => String(n?.id ?? "").toLowerCase() === selectedResource.resourceId.toLowerCase());
-                    const isValidAzureResource = selectedResource.resourceId.startsWith("/subscriptions/");
-                    
-                    if (node && isValidAzureResource) {
-                      const meta1 = (node as any)?.metadata;
-                      const meta2 = (node as any)?.raw?.metadata;
-                      const isVirtual = meta1?.virtual || meta2?.virtual;
-                      
-                      if (isVirtual !== true) {
-                        const tenantId = ((node as any)?.metadata?.tenant_id ?? (node as any)?.metadata?.tenantId ?? (node as any)?.metadata?.tenant) || ((node as any)?.raw?.metadata?.tenant_id ?? (node as any)?.raw?.metadata?.tenantId ?? (node as any)?.raw?.metadata?.tenant);
-                        const portalUrl = `https://portal.azure.com/#${tenantId ? `@${tenantId}/` : ""}resource${selectedResource.resourceId}/overview`;
-                        
-                        return (
-                          <a
-                            href={portalUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "8px",
-                              padding: "10px 18px",
-                              borderRadius: "6px",
-                              border: "1px solid #0078d4",
-                              background: "#0078d4",
-                              color: "#fff",
-                              textDecoration: "none",
-                              fontSize: "14px",
-                              fontWeight: 600,
-                              cursor: "pointer",
-                              transition: "all 0.15s ease",
-                            }}
-                            onMouseEnter={(e) => {
-                              e.currentTarget.style.background = "#005a9e";
-                              e.currentTarget.style.borderColor = "#005a9e";
-                            }}
-                            onMouseLeave={(e) => {
-                              e.currentTarget.style.background = "#0078d4";
-                              e.currentTarget.style.borderColor = "#0078d4";
-                            }}
-                          >
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                              <polyline points="15 3 21 3 21 9" />
-                              <line x1="10" y1="14" x2="21" y2="3" />
-                            </svg>
-                            Open in Azure Portal
-                          </a>
-                        );
-                      }
-                    }
-                    return null;
-                  })()}
-                  
-                  {/* Show in Graph Button */}
-                  {onShowInGraph && (
-                    <button
-                      onClick={() => {
-                        onShowInGraph(selectedResource.resourceId);
-                        setResourceModalOpen(false);
-                      }}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        padding: "10px 18px",
-                        borderRadius: "6px",
-                        border: "1px solid #8b5cf6",
-                        background: "#8b5cf6",
-                        color: "#fff",
-                        cursor: "pointer",
-                        fontSize: "14px",
-                        fontWeight: 600,
-                        transition: "all 0.15s ease",
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = "#7c3aed";
-                        e.currentTarget.style.borderColor = "#7c3aed";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = "#8b5cf6";
-                        e.currentTarget.style.borderColor = "#8b5cf6";
-                      }}
-                      title="Show this resource in the workload graph"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 3C7.58 3 3.75 5.68 2.12 9.59c-.77 1.77-.77 4.05 0 5.82 1.63 3.91 5.46 6.59 9.88 6.59s8.25-2.68 9.88-6.59c.77-1.77.77-4.05 0-5.82C20.25 5.68 16.42 3 12 3" />
-                        <circle cx="12" cy="12" r="3" />
-                      </svg>
-                      Show in Graph
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

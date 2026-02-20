@@ -46,6 +46,7 @@ interface ZonalResiliencySummaryProps {
   };
   resourceGroupFilter?: Set<string>;
   serviceFilter?: Set<string>;
+  onResourceSelect?: (resourceId: string) => void;
 }
 
 // Score donut visualization - matches ResiliencySummary style
@@ -169,7 +170,8 @@ const ResourceRow: React.FC<{
   index: number;
   annotationMap?: Map<string, LLMAnnotation>;
   evaluations?: ResiliencyEvaluations;
-}> = ({ resource, index, annotationMap, evaluations }) => {
+  onResourceSelect?: (resourceId: string) => void;
+}> = ({ resource, index, annotationMap, evaluations, onResourceSelect }) => {
   const { zonal_data } = resource;
   
   // Get display name from annotations or fall back to resource_name
@@ -231,7 +233,23 @@ const ResourceRow: React.FC<{
       }}
     >
       <td style={{ padding: "12px", fontSize: "12px" }}>
-        <div style={{ fontWeight: 600, color: "#1f2937" }}>{displayName}</div>
+        <button
+          type="button"
+          onClick={() => onResourceSelect?.(resource.resource_id)}
+          style={{
+            fontWeight: 600,
+            color: "#1f2937",
+            border: "none",
+            background: "transparent",
+            padding: 0,
+            margin: 0,
+            cursor: onResourceSelect ? "pointer" : "default",
+            textAlign: "left",
+          }}
+          title={resource.resource_id}
+        >
+          {displayName}
+        </button>
         <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
           {category}
         </div>
@@ -277,7 +295,7 @@ const ResourceRow: React.FC<{
 };
 
 // Main Component
-const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter }) => {
+const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter, onResourceSelect }) => {
   const [sortBy, setSortBy] = useState<"name" | "pattern" | "compliance">("name");
   const [filterPattern, setFilterPattern] = useState<DeploymentPattern | "all">("all");
   const [evaluations, setEvaluations] = useState<ResiliencyEvaluations>({});
@@ -641,7 +659,7 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
             </thead>
             <tbody>
               {filteredAndSorted.map((resource, index) => (
-                <ResourceRow key={resource.resource_id} resource={resource} index={index} annotationMap={annotationMap} evaluations={evaluations} />
+                <ResourceRow key={resource.resource_id} resource={resource} index={index} annotationMap={annotationMap} evaluations={evaluations} onResourceSelect={onResourceSelect} />
               ))}
             </tbody>
           </table>
