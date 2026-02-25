@@ -1,10 +1,13 @@
 """Ingest documents into Azure AI Search for RAG.
 
-Usage example:
-  python -m app.llm.ingest_search \
-    --local-path ./aprl \
-    --url-file ./data/learn_urls.txt \
-    --index-name learn-aprl-index
+Usage examples:
+    # APRL + unified Terraform modules ingestion on the same endpoint/key
+    python -m app.llm.ingest_search \
+        --targets aprl,terraform \
+        --aprl-local-path ./aprl \
+        --terraform-local-path ./docs/terraform \
+        --aprl-index-name learn-aprl-index \
+        --terraform-index-name learn-terraform-index
 
 Required configuration (env or args):
 - AZURE_SEARCH_ENDPOINT
@@ -19,6 +22,7 @@ import argparse
 import hashlib
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,9 +45,18 @@ class SourceDocument:
     content: str
     url: str
     source: str
+    module: str
     service: str
     aprl_id: str
     last_updated: str
+
+
+@dataclass
+class IngestionTarget:
+    corpus: str
+    index_name: Optional[str]
+    local_paths: List[str]
+    url_file: Optional[str]
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -118,6 +131,7 @@ def _collect_local_documents(paths: List[str], include_glob: str) -> List[Source
                         content=content,
                         url=str(file_path),
                         source="APRL" if "aprl" in str(file_path).lower() else "LocalDocs",
+                        module="aprl" if "aprl" in str(file_path).lower() else "localdocs",
                         service=_service_from_path(file_path),
                         aprl_id=file_path.stem if "aprl" in str(file_path).lower() else "",
                         last_updated=now,
@@ -125,6 +139,47 @@ def _collect_local_documents(paths: List[str], include_glob: str) -> List[Source
                 )
             except Exception as error:
                 LOGGER.warning("Failed to read %s: %s", file_path, error)
+
+    return documents
+
+
+def _collect_local_documents_for_corpus(
+    corpus: str,
+    paths: List[str],
+    include_glob: str,
+) -> List[SourceDocument]:
+    documents = _collect_local_documents(paths, include_glob)
+    corpus_key = (corpus or "").strip().lower()
+    source_label = {
+        "aprl": "APRL",
+        "terraform": "TerraformModules",
+    }.get(corpus_key, "LocalDocs")
+
+    def _infer_module_from_text(value: str, default_module: str) -> str:
+        text = value.lower()
+        if (
+            "azure-verified-modules" in text
+            or "/avm/" in text
+            or "aka.ms/avm" in text
+        ):
+            return "avm"
+        if (
+            "cloud-adoption-framework" in text
+            or "terraform-azurerm-caf-enterprise-scale" in text
+            or "/caf/" in text
+        ):
+            return "caf"
+        return default_module
+
+    for doc in documents:
+        inferred_module = _infer_module_from_text(doc.url, corpus_key or "localdocs")
+        if corpus_key == "terraform":
+            doc.source = "AVM" if inferred_module == "avm" else "CAF" if inferred_module == "caf" else source_label
+        else:
+            doc.source = source_label
+        doc.module = inferred_module
+        if corpus_key != "aprl":
+            doc.aprl_id = ""
 
     return documents
 
@@ -173,6 +228,7 @@ def _collect_url_documents(url_file: Optional[str], timeout_seconds: int) -> Lis
                         content=text,
                         url=url,
                         source=source,
+                        module="web",
                         service=service,
                         aprl_id="",
                         last_updated=now,
@@ -184,6 +240,108 @@ def _collect_url_documents(url_file: Optional[str], timeout_seconds: int) -> Lis
     return documents
 
 
+def _collect_url_documents_for_corpus(
+    corpus: str,
+    url_file: Optional[str],
+    timeout_seconds: int,
+) -> List[SourceDocument]:
+    documents = _collect_url_documents(url_file, timeout_seconds)
+    corpus_key = (corpus or "").strip().lower()
+    source_label = {
+        "aprl": "APRL",
+        "terraform": "TerraformModules",
+    }.get(corpus_key)
+
+    def _infer_module_from_text(value: str, default_module: str) -> str:
+        text = value.lower()
+        if (
+            "azure-verified-modules" in text
+            or "/avm/" in text
+            or "aka.ms/avm" in text
+        ):
+            return "avm"
+        if (
+            "cloud-adoption-framework" in text
+            or "terraform-azurerm-caf-enterprise-scale" in text
+            or "/caf/" in text
+        ):
+            return "caf"
+        return default_module
+
+    if source_label:
+        for doc in documents:
+            inferred_module = _infer_module_from_text(doc.url, corpus_key or "web")
+            if corpus_key == "terraform":
+                if doc.source not in {"MicrosoftLearn", "Web"}:
+                    doc.source = "AVM" if inferred_module == "avm" else "CAF" if inferred_module == "caf" else source_label
+            else:
+                if doc.source not in {"MicrosoftLearn", "Web"}:
+                    doc.source = source_label
+            doc.module = inferred_module
+            if corpus_key != "aprl":
+                doc.aprl_id = ""
+
+    return documents
+
+
+def _split_csv(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _resolve_targets(args, ai_agent_cfg: Dict[str, Any]) -> List[IngestionTarget]:
+    selected_targets = _split_csv(args.targets) or ["terraform"]
+    normalized_targets: List[str] = []
+    seen: set[str] = set()
+    for target in selected_targets:
+        normalized = target.strip().lower()
+        if normalized not in {"aprl", "terraform"}:
+            LOGGER.warning("Ignoring unknown target '%s' (allowed: aprl,terraform)", target)
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_targets.append(normalized)
+
+    if not normalized_targets:
+        normalized_targets = ["terraform"]
+
+    aprl_index = (
+        args.aprl_index_name
+        or os.getenv("AZURE_SEARCH_INDEX_NAME_APRL")
+        or ai_agent_cfg.get("index_name_aprl")
+    )
+    terraform_index = (
+        args.terraform_index_name
+        or os.getenv("AZURE_SEARCH_INDEX_NAME_TERRAFORM")
+        or ai_agent_cfg.get("index_name_terraform")
+    )
+
+    aprl_paths = args.aprl_local_path or []
+    terraform_paths = args.terraform_local_path or []
+
+    aprl_url_file = args.aprl_url_file
+    terraform_url_file = args.terraform_url_file
+
+    target_map: Dict[str, IngestionTarget] = {
+        "aprl": IngestionTarget(
+            corpus="aprl",
+            index_name=aprl_index,
+            local_paths=aprl_paths,
+            url_file=aprl_url_file,
+        ),
+        "terraform": IngestionTarget(
+            corpus="terraform",
+            index_name=terraform_index,
+            local_paths=terraform_paths,
+            url_file=terraform_url_file,
+        ),
+    }
+
+    return [target_map[target_key] for target_key in normalized_targets]
+
+
 def _build_chunk_records(
     documents: List[SourceDocument],
     chunk_chars: int,
@@ -193,20 +351,23 @@ def _build_chunk_records(
     for doc in documents:
         chunks = _chunk_text(doc.content, chunk_chars=chunk_chars, overlap_chars=overlap_chars)
         for chunk_index, chunk in enumerate(chunks):
-            identifier = hashlib.sha1(f"{doc.url}:{chunk_index}:{chunk[:120]}".encode("utf-8")).hexdigest()
-            records.append(
-                {
-                    "id": identifier,
-                    "title": doc.title,
-                    "content": chunk,
-                    "url": doc.url,
-                    "source": doc.source,
-                    "service": doc.service,
-                    "aprl_id": doc.aprl_id,
-                    "last_updated": doc.last_updated,
-                    "chunk_index": chunk_index,
-                }
-            )
+            identifier = hashlib.sha1(
+                f"{doc.module}:{doc.url}:{chunk_index}:{chunk[:120]}".encode("utf-8")
+            ).hexdigest()
+            record = {
+                "id": identifier,
+                "title": doc.title,
+                "content": chunk,
+                "url": doc.url,
+                "source": doc.source,
+                "module": doc.module,
+                "service": doc.service,
+                "last_updated": doc.last_updated,
+                "chunk_index": chunk_index,
+            }
+            if doc.aprl_id:
+                record["aprl_id"] = doc.aprl_id
+            records.append(record)
     return records
 
 
@@ -215,20 +376,92 @@ def _embed_records(
     model_client,
     embedding_model: str,
     batch_size: int,
+    max_retries: int,
+    retry_base_seconds: int,
+    retry_max_seconds: int,
 ) -> None:
     if not model_client or not model_client.is_available():
         raise RuntimeError("APIM model client is not available for embeddings")
 
-    batch_size = max(1, min(batch_size, 32))
-    for start in range(0, len(records), batch_size):
-        batch = records[start:start + batch_size]
+    def _is_rate_limit_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return " 429" in text or "(429)" in text or "rate limit" in text
+
+    def _extract_retry_after_seconds(error: Exception) -> int:
+        text = str(error)
+        patterns = [
+            r"retry\s+after\s+(\d+)\s+seconds",
+            r"retry-after\D*(\d+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                try:
+                    return max(1, int(match.group(1)))
+                except ValueError:
+                    continue
+        return 0
+
+    max_batch_size = max(1, min(batch_size, 32))
+    current_batch_size = max_batch_size
+
+    start = 0
+    while start < len(records):
+        batch = records[start:start + current_batch_size]
         inputs = [item["content"] for item in batch]
-        vectors = model_client.embed_texts(
-            inputs=inputs,
-            embedding_model=embedding_model,
-        )
-        for item, vector in zip(batch, vectors):
-            item["contentVector"] = vector
+        attempt = 0
+
+        while True:
+            try:
+                vectors = model_client.embed_texts(
+                    inputs=inputs,
+                    embedding_model=embedding_model,
+                )
+
+                for item, vector in zip(batch, vectors):
+                    item["contentVector"] = vector
+
+                start += len(batch)
+
+                if current_batch_size < max_batch_size:
+                    current_batch_size = min(max_batch_size, current_batch_size + 1)
+
+                break
+            except Exception as error:
+                if not _is_rate_limit_error(error):
+                    raise
+
+                if attempt >= max_retries:
+                    raise RuntimeError(
+                        "Embedding requests exceeded retry limit after repeated 429 responses"
+                    ) from error
+
+                previous_batch_size = current_batch_size
+                if current_batch_size > 1:
+                    current_batch_size = max(1, current_batch_size // 2)
+                    if current_batch_size != previous_batch_size:
+                        LOGGER.warning(
+                            "Embedding throttled (429). Shrinking batch size from %d to %d",
+                            previous_batch_size,
+                            current_batch_size,
+                        )
+                        batch = records[start:start + current_batch_size]
+                        inputs = [item["content"] for item in batch]
+
+                retry_after = _extract_retry_after_seconds(error)
+                exponential = retry_base_seconds * (2 ** attempt)
+                wait_seconds = retry_after if retry_after > 0 else exponential
+                wait_seconds = max(1, min(wait_seconds, retry_max_seconds))
+
+                LOGGER.warning(
+                    "Embedding throttled (429). Retrying in %ds at batch_size=%d (attempt %d/%d)",
+                    wait_seconds,
+                    current_batch_size,
+                    attempt + 1,
+                    max_retries,
+                )
+                time.sleep(wait_seconds)
+                attempt += 1
 
 
 def _upload_records(
@@ -255,16 +488,27 @@ def _upload_records(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingest documents into Azure AI Search for RAG")
-    parser.add_argument("--local-path", action="append", default=[], help="Local directory or file to ingest (repeatable)")
+    parser.add_argument(
+        "--targets",
+        default="terraform",
+        help="Comma-separated ingestion targets: aprl,terraform (default: terraform)",
+    )
     parser.add_argument("--include-glob", default="**/*", help="Glob for files when local path is a directory")
-    parser.add_argument("--url-file", help="Text file containing URLs to ingest (one URL per line)")
-    parser.add_argument("--index-name", default=None, help="Azure AI Search index name")
+    parser.add_argument("--aprl-local-path", action="append", default=[], help="APRL local directory/file (repeatable)")
+    parser.add_argument("--terraform-local-path", action="append", default=[], help="Terraform modules (AVM+CAF) local directory/file (repeatable)")
+    parser.add_argument("--aprl-url-file", default=None, help="APRL URL list file")
+    parser.add_argument("--terraform-url-file", default=None, help="Terraform modules (AVM+CAF) URL list file")
+    parser.add_argument("--aprl-index-name", default=None, help="APRL Azure AI Search index name")
+    parser.add_argument("--terraform-index-name", default=None, help="Terraform modules (AVM+CAF) Azure AI Search index name")
     parser.add_argument("--search-endpoint", default=None, help="Azure AI Search endpoint")
     parser.add_argument("--search-admin-key", default=None, help="Azure AI Search admin key")
     parser.add_argument("--embedding-model", default=None, help="Embedding model/deployment name")
     parser.add_argument("--chunk-chars", type=int, default=2200, help="Chunk size in characters")
     parser.add_argument("--overlap-chars", type=int, default=250, help="Chunk overlap in characters")
     parser.add_argument("--embed-batch-size", type=int, default=16, help="Embedding batch size")
+    parser.add_argument("--embed-max-retries", type=int, default=6, help="Max retries per embedding batch on 429 throttling")
+    parser.add_argument("--embed-retry-base-seconds", type=int, default=5, help="Base backoff seconds for embedding retries")
+    parser.add_argument("--embed-retry-max-seconds", type=int, default=90, help="Max wait seconds for embedding retries")
     parser.add_argument("--upload-batch-size", type=int, default=200, help="Upload batch size")
     parser.add_argument("--http-timeout", type=int, default=30, help="HTTP timeout for URL downloads")
     parser.add_argument("--dry-run", action="store_true", help="Prepare records without embedding/upload")
@@ -283,8 +527,8 @@ def main() -> int:
     search_endpoint = args.search_endpoint or os.getenv("AZURE_SEARCH_ENDPOINT")
     search_admin_key = args.search_admin_key or os.getenv("AZURE_SEARCH_ADMIN_KEY")
     ai_agent_cfg = settings.get_ai_agent_config()
-    index_name = args.index_name or os.getenv("AZURE_SEARCH_INDEX_NAME") or ai_agent_cfg.get("index_name")
     model_client = create_model_client(settings)
+    targets = _resolve_targets(args, ai_agent_cfg)
 
     embedding_model = (
         args.embedding_model
@@ -292,24 +536,12 @@ def main() -> int:
         or ai_agent_cfg.get("embedding_model")
     )
 
-    if not args.local_path and not args.url_file:
-        LOGGER.error("At least one input source is required: --local-path and/or --url-file")
+    if not any(target.local_paths or target.url_file for target in targets):
+        LOGGER.error(
+            "At least one input source is required. Provide APRL/Terraform inputs via "
+            "target-specific arguments."
+        )
         return 1
-
-    documents = _collect_local_documents(args.local_path, args.include_glob)
-    documents.extend(_collect_url_documents(args.url_file, args.http_timeout))
-
-    if not documents:
-        LOGGER.warning("No documents collected. Nothing to ingest.")
-        return 0
-
-    records = _build_chunk_records(
-        documents,
-        chunk_chars=args.chunk_chars,
-        overlap_chars=args.overlap_chars,
-    )
-
-    LOGGER.info("Collected %d documents, generated %d chunks", len(documents), len(records))
 
     if not embedding_model:
         LOGGER.error(
@@ -322,35 +554,86 @@ def main() -> int:
         return 1
 
     try:
-        LOGGER.info("Generating embeddings with model '%s'", embedding_model)
-        _embed_records(
-            records=records,
-            model_client=model_client,
-            embedding_model=embedding_model,
-            batch_size=args.embed_batch_size,
-        )
+        ingested_targets = 0
+        for target in targets:
+            documents = _collect_local_documents_for_corpus(
+                corpus=target.corpus,
+                paths=target.local_paths,
+                include_glob=args.include_glob,
+            )
+            documents.extend(
+                _collect_url_documents_for_corpus(
+                    corpus=target.corpus,
+                    url_file=target.url_file,
+                    timeout_seconds=args.http_timeout,
+                )
+            )
 
-        if args.dry_run:
-            LOGGER.info("Dry run enabled. Embeddings generated; skipping upload.")
+            if not documents:
+                LOGGER.info("No documents collected for target '%s'; skipping", target.corpus)
+                continue
+
+            records = _build_chunk_records(
+                documents,
+                chunk_chars=args.chunk_chars,
+                overlap_chars=args.overlap_chars,
+            )
+            LOGGER.info(
+                "[%s] Collected %d documents, generated %d chunks",
+                target.corpus.upper(),
+                len(documents),
+                len(records),
+            )
+
+            LOGGER.info("[%s] Generating embeddings with model '%s'", target.corpus.upper(), embedding_model)
+            _embed_records(
+                records=records,
+                model_client=model_client,
+                embedding_model=embedding_model,
+                batch_size=args.embed_batch_size,
+                max_retries=max(0, args.embed_max_retries),
+                retry_base_seconds=max(1, args.embed_retry_base_seconds),
+                retry_max_seconds=max(1, args.embed_retry_max_seconds),
+            )
+
+            if args.dry_run:
+                LOGGER.info("[%s] Dry run enabled. Skipping upload.", target.corpus.upper())
+                ingested_targets += 1
+                continue
+
+            if not search_endpoint or not search_admin_key:
+                LOGGER.error("Missing search configuration. Provide endpoint/key via args or env vars.")
+                return 1
+            if not target.index_name:
+                LOGGER.error(
+                    "[%s] Missing index name. Set target-specific index argument or env var.",
+                    target.corpus.upper(),
+                )
+                return 1
+
+            LOGGER.info(
+                "[%s] Uploading %d chunks to index '%s'",
+                target.corpus.upper(),
+                len(records),
+                target.index_name,
+            )
+            _upload_records(
+                endpoint=search_endpoint,
+                admin_key=search_admin_key,
+                index_name=target.index_name,
+                records=records,
+                batch_size=args.upload_batch_size,
+            )
+            ingested_targets += 1
+
+        if ingested_targets == 0:
+            LOGGER.warning("No targets were ingested (all had empty inputs).")
             return 0
-
-        if not search_endpoint or not search_admin_key or not index_name:
-            LOGGER.error("Missing search configuration. Provide endpoint/key/index via args or env vars.")
-            return 1
-
-        LOGGER.info("Uploading %d chunks to index '%s'", len(records), index_name)
-        _upload_records(
-            endpoint=search_endpoint,
-            admin_key=search_admin_key,
-            index_name=index_name,
-            records=records,
-            batch_size=args.upload_batch_size,
-        )
     except Exception:
         LOGGER.exception("Ingestion failed")
         return 1
 
-    LOGGER.info("✓ Ingestion complete")
+    LOGGER.info("✓ Ingestion complete for %d target(s)", ingested_targets)
     return 0
 
 

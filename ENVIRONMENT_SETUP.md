@@ -28,7 +28,6 @@ ai_agent:
 ```env
 AZURE_SEARCH_ENDPOINT=<your-search-endpoint>
 AZURE_SEARCH_ADMIN_KEY=<your-search-admin-key>
-AZURE_SEARCH_INDEX_NAME=<your-index-name>
 
 AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
 

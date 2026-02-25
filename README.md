@@ -61,6 +61,7 @@ ai_agent:
   chat_agent_reference: "chat-agent"
   resilience_agent_reference: "resilience-agent"
   annotations_agent_reference: "annotations-agent"
+  terraform_agent_reference: "terraform-agent"
   run_timeout_seconds: 120
   poll_interval_seconds: 1.5
 ```
@@ -87,6 +88,7 @@ AI_GATEWAY_EMBEDDING_MODEL=text-embedding-3-small
 AI_GATEWAY_CHAT_AGENT_REFERENCE=chat-agent
 AI_GATEWAY_RESILIENCE_AGENT_REFERENCE=resilience-agent
 AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+AI_GATEWAY_TERRAFORM_AGENT_REFERENCE=terraform-agent
 ```
 
 **Required Environment Variable**:

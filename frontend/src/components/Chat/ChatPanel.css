@@ -84,6 +84,19 @@
   flex-shrink: 0;
 }
 
+.chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-share-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 16px 0;
+  background: #FFFFFF;
+}
+
 .chat-panel.floating .chat-header {
   border-radius: 12px 12px 0 0;
 }
@@ -103,7 +116,7 @@
   font-size: 20px;
 }
 
-.chat-close {
+.chat-header-button {
   background: none;
   border: none;
   font-size: 20px;
@@ -119,7 +132,7 @@
   justify-content: center;
 }
 
-.chat-close:hover {
+.chat-header-button:hover {
   background: #F3F2F1;
   color: #242424;
 }
@@ -304,23 +317,20 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 16px;
+  padding: 6px;
   background: #FFFFFF;
   border: 2px solid var(--chat-primary);
   border-radius: 12px;
   box-shadow: 0 4px 12px rgba(91, 95, 199, 0.15);
-  max-width: 75%;
 }
 
 .message-edit-textarea {
-  width: 100%;
   padding: 12px;
   border: 1px solid var(--chat-border);
   border-radius: 8px;
   font-family: inherit;
   font-size: 14px;
   resize: vertical;
-  min-height: 80px;
   line-height: 1.6;
 }
 
@@ -635,6 +645,11 @@
   padding: 4px 8px;
   font-size: 11px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 24px;
 }
 
 .chat-copy-button:hover {
@@ -649,6 +664,15 @@
   line-height: 1.4;
   overflow-x: auto;
   white-space: pre;
+}
+
+.chat-terraform-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  background: #111827;
+  border-top: 1px solid #1f2937;
 }
 
 .loading-dots::after {

@@ -79,12 +79,16 @@ class ChatService:
 
         try:
             query_type = self._detect_query_type(query)
-            target_agent_id = self.settings.get_agent_id_for_flow("chat")
+            flow, target_agent_id = self._resolve_agent_for_query_type(query_type)
             if not target_agent_id:
+                flow_env_hint = {
+                    "terraform": "AI_GATEWAY_TERRAFORM_AGENT_REFERENCE",
+                    "chat": "AI_GATEWAY_CHAT_AGENT_REFERENCE",
+                }.get(flow, "AI_GATEWAY_CHAT_AGENT_REFERENCE")
                 return ChatResponse(
                     message=(
-                        "Agent configuration missing for chat flow. "
-                        "Set AI_GATEWAY_CHAT_AGENT_REFERENCE."
+                        f"Agent configuration missing for {flow} flow. "
+                        f"Set {flow_env_hint}."
                     )
                 )
 
@@ -126,7 +130,7 @@ class ChatService:
             )
 
             llm_output = self.llm_gateway.generate_json(
-                system_prompt=self._system_prompt(query_type),
+                system_prompt=self._system_prompt(query_type, flow=flow),
                 user_prompt=prompt,
                 temperature=0.7,
                 max_tokens=self.llm_generation_config.get('max_tokens', 2000),
@@ -316,6 +320,24 @@ class ChatService:
             return
         set_subscription_context_seeded(scope_id, True)
 
+    def _resolve_agent_for_query_type(self, query_type: str) -> Tuple[str, Optional[str]]:
+        """Resolve flow and agent reference with safe fallback behavior."""
+        preferred_flow = "terraform" if query_type == "terraform" else "chat"
+        preferred_agent = self.settings.get_agent_id_for_flow(preferred_flow)
+        if preferred_agent:
+            return preferred_flow, preferred_agent
+
+        if preferred_flow != "chat":
+            fallback_agent = self.settings.get_agent_id_for_flow("chat")
+            if fallback_agent:
+                LOGGER.info(
+                    "No dedicated %s agent configured; falling back to chat agent",
+                    preferred_flow,
+                )
+                return "chat", fallback_agent
+
+        return preferred_flow, None
+
     def _detect_query_type(self, query: str) -> str:
         """Detect the type of query to route appropriately."""
         query_lower = query.lower()
@@ -364,6 +386,16 @@ class ChatService:
         if len(message) > max_length:
             LOGGER.warning(f"Response message unusually long ({len(message)} chars), truncating")
             message = message[:max_length] + "\n\n(Message truncated due to length)"
+
+        # Remove recommendation_id tags from user-facing prose (IDs remain in structured fields)
+        message = re.sub(r"\s*\[recommendation_id:\s*[^\]]+\]", "", message, flags=re.IGNORECASE)
+
+        # Improve readability of compact enumerations: "1) ... 2) ..." -> line-separated list
+        message = re.sub(r"\s*(\d+\))\s*", r"\n\1 ", message)
+
+        # Normalize whitespace/newlines after transformations
+        message = re.sub(r"\n{3,}", "\n\n", message)
+        message = message.strip()
 
         return message
 
@@ -478,7 +510,7 @@ class ChatService:
         )
         return self._to_float(raw_value, default)
 
-    def _system_prompt(self, query_type: str) -> str:
+    def _system_prompt(self, query_type: str, *, flow: str = "chat") -> str:
         """Minimal runtime hint; policy/contract lives in embedded agent instructions."""
         query_hint = {
             'findings': "focus on failed findings and remediation priority",
@@ -490,7 +522,7 @@ class ChatService:
 
         return (
             "Embedded agent instructions are authoritative for role, routing, RAG policy, and output schema. "
-            f"Runtime context: flow=chat-orchestrator; query_focus={query_hint}. "
+            f"Runtime context: flow={flow}; query_focus={query_hint}. "
             "Use only provided workload context; do not invent resources or relationships. "
             "Recommendation contract: when returning recommendations, every item MUST include a valid 'recommendation_id' "
             "from the authoritative findings context. Do not emit title-only or free-text recommendations."
@@ -964,6 +996,51 @@ Allowed node IDs (authoritative for references):
             LOGGER.warning("Repair pass failed; continuing with filtered original output: %s", error)
             return None
 
+    def _repair_terraform_output(
+        self,
+        *,
+        llm_output: Dict[str, Any],
+        terraform_validation: str,
+        graph: Dict[str, Any],
+        agent_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """One-shot repair pass for terraform outputs that fail validation checks."""
+        repair_system_prompt = self._system_prompt('terraform', flow='terraform')
+        failed_findings_summary = self._summarize_failed_findings(graph)
+        repair_user_prompt = f"""
+Fix the Terraform output so it satisfies the required failed findings and resolves all listed validation issues.
+
+Validation issues to fix:
+{terraform_validation}
+
+Authoritative failed findings:
+{failed_findings_summary}
+
+Previous JSON output:
+{json.dumps(llm_output, ensure_ascii=False)}
+
+Return corrected JSON only, preserving the same response schema.
+Keep unrelated resources and settings unchanged.
+Apply only the minimum changes required to satisfy validation issues.
+Do not invent resources, module names, or unsupported fields.
+"""
+
+        try:
+            repaired = self.llm_gateway.generate_json(
+                system_prompt=repair_system_prompt,
+                user_prompt=repair_user_prompt,
+                temperature=0.0,
+                max_tokens=self.llm_generation_config.get('max_tokens', 2000),
+                model=self.llm_generation_config.get('model'),
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+            )
+            return repaired if isinstance(repaired, dict) else None
+        except Exception as error:
+            LOGGER.warning("Terraform repair pass failed; continuing with original output: %s", error)
+            return None
+
     def _build_llm_baseline_summary(self, graph: Dict[str, Any]) -> str:
         """Summarize existing LLM annotations to ground chat in prior analysis."""
         llm_annotations = graph.get("llm_annotations") or {}
@@ -1074,8 +1151,6 @@ Allowed node IDs (authoritative for references):
                 
                 # Build detailed check summary
                 detail_parts = [description]
-                if recommendation_id:
-                    detail_parts.append(f"[recommendation_id: {recommendation_id}]")
                 if long_description:
                     # Take first 150 chars of long description for context
                     context_snippet = long_description.replace("\n", " ")[:150]
@@ -1321,6 +1396,22 @@ Allowed node IDs (authoritative for references):
             or llm_output.get('terraform')
             or llm_output.get('code')
         )
+
+        # Compiler-agent schema: files=[{filename, content}, ...]
+        if not terraform_code:
+            files_raw = llm_output.get('files')
+            if isinstance(files_raw, list):
+                rendered_files: List[str] = []
+                for item in files_raw:
+                    if not isinstance(item, dict):
+                        continue
+                    filename = str(item.get('filename') or '').strip()
+                    content = item.get('content')
+                    if not filename or not isinstance(content, str) or not content.strip():
+                        continue
+                    rendered_files.append(f"# {filename}\n{content.strip()}")
+                if rendered_files:
+                    return "\n\n".join(rendered_files)
 
         # If it's a dict/structured format, convert to HCL string
         if isinstance(terraform_code, dict):
@@ -1682,7 +1773,10 @@ Allowed node IDs (authoritative for references):
                 LOGGER.warning(f"LLM suggested criticality insight for non-existent node: {node_id}")
 
         recommendations_raw = llm_output.get('recommendations', [])
-        recommendations = self._normalize_recommendations(recommendations_raw, graph)
+        if flow == 'terraform':
+            recommendations = recommendations_raw if isinstance(recommendations_raw, list) else []
+        else:
+            recommendations = self._normalize_recommendations(recommendations_raw, graph)
 
         # Extract terraform code and convert to string if needed
         terraform_code = self._extract_terraform_code(llm_output)
@@ -1690,8 +1784,35 @@ Allowed node IDs (authoritative for references):
         # Validate terraform code against failed findings
         terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
 
-        # Sanitize message to ensure it's appropriate and not excessively long
-        message = self._sanitize_response_message(llm_output.get('message', 'No response'))
+        # One-shot repair loop for terraform outputs that fail validation.
+        if flow == 'terraform' and terraform_code and terraform_validation:
+            repaired_output = self._repair_terraform_output(
+                llm_output=llm_output,
+                terraform_validation=terraform_validation,
+                graph=graph,
+                agent_id=target_agent_id,
+                conversation_id=conversation_id,
+            )
+            if repaired_output:
+                llm_output = repaired_output
+                recommendations_raw = llm_output.get('recommendations', [])
+                recommendations = recommendations_raw if isinstance(recommendations_raw, list) else []
+                terraform_code = self._extract_terraform_code(llm_output)
+                terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
+
+        raw_message = llm_output.get('message')
+        if isinstance(raw_message, str) and raw_message.strip():
+            message = self._sanitize_response_message(raw_message)
+        elif terraform_code:
+            files_raw = llm_output.get('files')
+            file_count = len(files_raw) if isinstance(files_raw, list) else 0
+            message = (
+                f"Generated Terraform output ({file_count} files)."
+                if file_count > 0
+                else "Generated Terraform output."
+            )
+        else:
+            message = "No response"
 
         rag_trace: Optional[Dict[str, Any]] = None
         if include_rag_trace:
