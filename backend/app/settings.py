@@ -96,6 +96,7 @@ class AppSettings:
                 "chat_agent_reference": None,
                 "resilience_agent_reference": None,
                 "annotations_agent_reference": None,
+                "terraform_agent_reference": None,
                 "gateway_base_url": None,
                 "embedding_model": "text-embedding-3-small",
                 "reasoning_model": "gpt-4.1",
@@ -251,6 +252,12 @@ class AppSettings:
                 or agent_cfg.get("annotations_agent_reference")
                 or agent_cfg.get("annotations_agent_id")
             ),
+            "terraform_agent_reference": (
+                os.getenv("AI_GATEWAY_TERRAFORM_AGENT_REFERENCE")
+                or os.getenv("AI_GATEWAY_TERRAFORM_AGENT_ID")
+                or agent_cfg.get("terraform_agent_reference")
+                or agent_cfg.get("terraform_agent_id")
+            ),
             "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
             "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
         }
@@ -262,12 +269,14 @@ class AppSettings:
         - chat
         - resilience
         - annotations
+        - terraform
         """
         ai_agent_config = self.get_ai_agent_config()
         flow_map = {
             "chat": ai_agent_config.get("chat_agent_reference"),
             "resilience": ai_agent_config.get("resilience_agent_reference"),
             "annotations": ai_agent_config.get("annotations_agent_reference"),
+            "terraform": ai_agent_config.get("terraform_agent_reference"),
         }
         selected = flow_map.get((flow or "").strip().lower())
         if selected and str(selected).strip():

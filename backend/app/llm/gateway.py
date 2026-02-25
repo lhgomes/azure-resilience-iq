@@ -72,6 +72,7 @@ class FoundryAgentGateway(LLMGateway):
 		self._chat_agent_reference = self.config.get("chat_agent_reference")
 		self._resilience_agent_reference = self.config.get("resilience_agent_reference")
 		self._annotations_agent_reference = self.config.get("annotations_agent_reference")
+		self._terraform_agent_reference = self.config.get("terraform_agent_reference")
 		gateway_base_url = str(self.config.get("gateway_base_url") or "").strip().rstrip("/")
 		self._gateway_base_url = gateway_base_url
 		self._agent_base_url = f"{gateway_base_url}/agent" if gateway_base_url else ""
@@ -259,6 +260,7 @@ class FoundryAgentGateway(LLMGateway):
 				self._chat_agent_reference,
 				self._resilience_agent_reference,
 				self._annotations_agent_reference,
+				self._terraform_agent_reference,
 				self._agent_reference,
 			]
 			if value is not None

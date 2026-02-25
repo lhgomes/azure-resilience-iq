@@ -13,6 +13,11 @@ interface MentionableResource {
   label?: string;
 }
 
+interface TerraformGeneratedFile {
+  filename: string;
+  content: string;
+}
+
 export interface ChatPanelProps {
   subscriptionId: string;
   context?: ChatContext;
@@ -79,6 +84,59 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       content,
       timestamp: new Date(),
     };
+  };
+
+  const renderDownloadIcon = (): ReactNode => (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+      <path
+        d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.29a1 1 0 1 1 1.4 1.41l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.41L11 12.59V4a1 1 0 0 1 1-1ZM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+
+  const renderShareIcon = (): ReactNode => (
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">
+      <circle cx="18" cy="5" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="6" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="18" cy="19" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M8.8 10.8 15.2 7.2M8.8 13.2l6.4 3.6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const getTerraformFiles = (response?: ChatResponse): TerraformGeneratedFile[] => {
+    if (!response) return [];
+
+    const rawFiles = response.raw_llm_output?.files;
+    if (Array.isArray(rawFiles)) {
+      const files = rawFiles
+        .filter((item: any) => item && typeof item.filename === 'string' && typeof item.content === 'string')
+        .map((item: any) => ({ filename: item.filename.trim(), content: item.content }))
+        .filter((item: TerraformGeneratedFile) => item.filename.length > 0 && item.content.trim().length > 0);
+      if (files.length > 0) return files;
+    }
+
+    const terraformCode = response.terraform_code;
+    if (!terraformCode) return [];
+
+    const blockRegex = /^#\s+([^\n]+)\n([\s\S]*?)(?=^#\s+[^\n]+\n|$)/gm;
+    const parsed: TerraformGeneratedFile[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = blockRegex.exec(terraformCode)) !== null) {
+      const filename = String(match[1] || '').trim();
+      const content = String(match[2] || '').trim();
+      if (!filename || !content) continue;
+      parsed.push({ filename, content: `${content}\n` });
+    }
+    return parsed;
   };
 
   const buildBaselineRefreshMessage = (): ChatMessageType => {
@@ -520,6 +578,68 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     }
   };
 
+  const downloadTextFile = (filename: string, content: string, mimeType: string): void => {
+    const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadTerraformFile = (file: TerraformGeneratedFile): void => {
+    downloadTextFile(file.filename, file.content, 'text/plain');
+  };
+
+  const handleExportChatHtml = (): void => {
+    const title = `resilience-chat-${subscriptionId}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    const rows = messages
+      .map((msg: ChatMessageType) => {
+        const role = msg.role === 'user' ? 'User' : 'Assistant';
+        const timestamp = msg.timestamp instanceof Date ? msg.timestamp.toISOString() : new Date(msg.timestamp).toISOString();
+        const base = `<div class="msg"><div class="meta"><strong>${role}</strong> · ${escapeHtml(timestamp)}</div><div class="content">${escapeHtml(msg.content || '')}</div>`;
+
+        const terraformFiles = getTerraformFiles(msg.response);
+        const terraformSection = terraformFiles.length > 0
+          ? `<div class="section"><div class="section-title">Terraform files</div>${terraformFiles
+              .map((file: TerraformGeneratedFile) => `<div class="file"><div class="filename">${escapeHtml(file.filename)}</div><pre>${escapeHtml(file.content)}</pre></div>`)
+              .join('')}</div>`
+          : '';
+
+        return `${base}${terraformSection}</div>`;
+      })
+      .join('');
+
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #111827; }
+      h1 { font-size: 20px; margin: 0 0 16px; }
+      .msg { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+      .meta { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
+      .content { white-space: pre-wrap; line-height: 1.45; }
+      .section { margin-top: 10px; }
+      .section-title { font-size: 12px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+      .file { margin-top: 8px; }
+      .filename { font-size: 12px; font-weight: 600; }
+      pre { background: #0b0b0b; color: #e5e7eb; padding: 10px; border-radius: 6px; overflow: auto; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <h1>Resilience IQ Chat Export</h1>
+    ${rows}
+  </body>
+</html>`;
+
+    downloadTextFile(`${title}.html`, html, 'text/html');
+  };
+
   const handleEditMessage = (messageId: string, content: string): void => {
     setEditingMessageId(messageId);
     setEditingText(content);
@@ -596,12 +716,37 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       {(mode === 'floating' || showCloseButton) && (
         <div className="chat-header">
           <h3>Resilience IQ Agent</h3>
+          <div className="chat-header-actions">
+            <button
+              className="chat-header-button"
+              onClick={handleExportChatHtml}
+              type="button"
+              title="Download chat as HTML"
+              aria-label="Export chat as HTML"
+            >
+              {renderShareIcon()}
+            </button>
+            <button
+              className="chat-header-button"
+              onClick={(): void => setIsOpen(false)}
+              title="Minimize chat"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!(mode === 'floating' || showCloseButton) && (
+        <div className="chat-share-actions">
           <button
-            className="chat-close"
-            onClick={(): void => setIsOpen(false)}
-            title="Minimize chat"
+            className="chat-header-button"
+            onClick={handleExportChatHtml}
+            type="button"
+            title="Download chat as HTML"
+            aria-label="Export chat as HTML"
           >
-            ✕
+            {renderShareIcon()}
           </button>
         </div>
       )}
@@ -854,6 +999,22 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         </button>
                       </div>
                       <pre className="chat-code"><code>{msg.response.terraform_code}</code></pre>
+                      {getTerraformFiles(msg.response).length > 0 && (
+                        <div className="chat-terraform-files">
+                          {getTerraformFiles(msg.response).map((file: TerraformGeneratedFile) => (
+                            <button
+                              key={`${msg.id}-${file.filename}`}
+                              className="chat-copy-button"
+                              onClick={(): void => handleDownloadTerraformFile(file)}
+                              type="button"
+                              title={`Download ${file.filename}`}
+                              aria-label={`Download ${file.filename}`}
+                            >
+                              {renderDownloadIcon()} {file.filename}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
