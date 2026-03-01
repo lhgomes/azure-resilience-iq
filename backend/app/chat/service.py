@@ -32,7 +32,7 @@ class ChatService:
     """Service for handling chat interactions with LLM context."""
 
     def __init__(self):
-        """Initialize chat service with APIM+Foundry gateway and scope classifier guardrails."""
+        """Initialize chat service with direct Foundry gateway and scope classifier guardrails."""
         self.settings = get_settings()
         self.llm_config = self.settings.get_llm_config()
         self.llm_generation_config = self.settings.get_llm_generation_config()
@@ -78,13 +78,18 @@ class ChatService:
         flow = "chat"
 
         try:
-            query_type = self._detect_query_type(query)
-            flow, target_agent_id = self._resolve_agent_for_query_type(query_type)
+            preferred_flow = self._extract_preferred_flow(context)
+            if preferred_flow:
+                flow, target_agent_id = self._resolve_agent_for_flow(preferred_flow)
+                query_type = "terraform" if flow == "terraform" else self._detect_query_type(query)
+            else:
+                query_type = self._detect_query_type(query)
+                flow, target_agent_id = self._resolve_agent_for_query_type(query_type)
             if not target_agent_id:
                 flow_env_hint = {
-                    "terraform": "AI_GATEWAY_TERRAFORM_AGENT_REFERENCE",
-                    "chat": "AI_GATEWAY_CHAT_AGENT_REFERENCE",
-                }.get(flow, "AI_GATEWAY_CHAT_AGENT_REFERENCE")
+                    "terraform": "AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE",
+                    "chat": "AI_FOUNDRY_CHAT_AGENT_REFERENCE",
+                }.get(flow, "AI_FOUNDRY_CHAT_AGENT_REFERENCE")
                 return ChatResponse(
                     message=(
                         f"Agent configuration missing for {flow} flow. "
@@ -95,6 +100,8 @@ class ChatService:
             normalized_graph = self._normalize_graph(graph)
             scope = self._resolve_conversation_scope(subscription_id, context, normalized_graph)
             conversation_id = self._load_conversation_id(scope["scope_type"], scope["scope_id"])
+            if not conversation_id and scope["scope_type"] == "workload":
+                conversation_id = get_subscription_conversation_id(scope["anchor_subscription_id"])
             context_seeded = self._is_conversation_context_seeded(scope["scope_type"], scope["scope_id"])
             LOGGER.debug(
                 "Chat conversation scope=%s id=%s anchor_subscription=%s conversation_id=%s context_seeded=%s",
@@ -119,25 +126,85 @@ class ChatService:
                 context=context,
                 referenced_resource_ids=referenced_resource_ids,
             )
-            prompt = self._build_prompt(
-                query,
-                normalized_graph,
-                subscription_id,
-                context,
-                query_type,
-                effective_referenced_resource_ids,
-                include_full_context=not context_seeded,
-            )
+            llm_output: Dict[str, Any]
+            ran_preflight_only = False
+            llm_call_phases: List[str] = []
 
-            llm_output = self.llm_gateway.generate_json(
-                system_prompt=self._system_prompt(query_type, flow=flow),
-                user_prompt=prompt,
-                temperature=0.7,
-                max_tokens=self.llm_generation_config.get('max_tokens', 2000),
-                model=self.llm_generation_config.get('model'),
-                agent_id=target_agent_id,
+            if flow == "terraform" and self._should_run_terraform_preflight(
+                query=query,
+                context=context,
                 conversation_id=conversation_id,
-            )
+                context_seeded=context_seeded,
+            ):
+                preflight_prompt = self._build_terraform_preflight_prompt(
+                    query=query,
+                    graph=normalized_graph,
+                    subscription_id=subscription_id,
+                    context=context,
+                    referenced_resource_ids=effective_referenced_resource_ids,
+                )
+                preflight_output, preflight_conversation_recovered = self._generate_json_with_conversation_recovery(
+                    query=query,
+                    normalized_graph=normalized_graph,
+                    subscription_id=subscription_id,
+                    context=context,
+                    query_type=query_type,
+                    flow=flow,
+                    prompt=preflight_prompt,
+                    referenced_resource_ids=effective_referenced_resource_ids,
+                    target_agent_id=target_agent_id,
+                    scope_type=scope["scope_type"],
+                    scope_id=scope["scope_id"],
+                    conversation_id=conversation_id,
+                )
+                llm_call_phases.append("terraform_preflight")
+
+                if preflight_conversation_recovered:
+                    conversation_id = None
+                    context_seeded = False
+
+                preflight_questions = self._normalize_clarifying_questions(
+                    preflight_output.get("clarifying_questions", [])
+                )
+                if preflight_questions:
+                    preflight_output["clarifying_questions"] = preflight_questions
+                    preflight_output["files"] = []
+                    preflight_output.pop("terraform_code", None)
+                    preflight_output.pop("terraform", None)
+                    preflight_output.pop("code", None)
+                    llm_output = preflight_output
+                    ran_preflight_only = True
+
+            if not ran_preflight_only:
+                prompt = self._build_prompt(
+                    query,
+                    normalized_graph,
+                    subscription_id,
+                    context,
+                    query_type,
+                    effective_referenced_resource_ids,
+                    include_full_context=not context_seeded,
+                )
+
+                llm_output, conversation_recovered = self._generate_json_with_conversation_recovery(
+                    query=query,
+                    normalized_graph=normalized_graph,
+                    subscription_id=subscription_id,
+                    context=context,
+                    query_type=query_type,
+                    flow=flow,
+                    prompt=prompt,
+                    referenced_resource_ids=effective_referenced_resource_ids,
+                    target_agent_id=target_agent_id,
+                    scope_type=scope["scope_type"],
+                    scope_id=scope["scope_id"],
+                    conversation_id=conversation_id,
+                )
+                llm_call_phases.append("main_generation")
+
+                if conversation_recovered:
+                    conversation_id = None
+                    context_seeded = False
 
             invalid_references = self._collect_invalid_references(llm_output, normalized_graph)
             if invalid_references:
@@ -156,6 +223,7 @@ class ChatService:
                 )
                 if repaired:
                     llm_output = repaired
+                    llm_call_phases.append("reference_repair")
 
             llm_metrics = self.llm_gateway.get_last_metrics()
             generated_conversation_id = None
@@ -167,17 +235,35 @@ class ChatService:
                     scope_id=scope["scope_id"],
                     conversation_id=str(generated_conversation_id).strip(),
                 )
+                if scope["scope_type"] == "workload":
+                    set_subscription_conversation_id(
+                        scope["anchor_subscription_id"],
+                        str(generated_conversation_id).strip(),
+                    )
             if not context_seeded:
                 self._mark_conversation_context_seeded(
                     scope_type=scope["scope_type"],
                     scope_id=scope["scope_id"],
                 )
 
+            LOGGER.info(
+                "Chat request trace_id=%s flow=%s query_type=%s phases=%s conversation_present=%s context_seeded=%s retries=%s total_tokens=%s",
+                trace_id,
+                flow,
+                query_type,
+                ",".join(llm_call_phases) if llm_call_phases else "none",
+                bool(conversation_id and str(conversation_id).strip()),
+                context_seeded,
+                (llm_metrics or {}).get("rate_limit_retries") if isinstance(llm_metrics, dict) else None,
+                (llm_metrics or {}).get("total_tokens") if isinstance(llm_metrics, dict) else None,
+            )
+
             # Validate and enrich response
             return self._process_llm_response(
                 llm_output,
                 normalized_graph,
                 llm_metrics,
+                query=query,
                 flow=flow,
                 include_rag_trace=include_rag_trace,
                 target_agent_id=target_agent_id,
@@ -199,6 +285,21 @@ class ChatService:
                 } if include_rag_trace else None,
             )
         except Exception as e:
+            if self._is_rate_limit_error(e):
+                LOGGER.warning("Chat service throttled by upstream LLM provider: %s", e)
+                return ChatResponse(
+                    message=(
+                        "The AI service is temporarily busy (rate limited). "
+                        "Please retry in a few seconds."
+                    ),
+                    rag_trace={
+                        "trace_id": trace_id,
+                        "flow": flow,
+                        "error": "rate_limited",
+                        "rag_expected": flow == "resilience",
+                    } if include_rag_trace else None,
+                )
+
             LOGGER.error(f"Chat service error: {e}", exc_info=True)
             return ChatResponse(
                 message=f"Error processing query: {str(e)}",
@@ -208,6 +309,111 @@ class ChatService:
                     "error": str(e),
                     "rag_expected": flow == "resilience",
                 } if include_rag_trace else None,
+            )
+
+    @staticmethod
+    def _is_conversation_not_found_error(error: Exception) -> bool:
+        text = str(error).lower()
+        return "conversation_not_found" in text or (
+            "conversation" in text and "not found" in text
+        )
+
+    @staticmethod
+    def _is_rate_limit_error(error: Exception) -> bool:
+        text = str(error).lower()
+        if "rate limit" in text or "too many requests" in text or "too_many_requests" in text:
+            return True
+
+        status_code = getattr(error, "status_code", None)
+        if status_code == 429:
+            return True
+
+        response = getattr(error, "response", None)
+        response_status = getattr(response, "status_code", None)
+        if response_status == 429:
+            return True
+
+        return " 429" in text or "(429)" in text
+
+    @staticmethod
+    def _clear_conversation_id(scope_type: str, scope_id: str) -> None:
+        if scope_type == "workload":
+            set_workload_conversation_id(scope_id, "")
+            return
+        set_subscription_conversation_id(scope_id, "")
+
+    @staticmethod
+    def _set_conversation_context_seeded(scope_type: str, scope_id: str, seeded: bool) -> None:
+        if scope_type == "workload":
+            set_workload_context_seeded(scope_id, seeded)
+            return
+        set_subscription_context_seeded(scope_id, seeded)
+
+    def _generate_json_with_conversation_recovery(
+        self,
+        *,
+        query: str,
+        normalized_graph: Dict[str, Any],
+        subscription_id: str,
+        context: Optional[Dict[str, Any]],
+        query_type: str,
+        flow: str,
+        prompt: str,
+        referenced_resource_ids: Optional[List[str]],
+        target_agent_id: Optional[str],
+        scope_type: str,
+        scope_id: str,
+        conversation_id: Optional[str],
+    ) -> Tuple[Dict[str, Any], bool]:
+        try:
+            return (
+                self.llm_gateway.generate_json(
+                    system_prompt=self._system_prompt(query_type, flow=flow),
+                    user_prompt=prompt,
+                    temperature=0.7,
+                    max_tokens=self.llm_generation_config.get('max_tokens', 2000),
+                    model=self.llm_generation_config.get('model'),
+                    agent_id=target_agent_id,
+                    conversation_id=conversation_id,
+                ),
+                False,
+            )
+        except Exception as error:
+            if not conversation_id or not self._is_conversation_not_found_error(error):
+                raise
+
+            LOGGER.warning(
+                "Conversation id '%s' is no longer valid for scope=%s:%s. "
+                "Creating a new conversation, replaying full workload context, and retrying once.",
+                conversation_id,
+                scope_type,
+                scope_id,
+            )
+
+            self._clear_conversation_id(scope_type, scope_id)
+            self._set_conversation_context_seeded(scope_type, scope_id, False)
+
+            retry_prompt = self._build_prompt(
+                query,
+                normalized_graph,
+                subscription_id,
+                context,
+                query_type,
+                referenced_resource_ids,
+                include_full_context=True,
+            )
+
+            return (
+                self.llm_gateway.generate_json(
+                    system_prompt=self._system_prompt(query_type, flow=flow),
+                    user_prompt=retry_prompt,
+                    temperature=0.7,
+                    max_tokens=self.llm_generation_config.get('max_tokens', 2000),
+                    model=self.llm_generation_config.get('model'),
+                    agent_id=target_agent_id,
+                    conversation_id=None,
+                ),
+                True,
             )
 
     @staticmethod
@@ -323,6 +529,10 @@ class ChatService:
     def _resolve_agent_for_query_type(self, query_type: str) -> Tuple[str, Optional[str]]:
         """Resolve flow and agent reference with safe fallback behavior."""
         preferred_flow = "terraform" if query_type == "terraform" else "chat"
+        return self._resolve_agent_for_flow(preferred_flow)
+
+    def _resolve_agent_for_flow(self, preferred_flow: str) -> Tuple[str, Optional[str]]:
+        """Resolve flow and agent reference with safe fallback behavior."""
         preferred_agent = self.settings.get_agent_id_for_flow(preferred_flow)
         if preferred_agent:
             return preferred_flow, preferred_agent
@@ -337,6 +547,22 @@ class ChatService:
                 return "chat", fallback_agent
 
         return preferred_flow, None
+
+    @staticmethod
+    def _extract_preferred_flow(context: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(context, dict):
+            return None
+
+        candidates = [
+            context.get("preferred_agent_flow"),
+            context.get("agent_flow"),
+            context.get("source_agent_flow"),
+        ]
+        for candidate in candidates:
+            value = str(candidate or "").strip().lower()
+            if value in {"chat", "terraform"}:
+                return value
+        return None
 
     def _detect_query_type(self, query: str) -> str:
         """Detect the type of query to route appropriately."""
@@ -375,6 +601,126 @@ class ChatService:
             return False, "Please ask about your Azure workload resources, dependencies, findings, or remediation."
 
         return True, ""
+
+    @staticmethod
+    def _is_force_proceed_query(query: str) -> bool:
+        """Return True when user explicitly asks to proceed despite missing clarifications."""
+        query_lower = (query or "").strip().lower()
+        if not query_lower:
+            return False
+
+        force_markers = [
+            "proceed anyway",
+            "continue anyway",
+            "ignore questions",
+            "ignore the questions",
+            "use defaults",
+            "assume defaults",
+            "just generate",
+            "generate anyway",
+            "do not ask",
+            "don't ask",
+            "skip questions",
+            "force",
+        ]
+        return any(marker in query_lower for marker in force_markers)
+
+    def _should_run_terraform_preflight(
+        self,
+        *,
+        query: str,
+        context: Optional[Dict[str, Any]],
+        conversation_id: Optional[str],
+        context_seeded: bool,
+    ) -> bool:
+        """Run preflight only when needed to avoid repeated token-heavy checks on follow-ups."""
+        if self._is_force_proceed_query(query):
+            return False
+
+        if isinstance(context, dict):
+            if bool(context.get("force_terraform_preflight")):
+                return True
+            if bool(context.get("skip_terraform_preflight")):
+                return False
+
+        has_conversation = bool(conversation_id and str(conversation_id).strip())
+        if has_conversation:
+            return False
+
+        return True
+
+    @staticmethod
+    def _normalize_clarifying_questions(raw_value: Any) -> List[Dict[str, Any]]:
+        raw_list = raw_value if isinstance(raw_value, list) else [raw_value]
+        normalized: List[Dict[str, Any]] = []
+
+        for item in raw_list:
+            if isinstance(item, dict):
+                question = str(item.get("question") or "").strip()
+                answers_raw = item.get("possible_answers", [])
+                answers_list = answers_raw if isinstance(answers_raw, list) else [answers_raw]
+                possible_answers = [str(answer).strip() for answer in answers_list if str(answer).strip()]
+                if question:
+                    normalized.append({
+                        "question": question,
+                        "possible_answers": possible_answers,
+                    })
+                continue
+
+            question_text = str(item).strip()
+            if question_text:
+                normalized.append({
+                    "question": question_text,
+                    "possible_answers": [],
+                })
+
+        return normalized
+
+    def _build_terraform_preflight_prompt(
+        self,
+        *,
+        query: str,
+        graph: Dict[str, Any],
+        subscription_id: str,
+        context: Optional[Dict[str, Any]],
+        referenced_resource_ids: Optional[List[str]],
+    ) -> str:
+        failed_findings_summary = self._summarize_failed_findings(
+            graph,
+            max_resources=12,
+            max_checks_per_resource=2,
+            include_long_description=False,
+            include_benefits=False,
+            include_links=False,
+        )
+        detailed_resource_context = self._build_detailed_resource_context(
+            query=query,
+            graph=graph,
+            subscription_id=subscription_id,
+            context=context,
+        )
+        referenced_resource_context = self._build_referenced_resource_context(
+            referenced_resource_ids=referenced_resource_ids,
+            subscription_id=subscription_id,
+        )
+
+        return f"""
+PREFLIGHT MODE (Terraform clarification gate):
+- Determine whether additional clarifications are required before safe Terraform generation.
+- If clarifications are required, return clarifying_questions and do not generate Terraform files.
+- If no clarifications are required, return clarifying_questions as an empty list.
+
+Authoritative failed findings:
+{failed_findings_summary}
+
+Detailed resource facts (when available):
+{detailed_resource_context}
+
+Explicitly referenced resources (# mentions):
+{referenced_resource_context}
+
+USER QUERY: {query}
+"""
 
     def _sanitize_response_message(self, message: str) -> str:
         """
@@ -520,10 +866,17 @@ class ChatService:
             'general': "focus on direct answer to user intent",
         }.get(query_type, "focus on direct answer to user intent")
 
-        return (
+        base_hint = (
             "Embedded agent instructions are authoritative for role, routing, RAG policy, and output schema. "
             f"Runtime context: flow={flow}; query_focus={query_hint}. "
-            "Use only provided workload context; do not invent resources or relationships. "
+            "Use only provided workload context; do not invent resources or relationships."
+        )
+
+        if flow == "terraform":
+            return base_hint
+
+        return (
+            f"{base_hint} "
             "Recommendation contract: when returning recommendations, every item MUST include a valid 'recommendation_id' "
             "from the authoritative findings context. Do not emit title-only or free-text recommendations."
         )
@@ -543,8 +896,23 @@ class ChatService:
             nodes_summary = self._summarize_nodes(graph.get('nodes', []))
             edges_summary = self._summarize_edges(graph.get('edges', []))
             llm_baseline_summary = self._build_llm_baseline_summary(graph)
-            failed_findings_summary = self._summarize_failed_findings(graph)
-            recommendation_id_catalog = self._build_recommendation_id_catalog(graph)
+            if query_type == 'terraform':
+                failed_findings_summary = self._summarize_failed_findings(
+                    graph,
+                    max_resources=20,
+                    max_checks_per_resource=2,
+                    include_long_description=False,
+                    include_benefits=False,
+                    include_links=False,
+                )
+                recommendation_section = ""
+            else:
+                failed_findings_summary = self._summarize_failed_findings(graph)
+                recommendation_id_catalog = self._build_recommendation_id_catalog(graph)
+                recommendation_section = (
+                    "Authoritative recommendation IDs (use these IDs only in recommendations):\n"
+                    f"{recommendation_id_catalog}\n\n"
+                )
             allowed_node_ids = self._build_node_id_catalog(graph)
             detailed_resource_context = self._build_detailed_resource_context(
                 query=query,
@@ -570,8 +938,7 @@ Key relationships:
 Failed findings (authoritative):
 {failed_findings_summary}
 
-Authoritative recommendation IDs (use these IDs only in recommendations):
-{recommendation_id_catalog}
+{recommendation_section}
 
 Prior LLM baseline:
 {llm_baseline_summary}
@@ -1007,7 +1374,14 @@ Allowed node IDs (authoritative for references):
     ) -> Optional[Dict[str, Any]]:
         """One-shot repair pass for terraform outputs that fail validation checks."""
         repair_system_prompt = self._system_prompt('terraform', flow='terraform')
-        failed_findings_summary = self._summarize_failed_findings(graph)
+        failed_findings_summary = self._summarize_failed_findings(
+            graph,
+            max_resources=20,
+            max_checks_per_resource=2,
+            include_long_description=False,
+            include_benefits=False,
+            include_links=False,
+        )
         repair_user_prompt = f"""
 Fix the Terraform output so it satisfies the required failed findings and resolves all listed validation issues.
 
@@ -1121,11 +1495,21 @@ Do not invent resources, module names, or unsupported fields.
         references.sort(key=lambda r: r.get("label", ""))
         return references
 
-    def _summarize_failed_findings(self, graph: Dict[str, Any]) -> str:
-        """Summarize failed findings from resilience evaluations with detailed context and references."""
+    def _summarize_failed_findings(
+        self,
+        graph: Dict[str, Any],
+        *,
+        max_resources: int = 999,
+        max_checks_per_resource: int = 3,
+        include_long_description: bool = True,
+        include_benefits: bool = True,
+        include_links: bool = True,
+    ) -> str:
+        """Summarize failed findings from resilience evaluations with configurable verbosity."""
         evaluations = (graph.get("resilience_evaluations") or {}).get("evaluations", {})
         failed_items: List[str] = []
         nodes_by_id = {n.get("id"): n for n in graph.get("nodes", []) if isinstance(n, dict)}
+        omitted_resources = 0
 
         for resource_id, payload in evaluations.items():
             checks = payload.get("checks", []) if isinstance(payload, dict) else []
@@ -1133,25 +1517,35 @@ Do not invent resources, module names, or unsupported fields.
             if not failed_checks:
                 continue
 
+            if len(failed_items) >= max_resources:
+                omitted_resources += 1
+                continue
+
             node = nodes_by_id.get(resource_id, {})
-            name = self._node_display_name(node) or resource_id
+            name = self._node_display_name(node)
+            if not name or name.strip().lower() == "unknown":
+                name = str(resource_id).strip() or "scope-level finding"
+
             resource_type = self._node_resource_type(node)
+            if not resource_type or resource_type.strip().lower() == "unknown":
+                inferred_type = ""
+                if isinstance(payload, dict):
+                    inferred_type = str(payload.get("resource_type") or payload.get("type") or "").strip()
+                resource_type = inferred_type or "scope_level"
 
             # Extract detailed check information for each failed check
             check_details = []
-            for check in failed_checks[:3]:
+            for check in failed_checks[:max_checks_per_resource]:
                 # Extract problem description and context
-                recommendation_id = str(check.get("recommendation_id") or "").strip()
                 description = check.get("description", "")
                 long_description = check.get("long_description", "").strip()
                 impact = check.get("impact", "").lower()
-                category = check.get("category", "")
                 potential_benefits = check.get("potential_benefits", "").strip()
                 learn_more = check.get("learn_more", {})
                 
                 # Build detailed check summary
                 detail_parts = [description]
-                if long_description:
+                if include_long_description and long_description:
                     # Take first 150 chars of long description for context
                     context_snippet = long_description.replace("\n", " ")[:150]
                     detail_parts.append(f"({context_snippet}...)")
@@ -1161,11 +1555,11 @@ Do not invent resources, module names, or unsupported fields.
                     detail += f" [Impact: {impact}]"
                 
                 # Add benefits for context
-                if potential_benefits:
+                if include_benefits and potential_benefits:
                     detail += f" Benefits: {potential_benefits[:100]}..."
                 
                 # Add Microsoft Learn reference if available
-                if learn_more and isinstance(learn_more, dict):
+                if include_links and learn_more and isinstance(learn_more, dict):
                     links = learn_more.get("links", [])
                     if links:
                         learn_urls = [link.get("url") for link in links if isinstance(link, dict) and link.get("url")]
@@ -1185,6 +1579,9 @@ Do not invent resources, module names, or unsupported fields.
 
         if not failed_items:
             return "No failed findings available."
+
+        if omitted_resources > 0:
+            failed_items.append(f"- ... and {omitted_resources} more resources with failed findings.")
 
         return "\n".join(failed_items)
 
@@ -1654,6 +2051,7 @@ Do not invent resources, module names, or unsupported fields.
         graph: Dict[str, Any],
         llm_metrics: Optional[Dict[str, Any]] = None,
         *,
+        query: str,
         flow: str,
         include_rag_trace: bool,
         target_agent_id: str,
@@ -1778,31 +2176,43 @@ Do not invent resources, module names, or unsupported fields.
         else:
             recommendations = self._normalize_recommendations(recommendations_raw, graph)
 
-        # Extract terraform code and convert to string if needed
-        terraform_code = self._extract_terraform_code(llm_output)
-        
-        # Validate terraform code against failed findings
-        terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
+        clarifying_questions = self._normalize_clarifying_questions(
+            llm_output.get('clarifying_questions', [])
+        )
+        force_proceed = self._is_force_proceed_query(query)
+        block_terraform_until_clarified = flow == 'terraform' and bool(clarifying_questions) and not force_proceed
 
-        # One-shot repair loop for terraform outputs that fail validation.
-        if flow == 'terraform' and terraform_code and terraform_validation:
-            repaired_output = self._repair_terraform_output(
-                llm_output=llm_output,
-                terraform_validation=terraform_validation,
-                graph=graph,
-                agent_id=target_agent_id,
-                conversation_id=conversation_id,
-            )
-            if repaired_output:
-                llm_output = repaired_output
-                recommendations_raw = llm_output.get('recommendations', [])
-                recommendations = recommendations_raw if isinstance(recommendations_raw, list) else []
-                terraform_code = self._extract_terraform_code(llm_output)
-                terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
+        # Extract terraform code and convert to string if needed
+        terraform_code: Optional[str] = None
+        terraform_validation: Optional[str] = None
+
+        if not block_terraform_until_clarified:
+            terraform_code = self._extract_terraform_code(llm_output)
+
+            # Validate terraform code against failed findings
+            terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
+
+            # One-shot repair loop for terraform outputs that fail validation.
+            if flow == 'terraform' and terraform_code and terraform_validation:
+                repaired_output = self._repair_terraform_output(
+                    llm_output=llm_output,
+                    terraform_validation=terraform_validation,
+                    graph=graph,
+                    agent_id=target_agent_id,
+                    conversation_id=conversation_id,
+                )
+                if repaired_output:
+                    llm_output = repaired_output
+                    recommendations_raw = llm_output.get('recommendations', [])
+                    recommendations = recommendations_raw if isinstance(recommendations_raw, list) else []
+                    terraform_code = self._extract_terraform_code(llm_output)
+                    terraform_validation = self._validate_terraform_against_findings(terraform_code, graph)
 
         raw_message = llm_output.get('message')
         if isinstance(raw_message, str) and raw_message.strip():
             message = self._sanitize_response_message(raw_message)
+        elif block_terraform_until_clarified:
+            message = "I need clarification before generating Terraform. Please answer the questions below, or say 'proceed anyway and use defaults'."
         elif terraform_code:
             files_raw = llm_output.get('files')
             file_count = len(files_raw) if isinstance(files_raw, list) else 0
@@ -1843,7 +2253,7 @@ Do not invent resources, module names, or unsupported fields.
                 "source_type_counts": source_type_counts,
                 "external_source_types": external_source_types,
                 "external_sources_count": sum(source_type_counts.get(t, 0) for t in external_types),
-                "clarifying_questions_count": len(llm_output.get('clarifying_questions', []) or []),
+                "clarifying_questions_count": len(clarifying_questions),
                 "validation_passed": (rag_used if rag_expected else not rag_used),
             }
 
@@ -1872,7 +2282,8 @@ Do not invent resources, module names, or unsupported fields.
             remediation_guide=llm_output.get('remediation_guide'),
             terraform_code=terraform_code,
             terraform_validation=terraform_validation,
-            clarifying_questions=llm_output.get('clarifying_questions', []),
+            clarifying_questions=clarifying_questions,
+            agent_flow=flow,
             rag_trace=rag_trace,
             raw_llm_output=llm_output,
         )

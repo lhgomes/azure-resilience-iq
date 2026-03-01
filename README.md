@@ -13,8 +13,81 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 ### Azure Requirements
 
 - Azure subscription with resources to analyze
-- Azure AI Foundry Agent exposed through APIM
+- Azure AI Foundry project with deployed agents
 - Appropriate Azure RBAC permissions to query resources
+
+## Automated Azure VM Deployment (Terraform + Foundry + Search)
+
+Production-style deployment is fully automated from `backend/deploy/scripts/deploy_vm_stack.sh`.
+
+### What the stack provisions
+
+- **Compute/Network**: Linux VM, VNet/subnets, NSG, public IP, private endpoints.
+- **Azure AI Foundry (new model)**:
+  - `azurerm_cognitive_account` (`AIServices`)
+  - `azurerm_cognitive_account_project`
+  - Reasoning deployment (`gpt-4.1` by default)
+  - Embedding deployment (`text-embedding-3-small`) required for hydration.
+- **Azure AI Search** with private networking.
+- **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
+
+### End-to-end deployment command
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+Use `--agents-migrate` when you need to force agent/tool reconciliation:
+
+```bash
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
+```
+
+### Provisioning flow (automated)
+
+1. Terraform apply for infra + Foundry + model deployments.
+2. Create/verify Foundry project Azure AI Search connection (`azure-ai-search-default`).
+3. Ensure Search indexes:
+  - `learn-aprl-index`
+  - `learn-terraform-index`
+4. Ensure Foundry agents and attach tools:
+  - `chat-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
+  - `resilience-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
+  - `terraform-compiler-agent` → Search (`learn-terraform-index`)
+  - `annotations-agent` → no tools
+5. Refresh RAG data into `backend/agent/rag` (staged swap on success).
+6. Hydrate indexes (embeddings + upload) using only `backend/agent/rag` for Terraform corpus.
+6. Build frontend, configure systemd + nginx.
+
+### Important runtime behavior
+
+- Embedding inference supports fallback to account OpenAI endpoint (`*.openai.azure.com`) when project endpoint embeddings return 404 in current SDK/runtime combinations.
+- Chat flow auto-recovers from `conversation_not_found` by resetting the stale conversation id, replaying full context, and retrying once.
+- Nginx SPA config includes loop-safe rules for `/` and `/favicon.ico`.
+- RAG Terraform hydration source is `backend/agent/rag` only.
+- If RAG refresh fails, deployment keeps using the already-available local content under `backend/agent/rag`.
+
+### Incremental updates (no Terraform re-provision)
+
+Use app-only deployment for backend/frontend code changes:
+
+```bash
+cd backend/deploy/scripts
+./deploy_app_only.sh ../vm-terraform/terraform.tfvars
+```
+
+What it does:
+- Computes local backend/frontend hashes.
+- Compares with VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`).
+- Syncs only changed app folders.
+- Restarts backend and rebuilds frontend only when needed.
+
+### Model capacity / quota
+
+- Embedding deployment capacity is Terraform-managed via `embedding_model_capacity`.
+- For this environment, `350` was validated as the usable max and should be set in `backend/deploy/vm-terraform/terraform.tfvars`.
+- Dynamic "use all available quota" is not always deterministically available from current account usage APIs.
 
 ## Installation
 
@@ -45,7 +118,7 @@ Notes:
 
 #### Configure Application Settings
 
-Edit `backend/config/app_config.yaml` to set APIM + Foundry and LLM settings:
+Edit `backend/config/app_config.yaml` to set LLM settings:
 
 ```yaml
 llm:
@@ -53,60 +126,43 @@ llm:
   batch_threshold: 50
   max_nodes_per_batch: 30
 
-ai_agent:
-  gateway_base_url: "https://<apim-host>/<agent-api-base>"
-  subscription_header_name: "api-key"
-  reasoning_model: "gpt-4.1"
-  embedding_model: "text-embedding-3-small"
-  chat_agent_reference: "chat-agent"
-  resilience_agent_reference: "resilience-agent"
-  annotations_agent_reference: "annotations-agent"
-  terraform_agent_reference: "terraform-agent"
-  run_timeout_seconds: 120
-  poll_interval_seconds: 1.5
+ai_agent: {}
 ```
 
 Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
 
 #### Configure Chat Feature (Optional)
 
-The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload through APIM + Foundry Agent.
+The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload through direct Foundry Agents.
 
 **Create Environment File**:
 
 Create a `backend/.env` file (copy from `backend/.env.sample` if available) and add:
 
-```env
-# Required APIM Key
-AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
+For deployed VM runtime, these values are auto-generated into `/etc/azure-resilience-iq.env` by `backend/deploy/scripts/deploy_vm_stack.sh`; local `backend/.env` is for local/dev execution.
 
-# Optional APIM + Agent overrides
-AI_GATEWAY_AGENT_BASE_URL=https://<apim-host>/<agent-api-base>
-AI_GATEWAY_SUBSCRIPTION_HEADER_NAME=api-key
-AI_GATEWAY_REASONING_MODEL=gpt-4.1
-AI_GATEWAY_EMBEDDING_MODEL=text-embedding-3-small
-AI_GATEWAY_CHAT_AGENT_REFERENCE=chat-agent
-AI_GATEWAY_RESILIENCE_AGENT_REFERENCE=resilience-agent
-AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
-AI_GATEWAY_TERRAFORM_AGENT_REFERENCE=terraform-agent
+```env
+# Required Foundry endpoint
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
+
+# Required/expected Foundry + agent settings
+AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
+AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
+AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
+AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
 ```
 
-**Required Environment Variable**:
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `AI_GATEWAY_SUBSCRIPTION_KEY` | **Yes** | APIM subscription key used by all backend LLM calls |
-
-If you do not have an `AI_GATEWAY_SUBSCRIPTION_KEY`, contact the repository maintainer.
-
 **Features**:
-- 💬 Natural language infrastructure analysis
-- 🔍 Resource-specific recommendations
-- 🛠️ Remediation guidance with step-by-step instructions
-- 📊 Cost and performance impact analysis  
-- 🧩 Terraform code generation
-- 🔗 Dependency relationship suggestions
-- ⚡ Query-type-specific responses (findings, remediation, terraform, connections)
+- Natural language infrastructure analysis
+- Resource-specific recommendations
+- Remediation guidance with step-by-step instructions
+- Cost and performance impact analysis  
+- Terraform code generation
+- Dependency relationship suggestions
+- Query-type-specific responses (findings, remediation, terraform, connections)
 
 **Note**: The `.env` file is gitignored and should never be committed to the repository. Each developer needs their own local configuration.
 
@@ -165,7 +221,7 @@ python -m app.terraform.run --terraform-dir <path-to-terraform-files>
 **Or via Web UI**:
 1. Start the backend server (see Step 4)
 2. Open the frontend (see Step 5)
-3. Click "📦 Import Terraform Configuration"
+3. Click "Import Terraform Configuration"
 4. Upload your `.tf` or `.json` files
 
 Both options create:
@@ -194,7 +250,7 @@ Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run LLM Annotations (Optional)
 
-If APIM + Foundry is configured and `llm.enabled: true`, run the LLM annotator:
+If Foundry is configured and `llm.enabled: true`, run the LLM annotator:
 
 ```bash
 python -m app.llm.run --subscription-id <your-subscription-id>
@@ -327,50 +383,6 @@ The UI shows when your current view differs from the saved workload, prompting y
 
 **Storage**:
 Workloads are stored in `backend/data/workload/workloads.json` and persist across sessions.
-
-## Project Structure
-
-```
-azure-resilience-iq/
-├── backend/
-│   ├── app/
-│   │   ├── collector/        # Azure Resource Graph collector
-│   │   ├── graph/            # Graph building and modeling
-│   │   ├── llm/              # LLM annotation engine
-│   │   ├── resilience/       # Resiliency evaluation and APRL integration
-│   │   ├── relationships/    # Resource relationship extraction
-│   │   ├── routes/           # API route handlers (resilience, recommendations)
-│   │   ├── services/         # Business logic (workloads, subscriptions, recommendations)
-│   │   ├── storage/          # Data persistence layer
-│   │   ├── intent/           # User overrides and manual edges
-│   │   ├── config.py         # Configuration utilities
-│   │   ├── settings.py       # Settings and environment configuration
-│   │   └── main.py           # FastAPI application
-│   ├── data/
-│   │   └── {subscription-id}/
-│   │       ├── resources.json               # Collected Azure resources
-│   │       ├── edges.json                  # Multi-source dependency edges
-│   │       ├── llm_annotations.json        # LLM-generated annotations
-│   │       ├── resilience_evaluations.json # Resiliency scores and recommendations
-│   │       ├── node_overrides.json         # User node customizations
-│   │       ├── edge_overrides.json         # Edge accept/reject decisions
-│   │       ├── manual_edges.json           # User-created edges
-│   │       ├── resilience_overrides.json   # Resiliency evaluation overrides
-│   │       └── groups.json                 # Node groupings
-│   ├── pyproject.toml        # Python dependencies
-│   └── .env                  # Environment configuration
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # React components (nodes, edges, graph canvas)
-│   │   ├── pages/            # Page components
-│   │   ├── domain/           # Business logic (graph view builder)
-│   │   ├── api/              # API client functions
-│   │   └── utils/            # Utilities and icon resolver
-│   ├── public/               # Static assets (Azure icons)
-│   ├── package.json          # npm dependencies
-│   └── vite.config.ts        # Vite configuration
-└── README.md
-```
 
 ## Graph Composition
 
@@ -653,72 +665,6 @@ After modifying:
 2. Re-run resilience evaluations: `python -m app.resilience.run --subscription-id <id>`
 3. Scores will recalculate automatically in the frontend
 
-## API Endpoints
-
-The backend provides the following main endpoints:
-
-### Core Endpoints
-- `GET /health` - Health check
-- `GET /api/subscriptions` - List available subscriptions
-- `GET /api/subscriptions/{subscription_id}/graph` - Get workload graph
-- `GET /api/subscriptions/{subscription_id}/reviews` - Get review inbox
-
-### Node Management
-- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer, criticality_score)
-- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Update node criticality score
-- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}` - Remove node override
-- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Delete criticality override
-
-### Edge Management
-- `POST /api/subscriptions/{subscription_id}/edges` - Create manual edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/accept` - Accept edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reject` - Reject edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reverse` - Reverse edge direction
-- `DELETE /api/subscriptions/{subscription_id}/edges/{edge_id}` - Delete edge
-
-### Group Management
-- `GET /api/subscriptions/{subscription_id}/groups` - List groups
-- `POST /api/subscriptions/{subscription_id}/groups` - Create a new group
-- `PATCH /api/subscriptions/{subscription_id}/groups/{group_id}` - Update group name
-- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}` - Delete a group
-- `POST /api/subscriptions/{subscription_id}/groups/{group_id}/nodes` - Add node to group
-- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
-
-### Resiliency & Recommendations Endpoints
-- `GET /api/resilience/health` - Resiliency module health check
-- `GET /api/resilience/rules` - Get all resilience rules (with optional filtering by resource_type and category)
-- `GET /api/resilience/evaluate/{subscription_id}` - Get resilience evaluations for subscription
-- `GET /api/resilience/evaluate/{subscription_id}/resource/{resource_id}` - Get resilience evaluation for specific resource
-- `POST /api/resilience/evaluate/{subscription_id}/refresh` - Refresh resilience evaluations
-- `GET /api/resilience/weights` - Get resilience category weights
-- `GET /api/resilience/categories` - Get available resilience categories
-- `GET /api/resilience/evaluate/{subscription_id}/summary` - Get resilience summary
-- `GET /api/resilience/evaluate/{subscription_id}/zonal-resilience` - Get zonal resilience analysis
-- `GET /api/resilience/{subscription_id}/overrides` - List resilience evaluation overrides
-- `POST /api/resilience/{subscription_id}/overrides` - Create resilience override
-- `DELETE /api/resilience/{subscription_id}/overrides` - Delete resilience override
-- `GET /api/resilience/{subscription_id}/overrides/check` - Check if resource has overrides
-- `GET /api/{subscription_id}/recommendations` - Get unified recommendations (WARA + resilience)
-- `GET /api/{subscription_id}/resources/{resource_id}/recommendations` - Get recommendations for specific resource
-- `GET /api/{subscription_id}/recommendations/by-category/{category}` - Get recommendations by category
-- `GET /api/{subscription_id}/recommendations/summary` - Get recommendations summary
-
-### Workload Management Endpoints
-- `GET /api/workloads` - List all saved workload views
-- `GET /api/workloads/{workload_id}` - Get a specific workload view
-- `POST /api/workloads` - Create a new workload view
-  - Body: `{"name": "string", "view_state": {...}}`
-- `PATCH /api/workloads/{workload_id}` - Update workload name or view state
-  - Body: `{"name": "string" (optional), "view_state": {...} (optional)}`
-- `DELETE /api/workloads/{workload_id}` - Delete a workload view
-
-### Subscription Refresh Endpoints
-- `POST /api/subscriptions/{subscription_id}/refresh` - Start async LLM annotation refresh
-- `GET /api/subscriptions/{subscription_id}/refresh/status` - Check refresh job status
-
-### Terraform Endpoints
-- `POST /api/terraform/upload` - Upload and process Terraform files (.tf or .json)
-- Form parameters: `files` (multi-file upload), `subscription_id` (optional), `subscription_name` (optional)
 
 ## Development Workflow
 
@@ -772,16 +718,14 @@ Set these in `backend/config/app_config.yaml`.
 | `llm.max_attempts` / `LLM_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
 | `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
 | `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
-| `ai_agent.gateway_base_url` | Yes (if LLM enabled) | - | APIM base URL for Foundry Agent threads/runs/messages |
-| `ai_agent.subscription_header_name` | No | `api-key` | APIM subscription header name |
-| `ai_agent.reasoning_model` / `AI_GATEWAY_REASONING_MODEL` | No | `gpt-4.1` | Reasoning model used by APIM agent execution |
-| `ai_agent.embedding_model` / `AI_GATEWAY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
-| `ai_agent.chat_agent_reference` / `AI_GATEWAY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
-| `ai_agent.resilience_agent_reference` / `AI_GATEWAY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
-| `ai_agent.annotations_agent_reference` / `AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
-| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for APIM/agent runs |
+| `ai_agent.foundry_project_endpoint` / `AI_FOUNDRY_PROJECT_ENDPOINT` | Yes (if LLM enabled) | - | Foundry project endpoint for agent threads/runs/messages |
+| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-4.1` | Reasoning model used by Foundry agent execution |
+| `ai_agent.embedding_model` / `AI_FOUNDRY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
+| `ai_agent.chat_agent_reference` / `AI_FOUNDRY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
+| `ai_agent.resilience_agent_reference` / `AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
+| `ai_agent.annotations_agent_reference` / `AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
+| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for agent runs |
 | `ai_agent.poll_interval_seconds` | No | `1.5` | Poll interval while waiting for run completion |
-| `AI_GATEWAY_SUBSCRIPTION_KEY` | Yes (if LLM enabled) | - | APIM subscription key |
 | `data.dir` | No | `./data` | Base directory for collected artifacts |
 | `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
 
@@ -858,12 +802,12 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 
 ## AI-Powered Chat Assistant
 
-The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance through APIM + Azure AI Foundry Agent.
+The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance through Azure AI Foundry Agents.
 
 ### Features
 
 - **Natural Language Queries**: Ask questions about your infrastructure in plain English
-- **Contextual Understanding**: APIM-native scope classification and strict ID validation keep responses workload-focused
+- **Contextual Understanding**: Scope classification and strict ID validation keep responses workload-focused
 - **Query-Type-Specific Responses**: Different response formats for different types of questions:
   - **Findings**: Explains failures and impact
   - **Remediation**: Provides step-by-step fix instructions
@@ -889,19 +833,21 @@ The chat assistant can answer questions like:
 
 ### Configuration
 
-Chat requires APIM key configuration in `backend/.env`:
+Chat requires Foundry project configuration in `backend/.env`:
+
+For deployed VM runtime, this endpoint is injected automatically into `/etc/azure-resilience-iq.env` by the deployment script.
 
 ```env
-AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
 ```
 
-If you do not have this key, contact the repository maintainer.
+If you do not have this endpoint, contact the repository maintainer.
 
 ### UI Integration
 
 The chat panel appears as a floating badge on both the **Graph** and **Overview** tabs:
 
-1. Click the chat sparkle icon (✨) to open
+1. Click the chat copilot icon to open
 2. Type your question in natural language
 3. View responses with:
    - Structured recommendations with priority and effort
@@ -938,15 +884,15 @@ All LLM outputs are validated before being returned:
 ### LLM Annotation Issues
 
 **Problem**: "LLM gateway unavailable" or agent calls fail
-- **Solution**: Ensure `llm.enabled: true`, `ai_agent.gateway_base_url`, all flow-specific agent references (`chat/resilience/annotations`), and `AI_GATEWAY_SUBSCRIPTION_KEY` are correctly configured.
+- **Solution**: Ensure `llm.enabled: true`, `AI_FOUNDRY_PROJECT_ENDPOINT`, and all flow-specific agent references (`chat/resilience/annotations`) are correctly configured.
 
 **Problem**: No annotations generated
-- **Solution**: Confirm `llm.enabled` is `true`, APIM base URL is valid, and the APIM subscription key is active.
+- **Solution**: Confirm `llm.enabled` is `true`, the Foundry project endpoint is valid, and the configured annotations agent exists.
 
 ### Chat Issues
 
 **Problem**: Chat feature not visible in UI
-- **Solution**: Check `llm.enabled`, `ai_agent.gateway_base_url`, flow-specific agent references (`chat/resilience/annotations`), and `AI_GATEWAY_SUBSCRIPTION_KEY`.
+- **Solution**: Check `llm.enabled`, `AI_FOUNDRY_PROJECT_ENDPOINT`, and flow-specific agent references (`chat/resilience/annotations`).
 - **Verification**: Check `/api/chat/availability` endpoint - it should return `{"available": true}`
 
 **Problem**: Queries rejected as out-of-scope
@@ -956,10 +902,26 @@ All LLM outputs are validated before being returned:
 - **Solution**: This should not occur - edge suggestions are filtered by query type and logical validation. If you see invalid edges, report as a bug.
 
 **Problem**: Chat returns "LLM service is not available"
-- **Solution**: Verify APIM endpoint route, agent id (`asst_*`), and APIM subscription key.
+- **Solution**: Verify `AI_FOUNDRY_PROJECT_ENDPOINT`, agent references, and managed identity/RBAC access.
 
 **Problem**: Slow chat responses
-- **Solution**: Foundry runs are asynchronous and polled through APIM. Reduce prompt size, tune polling/timeouts, and check APIM/backend latency.
+- **Solution**: Foundry runs are asynchronous. Reduce prompt size, tune polling/timeouts, and check Foundry/backend latency.
+
+**Problem**: `conversation_not_found` errors in backend logs
+- **Solution**: Backend now auto-recovers by creating a new conversation, replaying context, and retrying once. If errors persist, run app-only deploy to ensure latest backend code is active.
+
+### Deployment/Provisioning Issues
+
+**Problem**: Foundry portal "Data + indexes" appears empty
+- **Cause**: This view may not show external Azure AI Search indexes attached via project connections/tools.
+- **Verification**: Rely on provisioning logs and VM-side diagnostics (`--agents-migrate` run output and agent/tool markers), not only portal index tab visibility.
+
+**Problem**: Agent tools seem stale after changes
+- **Solution**: Re-run with migration mode:
+  - `bash backend/deploy/scripts/deploy_vm_stack.sh backend/deploy/vm-terraform/terraform.tfvars --agents-migrate`
+
+**Problem**: App-only deployment rsync permission errors
+- **Solution**: Use latest `deploy_app_only.sh` (includes ownership + sudo-rsync handling). Re-run the same command.
 
 ### Backend Issues
 

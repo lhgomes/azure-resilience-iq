@@ -321,7 +321,7 @@ def main() -> int:
     print(f"Failed: {failed}")
 
     if failed > 0:
-        print("\nTip: For deeper proof, correlate rag_trace.trace_id with APIM logs for /threads/*/runs payload assistant_id.")
+        print("\nTip: For deeper proof, correlate rag_trace.trace_id with Foundry project run traces for /threads/*/runs payload assistant_id.")
         return 1
 
     print("All orchestration tests passed.")

@@ -3,7 +3,7 @@
 
 This script creates the local folder structure, writes curated URL files,
 clones official AVM/CAF repositories, and exports markdown docs into
-backend/data/rag/terraform/docs.
+backend/agent/rag/terraform/docs.
 
 Usage:
   python -m app.tools.bootstrap_rag_sources
@@ -135,7 +135,7 @@ def main() -> int:
         "--base-rag-dir",
         type=Path,
         default=None,
-        help="Base RAG data dir (defaults to backend/data/rag)",
+        help="Base RAG data dir (defaults to backend/agent/rag)",
     )
     parser.add_argument(
         "--refresh-clone",
@@ -161,7 +161,7 @@ def main() -> int:
 
     repo_root = (args.repo_root or _default_repo_root()).resolve()
     backend_root = repo_root / "backend"
-    base_rag_dir = (args.base_rag_dir or (backend_root / "data" / "rag")).resolve()
+    base_rag_dir = (args.base_rag_dir or (backend_root / "agent" / "rag")).resolve()
 
     _ensure_dirs(base_rag_dir)
     terraform_root = base_rag_dir / "terraform"

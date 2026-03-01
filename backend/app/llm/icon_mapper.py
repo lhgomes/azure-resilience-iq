@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from app.settings import load_settings
-from app.llm.model_client import APIMModelClient, create_model_client
+from app.llm.model_client import FoundryModelClient, create_model_client
 
 
 def get_all_icon_files(icons_dir: Path) -> Dict[str, List[str]]:
@@ -174,7 +174,7 @@ def get_microsoft_resource_types() -> Set[str]:
 def generate_icon_mappings_with_llm(
     resource_types: List[str],
     icon_categories: Dict[str, List[str]],
-    model_client: APIMModelClient,
+    model_client: FoundryModelClient,
     model: Optional[str],
     batch_size: int = 100
 ) -> Dict[str, str]:
@@ -255,10 +255,10 @@ def main():
     print(f"\nFound {len(icon_categories)} icon categories")
     print(f"Using {len(resource_types)} Azure resource types from Microsoft ARI documentation")
     
-    # Initialize direct APIM model client
+    # Initialize direct Foundry model client
     model_client = create_model_client(settings)
     if not model_client.is_available():
-        print("APIM model client unavailable; aborting icon generation.")
+        print("Foundry model client unavailable; aborting icon generation.")
         return
 
     ai_agent_cfg = settings.get_ai_agent_config()

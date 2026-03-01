@@ -25,7 +25,7 @@ from app.terraform.generator import TerraformResourceGenerator
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Terraform input collector for azure-workload-graph",
+        description="Terraform input collector for azure-resilience-iq",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

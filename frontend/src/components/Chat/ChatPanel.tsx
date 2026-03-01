@@ -5,7 +5,9 @@ import {
   ChatResponse,
   ChatContext,
   SuggestedEdge,
+  ClarifyingQuestion,
 } from '../../services/chatService';
+import { IconButton } from '../common/buttons';
 import './ChatPanel.css';
 
 interface MentionableResource {
@@ -70,6 +72,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [isMentionOpen, setIsMentionOpen] = useState(false);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [mentionTokenMap, setMentionTokenMap] = useState<Record<string, string>>({});
+  const [clarifyingSelections, setClarifyingSelections] = useState<Record<string, Record<number, string>>>({});
 
   const buildWelcomeMessage = (baselineSummary?: string): ChatMessageType => {
     const cleaned = (baselineSummary || '').trim();
@@ -188,6 +191,68 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         {resolveResourceLabel(item.id, item.label)}
       </button>
     ));
+  };
+
+  const normalizeClarifyingQuestion = (item: ClarifyingQuestion | string): ClarifyingQuestion => {
+    if (typeof item === 'string') {
+      return { question: item, possible_answers: [] };
+    }
+    const question = typeof item?.question === 'string' ? item.question.trim() : '';
+    const rawAnswers = Array.isArray(item?.possible_answers) ? item.possible_answers : [];
+    const possibleAnswers = rawAnswers
+      .map((answer: string) => String(answer || '').trim())
+      .filter((answer: string) => answer.length > 0);
+    return {
+      question,
+      possible_answers: possibleAnswers,
+    };
+  };
+
+  const normalizeClarifyingQuestions = (questions: Array<ClarifyingQuestion | string> = []): ClarifyingQuestion[] => {
+    return questions
+      .map((item: ClarifyingQuestion | string) => normalizeClarifyingQuestion(item))
+      .filter((item: ClarifyingQuestion) => item.question.length > 0);
+  };
+
+  const buildClarificationReply = (questions: ClarifyingQuestion[], answersByIndex: Record<number, string>): string => {
+    const lines: string[] = ['Clarification answers:'];
+    questions.forEach((question: ClarifyingQuestion, index: number) => {
+      const answer = String(answersByIndex[index] || '').trim();
+      if (!answer) return;
+      lines.push(`${index + 1}. ${question.question}: ${answer}`);
+    });
+    lines.push('Please proceed with generation using these selections.');
+    return lines.join('\n');
+  };
+
+  const getClarifyingProgress = (messageId: string, response?: ChatResponse): { answered: number; required: number } => {
+    const questions = normalizeClarifyingQuestions(response?.clarifying_questions || []);
+    const selected = clarifyingSelections[messageId] || {};
+    const required = questions.filter((q: ClarifyingQuestion) => (q.possible_answers || []).length > 0).length;
+    const answered = questions.reduce((count: number, q: ClarifyingQuestion, idx: number) => {
+      if ((q.possible_answers || []).length === 0) return count;
+      return String(selected[idx] || '').trim() ? count + 1 : count;
+    }, 0);
+    return { answered, required };
+  };
+
+  const resolveResponseFlow = (response?: ChatResponse): 'chat' | 'terraform' | undefined => {
+    const candidate = String(response?.agent_flow || '').trim().toLowerCase();
+    if (candidate === 'chat' || candidate === 'terraform') {
+      return candidate;
+    }
+
+    const rawCandidate = String(response?.raw_llm_output?.agent_flow || '').trim().toLowerCase();
+    if (rawCandidate === 'chat' || rawCandidate === 'terraform') {
+      return rawCandidate;
+    }
+
+    const hasTerraformFiles = Array.isArray(response?.raw_llm_output?.files) && response?.raw_llm_output?.files.length > 0;
+    if (response?.terraform_code || hasTerraformFiles) {
+      return 'terraform';
+    }
+
+    return undefined;
   };
 
   useEffect(() => {
@@ -453,10 +518,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     });
   };
 
-  const handleSendMessage = async (): Promise<void> => {
-    if (!input.trim() || isLoading || !chatService.current) return;
+  const handleSendMessage = async (
+    overrideMessage?: string,
+    contextOverrides?: ChatContext,
+  ): Promise<void> => {
+    if (isLoading || !chatService.current) return;
 
-    const currentInput = input;
+    const currentInput = (overrideMessage ?? input).trim();
+    if (!currentInput) return;
     const referencedResourceIds = extractReferencedResourceIds(currentInput);
 
     const userMessage: ChatMessageType = {
@@ -484,9 +553,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           content: m.content,
         }));
 
+      const requestContext = {
+        ...(context || {}),
+        ...(contextOverrides || {}),
+      };
+
       const response = await chatService.current.sendMessage(
         currentInput,
-        context,
+        Object.keys(requestContext).length > 0 ? requestContext : undefined,
         conversationHistory,
         referencedResourceIds
       );
@@ -520,6 +594,48 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleClarifyingAnswerSelect = (messageId: string, questionIndex: number, answer: string): void => {
+    setClarifyingSelections((prev: Record<string, Record<number, string>>) => ({
+      ...prev,
+      [messageId]: {
+        ...(prev[messageId] || {}),
+        [questionIndex]: answer,
+      },
+    }));
+  };
+
+  const handleSubmitClarifyingAnswers = (messageId: string, response?: ChatResponse): void => {
+    if (isLoading || !chatService.current || !response) return;
+
+    const questions = normalizeClarifyingQuestions(response.clarifying_questions || []);
+    const selectedAnswers = clarifyingSelections[messageId] || {};
+    const requiredCount = questions.filter((q: ClarifyingQuestion) => (q.possible_answers || []).length > 0).length;
+    const selectedCount = Object.keys(selectedAnswers).filter((idx: string) => {
+      const index = Number(idx);
+      const currentQuestion = questions[index];
+      return currentQuestion && (currentQuestion.possible_answers || []).length > 0 && String(selectedAnswers[index] || '').trim().length > 0;
+    }).length;
+
+    if (requiredCount > 0 && selectedCount < requiredCount) return;
+
+    const answerMessage = buildClarificationReply(questions, selectedAnswers);
+    const flow = resolveResponseFlow(response);
+    const contextOverride = flow ? { preferred_agent_flow: flow } : undefined;
+    setClarifyingSelections((prev: Record<string, Record<number, string>>) => {
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+    void handleSendMessage(answerMessage, contextOverride);
+  };
+
+  const handleProceedAnyway = (response?: ChatResponse): void => {
+    if (isLoading || !chatService.current) return;
+    const flow = resolveResponseFlow(response);
+    const contextOverride = flow ? { preferred_agent_flow: flow } : undefined;
+    void handleSendMessage('Proceed anyway and use defaults.', contextOverride);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -717,37 +833,35 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         <div className="chat-header">
           <h3>Resilience IQ Agent</h3>
           <div className="chat-header-actions">
-            <button
-              className="chat-header-button"
+            <IconButton
               onClick={handleExportChatHtml}
               type="button"
               title="Download chat as HTML"
-              aria-label="Export chat as HTML"
+              ariaLabel="Export chat as HTML"
             >
               {renderShareIcon()}
-            </button>
-            <button
-              className="chat-header-button"
+            </IconButton>
+            <IconButton
               onClick={(): void => setIsOpen(false)}
               title="Minimize chat"
+              ariaLabel="Minimize chat"
             >
               ✕
-            </button>
+            </IconButton>
           </div>
         </div>
       )}
 
       {!(mode === 'floating' || showCloseButton) && (
         <div className="chat-share-actions">
-          <button
-            className="chat-header-button"
+          <IconButton
             onClick={handleExportChatHtml}
             type="button"
             title="Download chat as HTML"
-            aria-label="Export chat as HTML"
+            ariaLabel="Export chat as HTML"
           >
             {renderShareIcon()}
-          </button>
+          </IconButton>
         </div>
       )}
 
@@ -930,15 +1044,65 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 {msg.response.clarifying_questions &&
                   msg.response.clarifying_questions.length > 0 && (
                     <div className="clarifying-questions">
+                      {(() => {
+                        const progress = getClarifyingProgress(msg.id, msg.response);
+                        return progress.required > 0 ? (
+                          <p className={`question-progress ${progress.answered >= progress.required ? 'complete' : ''}`}>
+                            {progress.answered} of {progress.required} answered
+                          </p>
+                        ) : null;
+                      })()}
                       <p className="question-intro">
                         Before I proceed, I need to understand better:
                       </p>
-                      {msg.response.clarifying_questions.map((q: string, i: number) => (
+                      {msg.response.clarifying_questions.map((rawQuestion: ClarifyingQuestion | string, i: number) => {
+                        const clarifyingQuestion = normalizeClarifyingQuestion(rawQuestion);
+                        if (!clarifyingQuestion.question) return null;
+                        return (
                         <div key={i} className="question">
                           <span className="question-mark">❓</span>
-                          <span>{q}</span>
+                          <div className="question-body">
+                            <span>{clarifyingQuestion.question}</span>
+                            {clarifyingQuestion.possible_answers && clarifyingQuestion.possible_answers.length > 0 && (
+                              <div className="question-options">
+                                {clarifyingQuestion.possible_answers.map((answer: string, answerIndex: number) => (
+                                  <button
+                                    key={`${i}-${answerIndex}`}
+                                    type="button"
+                                    className={`question-option-btn ${clarifyingSelections[msg.id]?.[i] === answer ? 'selected' : ''}`}
+                                    disabled={isLoading}
+                                    onClick={() => handleClarifyingAnswerSelect(msg.id, i, answer)}
+                                  >
+                                    {answer}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      ))}
+                        );
+                      })}
+                      <div className="question-actions">
+                        <button
+                          type="button"
+                          className="question-submit-btn"
+                          disabled={isLoading || (() => {
+                            const progress = getClarifyingProgress(msg.id, msg.response);
+                            return progress.required === 0 || progress.answered < progress.required;
+                          })()}
+                          onClick={() => handleSubmitClarifyingAnswers(msg.id, msg.response)}
+                        >
+                          Submit answers
+                        </button>
+                        <button
+                          type="button"
+                          className="question-proceed-btn"
+                          disabled={isLoading}
+                          onClick={() => handleProceedAnyway(msg.response)}
+                        >
+                          Proceed anyway
+                        </button>
+                      </div>
                     </div>
                   )}
 

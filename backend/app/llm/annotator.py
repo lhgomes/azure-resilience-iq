@@ -423,7 +423,7 @@ def _call_llm(
     if not annotations_agent_id:
         raise RuntimeError(
             "Annotations agent reference not configured. "
-            "Set AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE."
+            "Set AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE."
         )
 
     for attempt in range(1, max_attempts + 1):

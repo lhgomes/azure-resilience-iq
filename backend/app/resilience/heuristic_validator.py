@@ -161,7 +161,7 @@ class HeuristicValidator:
         if not self.resilience_agent_id:
             raise RuntimeError(
                 "Resilience agent reference not configured. "
-                "Set AI_GATEWAY_RESILIENCE_AGENT_REFERENCE."
+                "Set AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE."
             )
 
         response = gateway.generate_text(

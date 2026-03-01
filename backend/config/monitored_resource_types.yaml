@@ -1,60 +1,60 @@
 monitored_resource_types:
-  - Microsoft.AAD/domainServices
-  - Microsoft.ApiManagement/service
-  - Microsoft.App/containerApps
-  - Microsoft.App/managedenvironments
-  - Microsoft.AppConfiguration/configurationStores
-  - Microsoft.Automation/automationAccounts
-  - Microsoft.AVS/privateClouds
-  - Microsoft.Batch/batchAccounts
-  - Microsoft.Cache/Redis
-  - Microsoft.Cdn/profiles
-  - Microsoft.Cdn/profiles/originGroups
-  - Microsoft.CognitiveServices/Accounts
-  - Microsoft.Compute/disks
-  - Microsoft.Compute/galleries
-  - Microsoft.Compute/galleries/images/versions
-  - Microsoft.Compute/virtualMachines
-  - Microsoft.Compute/virtualMachineScaleSets
-  - Microsoft.ContainerRegistry/registries
-  - Microsoft.ContainerService/managedClusters
-  - Microsoft.Dashboard/grafana
-  - Microsoft.Databricks/workspaces
-  - Microsoft.DBforMySQL/flexibleServers
-  - Microsoft.DBforPostgreSQL/flexibleServers
-  - Microsoft.Devices/IotHubs
-  - Microsoft.DocumentDB/databaseAccounts
-  - Microsoft.EventHub/namespaces
-  - Microsoft.KeyVault/vaults
-  - Microsoft.MachineLearningServices/registries
-  - Microsoft.MachineLearningServices/workspaces
-  - Microsoft.NetApp/netAppAccounts/capacityPools/volumes
-  - Microsoft.Network/applicationGateways
-  - Microsoft.Network/azureFirewalls
-  - Microsoft.Network/bastionHosts
-  - Microsoft.Network/dnsResolvers
-  - Microsoft.Network/dnsZones
-  - Microsoft.Network/expressRouteCircuits
-  - Microsoft.Network/expressRouteGateways
-  - Microsoft.Network/ExpressRoutePorts
-  - Microsoft.Network/loadBalancers
-  - Microsoft.Network/privateDnsZones
-  - Microsoft.Network/privateEndpoints
-  - Microsoft.Network/publicIPAddresses
-  - Microsoft.Network/trafficManagerProfiles
-  - Microsoft.Network/virtualNetworkGateways
-  - Microsoft.Network/virtualRouters
-  - Microsoft.Network/vpnSites
-  - Microsoft.RecoveryServices/vaults
-  - Microsoft.Search/searchServices
-  - Microsoft.ServiceBus/namespaces
-  - Microsoft.SignalRService/SignalR
-  - Microsoft.Sql/managedInstances
-  - Microsoft.Sql/servers
-  - Microsoft.Sql/servers/databases
-  - Microsoft.Storage/storageAccounts
-  - Microsoft.StreamAnalytics/streamingjobs
-  - Microsoft.Subscription/Subscriptions
-  - Microsoft.VirtualMachineImages/imageTemplates
-  - Microsoft.Web/serverFarms
-  - Microsoft.Web/sites
+- Microsoft.AAD/domainServices
+- Microsoft.ApiManagement/service
+- Microsoft.App/containerApps
+- Microsoft.App/managedenvironments
+- Microsoft.AppConfiguration/configurationStores
+- Microsoft.Automation/automationAccounts
+- Microsoft.AVS/privateClouds
+- Microsoft.Batch/batchAccounts
+- Microsoft.Cache/Redis
+- Microsoft.Cdn/profiles
+- Microsoft.Cdn/profiles/originGroups
+- Microsoft.CognitiveServices/Accounts
+- Microsoft.Compute/disks
+- Microsoft.Compute/galleries
+- Microsoft.Compute/galleries/images/versions
+- Microsoft.Compute/virtualMachines
+- Microsoft.Compute/virtualMachineScaleSets
+- Microsoft.ContainerRegistry/registries
+- Microsoft.ContainerService/managedClusters
+- Microsoft.Dashboard/grafana
+- Microsoft.Databricks/workspaces
+- Microsoft.DBforMySQL/flexibleServers
+- Microsoft.DBforPostgreSQL/flexibleServers
+- Microsoft.Devices/IotHubs
+- Microsoft.DocumentDB/databaseAccounts
+- Microsoft.EventHub/namespaces
+- Microsoft.KeyVault/vaults
+- Microsoft.MachineLearningServices/registries
+- Microsoft.MachineLearningServices/workspaces
+- Microsoft.NetApp/netAppAccounts/capacityPools/volumes
+- Microsoft.Network/applicationGateways
+- Microsoft.Network/azureFirewalls
+- Microsoft.Network/bastionHosts
+- Microsoft.Network/dnsResolvers
+- Microsoft.Network/dnsZones
+- Microsoft.Network/expressRouteCircuits
+- Microsoft.Network/expressRouteGateways
+- Microsoft.Network/ExpressRoutePorts
+- Microsoft.Network/loadBalancers
+- Microsoft.Network/privateDnsZones
+- Microsoft.Network/privateEndpoints
+- Microsoft.Network/publicIPAddresses
+- Microsoft.Network/trafficManagerProfiles
+- Microsoft.Network/virtualNetworkGateways
+- Microsoft.Network/virtualRouters
+- Microsoft.Network/vpnSites
+- Microsoft.RecoveryServices/vaults
+- Microsoft.Search/searchServices
+- Microsoft.ServiceBus/namespaces
+- Microsoft.SignalRService/SignalR
+- Microsoft.Sql/managedInstances
+- Microsoft.Sql/servers
+- Microsoft.Sql/servers/databases
+- Microsoft.Storage/storageAccounts
+- Microsoft.StreamAnalytics/streamingjobs
+- Microsoft.Subscription/Subscriptions
+- Microsoft.VirtualMachineImages/imageTemplates
+- Microsoft.Web/serverFarms
+- Microsoft.Web/sites

@@ -97,10 +97,10 @@ class AppSettings:
                 "resilience_agent_reference": None,
                 "annotations_agent_reference": None,
                 "terraform_agent_reference": None,
-                "gateway_base_url": None,
+                "foundry_project_endpoint": None,
+                "openai_api_version": "2025-03-01-preview",
                 "embedding_model": "text-embedding-3-small",
                 "reasoning_model": "gpt-4.1",
-                "subscription_header_name": "api-key",
                 "run_timeout_seconds": 120,
                 "poll_interval_seconds": 1.5,
             },
@@ -213,50 +213,41 @@ class AppSettings:
         }
 
     def get_ai_agent_config(self) -> Dict[str, Any]:
-        """Get Azure AI Foundry agent configuration values."""
+        """Get Azure AI Foundry agent configuration values (direct SDK mode)."""
         agent_cfg = self.config.get("ai_agent", {})
         return {
-            "gateway_base_url": (
-                os.getenv("AI_GATEWAY_AGENT_BASE_URL")
-                or agent_cfg.get("gateway_base_url")
+            "foundry_project_endpoint": (
+                os.getenv("AI_FOUNDRY_PROJECT_ENDPOINT")
+                or agent_cfg.get("foundry_project_endpoint")
             ),
-            "subscription_key": os.getenv("AI_GATEWAY_SUBSCRIPTION_KEY"),
-            "subscription_header_name": (
-                os.getenv("AI_GATEWAY_SUBSCRIPTION_HEADER_NAME")
-                or agent_cfg.get("subscription_header_name")
-                or "api-key"
+            "openai_api_version": (
+                os.getenv("AI_FOUNDRY_OPENAI_API_VERSION")
+                or agent_cfg.get("openai_api_version")
+                or "2025-03-01-preview"
             ),
             "embedding_model": (
-                os.getenv("AI_GATEWAY_EMBEDDING_MODEL")
+                os.getenv("AI_FOUNDRY_EMBEDDING_MODEL")
                 or agent_cfg.get("embedding_model", "text-embedding-3-small")
             ),
             "reasoning_model": (
-                os.getenv("AI_GATEWAY_REASONING_MODEL")
+                os.getenv("AI_FOUNDRY_REASONING_MODEL")
                 or agent_cfg.get("reasoning_model", "gpt-4.1")
             ),
             "chat_agent_reference": (
-                os.getenv("AI_GATEWAY_CHAT_AGENT_REFERENCE")
-                or os.getenv("AI_GATEWAY_CHAT_AGENT_ID")
+                os.getenv("AI_FOUNDRY_CHAT_AGENT_REFERENCE")
                 or agent_cfg.get("chat_agent_reference")
-                or agent_cfg.get("chat_agent_id")
             ),
             "resilience_agent_reference": (
-                os.getenv("AI_GATEWAY_RESILIENCE_AGENT_REFERENCE")
-                or os.getenv("AI_GATEWAY_RESILIENCE_AGENT_ID")
+                os.getenv("AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE")
                 or agent_cfg.get("resilience_agent_reference")
-                or agent_cfg.get("resilience_agent_id")
             ),
             "annotations_agent_reference": (
-                os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE")
-                or os.getenv("AI_GATEWAY_ANNOTATIONS_AGENT_ID")
+                os.getenv("AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE")
                 or agent_cfg.get("annotations_agent_reference")
-                or agent_cfg.get("annotations_agent_id")
             ),
             "terraform_agent_reference": (
-                os.getenv("AI_GATEWAY_TERRAFORM_AGENT_REFERENCE")
-                or os.getenv("AI_GATEWAY_TERRAFORM_AGENT_ID")
+                os.getenv("AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE")
                 or agent_cfg.get("terraform_agent_reference")
-                or agent_cfg.get("terraform_agent_id")
             ),
             "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
             "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
@@ -287,12 +278,11 @@ class AppSettings:
         """
         Check if chat feature is available (all required config is present).
 
-        Required configuration (APIM + Foundry mode):
+        Required configuration (direct Foundry SDK mode):
         - llm.enabled=true
-        - ai_agent.gateway_base_url
+        - ai_agent.foundry_project_endpoint
                 - flow-specific agent ids:
-                    AI_GATEWAY_CHAT_AGENT_REFERENCE / AI_GATEWAY_RESILIENCE_AGENT_REFERENCE / AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE
-        - AI_GATEWAY_SUBSCRIPTION_KEY
+                    AI_FOUNDRY_CHAT_AGENT_REFERENCE / AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE / AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE
 
         Returns:
             True if all required chat configuration is present
@@ -306,8 +296,7 @@ class AppSettings:
         ]
 
         required_fields = [
-            ai_agent_config.get("gateway_base_url"),
-            ai_agent_config.get("subscription_key"),
+            ai_agent_config.get("foundry_project_endpoint"),
             *required_flow_ids,
         ]
 

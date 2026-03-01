@@ -1,8 +1,9 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "/^cd /home/luigomes/sources/azure-workload-graph/backend && \\.\\./\\.venv/bin/python -m py_compile app/chat/service\\.py$/": {
+        "/^cd /home/luigomes/sources/azure-resilience-iq/backend && \\.\\./\\.venv/bin/python -m py_compile app/chat/service\\.py$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        "terraform": true
     }
 }

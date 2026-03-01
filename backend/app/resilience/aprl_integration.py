@@ -30,7 +30,7 @@ from app.resilience.heuristic_validator import HeuristicValidator, ValidationStr
 
 LOGGER = logging.getLogger(__name__)
 
-# Namespace UUID for azure-workload-graph resilience checks
+# Namespace UUID for azure-resilience-iq resilience checks
 # Using DNS namespace as base for deterministic UUID generation
 RESILIENCE_CHECK_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 

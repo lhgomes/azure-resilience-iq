@@ -4,7 +4,7 @@ Regenerate the monitored (HA/DR) resource-type allowlist from APRL recommendatio
 
 Outputs:
 - backend/config/monitored_resource_types.yaml (consumed by collector & Terraform)
-- ai-context/ha-dr-recommendation-resource-types.txt (human-readable list)
+- backend/agent/rag/ha-dr-recommendation-resource-types.txt (human-readable list)
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def write_outputs(repo_root: Path, resource_types: List[str]) -> None:
     config_payload = {"monitored_resource_types": resource_types}
     config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
 
-    txt_path = repo_root / "ai-context" / TXT_FILENAME
+    txt_path = repo_root / "backend" / "agent" / "rag" / TXT_FILENAME
     txt_path.parent.mkdir(parents=True, exist_ok=True)
     txt_path.write_text("\n".join(resource_types) + "\n", encoding="utf-8")
 
