@@ -11,9 +11,8 @@ Usage examples:
 
 Required configuration (env or args):
 - AZURE_SEARCH_ENDPOINT
-- AZURE_SEARCH_ADMIN_KEY
-- --embedding-model (or AI_GATEWAY_EMBEDDING_MODEL / ai_agent.embedding_model)
-- APIM model configuration (ai_agent.gateway_base_url + AI_GATEWAY_SUBSCRIPTION_KEY)
+- --embedding-model (or AI_FOUNDRY_EMBEDDING_MODEL / ai_agent.embedding_model)
+- Foundry project configuration (AI_FOUNDRY_PROJECT_ENDPOINT)
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from azure.core.credentials import AzureKeyCredential
+from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 
 from app.logger import get_logger, setup_logging
@@ -343,6 +342,7 @@ def _resolve_targets(args, ai_agent_cfg: Dict[str, Any]) -> List[IngestionTarget
 
 
 def _build_chunk_records(
+    corpus: str,
     documents: List[SourceDocument],
     chunk_chars: int,
     overlap_chars: int,
@@ -352,21 +352,17 @@ def _build_chunk_records(
         chunks = _chunk_text(doc.content, chunk_chars=chunk_chars, overlap_chars=overlap_chars)
         for chunk_index, chunk in enumerate(chunks):
             identifier = hashlib.sha1(
-                f"{doc.module}:{doc.url}:{chunk_index}:{chunk[:120]}".encode("utf-8")
+                f"{corpus}:{doc.module}:{doc.url}:{chunk_index}:{chunk[:120]}".encode("utf-8")
             ).hexdigest()
             record = {
                 "id": identifier,
                 "title": doc.title,
                 "content": chunk,
-                "url": doc.url,
+                "corpus": corpus,
                 "source": doc.source,
-                "module": doc.module,
-                "service": doc.service,
-                "last_updated": doc.last_updated,
-                "chunk_index": chunk_index,
+                "source_type": doc.module,
+                "chunk_no": chunk_index,
             }
-            if doc.aprl_id:
-                record["aprl_id"] = doc.aprl_id
             records.append(record)
     return records
 
@@ -381,7 +377,7 @@ def _embed_records(
     retry_max_seconds: int,
 ) -> None:
     if not model_client or not model_client.is_available():
-        raise RuntimeError("APIM model client is not available for embeddings")
+        raise RuntimeError("Foundry model client is not available for embeddings")
 
     def _is_rate_limit_error(error: Exception) -> bool:
         text = str(error).lower()
@@ -419,7 +415,7 @@ def _embed_records(
                 )
 
                 for item, vector in zip(batch, vectors):
-                    item["contentVector"] = vector
+                    item["content_vector"] = vector
 
                 start += len(batch)
 
@@ -466,7 +462,6 @@ def _embed_records(
 
 def _upload_records(
     endpoint: str,
-    admin_key: str,
     index_name: str,
     records: List[Dict[str, Any]],
     batch_size: int,
@@ -474,7 +469,7 @@ def _upload_records(
     client = SearchClient(
         endpoint=endpoint,
         index_name=index_name,
-        credential=AzureKeyCredential(admin_key),
+        credential=DefaultAzureCredential(),
     )
 
     batch_size = max(1, min(batch_size, 1000))
@@ -501,7 +496,6 @@ def main() -> int:
     parser.add_argument("--aprl-index-name", default=None, help="APRL Azure AI Search index name")
     parser.add_argument("--terraform-index-name", default=None, help="Terraform modules (AVM+CAF) Azure AI Search index name")
     parser.add_argument("--search-endpoint", default=None, help="Azure AI Search endpoint")
-    parser.add_argument("--search-admin-key", default=None, help="Azure AI Search admin key")
     parser.add_argument("--embedding-model", default=None, help="Embedding model/deployment name")
     parser.add_argument("--chunk-chars", type=int, default=2200, help="Chunk size in characters")
     parser.add_argument("--overlap-chars", type=int, default=250, help="Chunk overlap in characters")
@@ -525,14 +519,13 @@ def main() -> int:
     settings = get_settings()
 
     search_endpoint = args.search_endpoint or os.getenv("AZURE_SEARCH_ENDPOINT")
-    search_admin_key = args.search_admin_key or os.getenv("AZURE_SEARCH_ADMIN_KEY")
     ai_agent_cfg = settings.get_ai_agent_config()
     model_client = create_model_client(settings)
     targets = _resolve_targets(args, ai_agent_cfg)
 
     embedding_model = (
         args.embedding_model
-        or os.getenv("AI_GATEWAY_EMBEDDING_MODEL")
+        or os.getenv("AI_FOUNDRY_EMBEDDING_MODEL")
         or ai_agent_cfg.get("embedding_model")
     )
 
@@ -546,11 +539,11 @@ def main() -> int:
     if not embedding_model:
         LOGGER.error(
             "Missing embedding model configuration. Provide --embedding-model "
-            "or set AI_GATEWAY_EMBEDDING_MODEL (or ai_agent.embedding_model)."
+            "or set AI_FOUNDRY_EMBEDDING_MODEL (or ai_agent.embedding_model)."
         )
         return 1
     if not model_client.is_available():
-        LOGGER.error("APIM model client unavailable. Configure ai_agent.gateway_base_url and AI_GATEWAY_SUBSCRIPTION_KEY.")
+        LOGGER.error("Foundry model client unavailable. Configure AI_FOUNDRY_PROJECT_ENDPOINT.")
         return 1
 
     try:
@@ -574,7 +567,8 @@ def main() -> int:
                 continue
 
             records = _build_chunk_records(
-                documents,
+                corpus=target.corpus,
+                documents=documents,
                 chunk_chars=args.chunk_chars,
                 overlap_chars=args.overlap_chars,
             )
@@ -601,8 +595,8 @@ def main() -> int:
                 ingested_targets += 1
                 continue
 
-            if not search_endpoint or not search_admin_key:
-                LOGGER.error("Missing search configuration. Provide endpoint/key via args or env vars.")
+            if not search_endpoint:
+                LOGGER.error("Missing search configuration. Provide search endpoint via args or env vars.")
                 return 1
             if not target.index_name:
                 LOGGER.error(
@@ -619,7 +613,6 @@ def main() -> int:
             )
             _upload_records(
                 endpoint=search_endpoint,
-                admin_key=search_admin_key,
                 index_name=target.index_name,
                 records=records,
                 batch_size=args.upload_batch_size,

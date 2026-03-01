@@ -120,7 +120,7 @@ async def chat_availability():
     else:
         return {
             "available": False,
-            "reason": "Chat feature requires APIM + Foundry configuration: ai_agent.gateway_base_url, flow-specific agent references (chat/resilience/annotations), and AI_GATEWAY_SUBSCRIPTION_KEY"
+            "reason": "Chat feature requires direct Foundry configuration: ai_agent.foundry_project_endpoint and flow-specific agent references (chat/resilience/annotations)."
         }
 
 

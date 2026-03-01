@@ -846,7 +846,7 @@ class TerraformParser:
         import re
         
         # Match ${azurerm_resource_group.rg.location} or ${azurerm_kubernetes_cluster.aks.kubelet_identity[0].object_id} format
-        pattern = r'\$\{(azurerm_[a-z_]+)\.([a-z_][a-z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_\[\].]*)\}'
+        pattern = r'\$\{(azurerm_[a-z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_-]*)\.([a-zA-Z_][a-zA-Z0-9_\[\].]*)\}'
         
         def replace_resource_ref(match):
             resource_type = match.group(1)
@@ -887,7 +887,7 @@ class TerraformParser:
                 return match.group(0)
         
         # Check if entire string is a single reference
-        single_ref = re.match(r'^\$\{(azurerm_[a-z_]+)\.([a-z_][a-z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_\[\].]*)\}$', s)
+        single_ref = re.match(r'^\$\{(azurerm_[a-z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_-]*)\.([a-zA-Z_][a-zA-Z0-9_\[\].]*)\}$', s)
         if single_ref:
             resource_type = single_ref.group(1)
             resource_name = single_ref.group(2)

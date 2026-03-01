@@ -1,0 +1,3 @@
+https://learn.microsoft.com/azure/cloud-adoption-framework/
+https://learn.microsoft.com/azure/cloud-adoption-framework/ready/landing-zone/
+https://github.com/Azure/terraform-azurerm-caf-enterprise-scale

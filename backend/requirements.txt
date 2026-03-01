@@ -1,7 +1,9 @@
 # Core application dependencies
 azure-identity
-azure-ai-projects
+azure-ai-projects>=2.0.0b4,<2.1.0
+azure-ai-agents>=1.1.0
 azure-search-documents
+openai
 azure-mgmt-network
 azure-mgmt-resourcegraph
 azure-mgmt-subscription  # required for subscription name lookup

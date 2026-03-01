@@ -7,6 +7,51 @@ export interface SubscriptionInfo {
   conversation_id?: string | null;
 }
 
+export interface DiscoverableSubscriptionInfo {
+  id: string;
+  name: string;
+  state: string;
+  mapped: boolean;
+}
+
+export interface SubscriptionMappingRequest {
+  resource_groups?: string[];
+  tags?: Record<string, string>;
+}
+
+export interface SubscriptionMappingStage {
+  name: "collector" | "resilience" | "llm" | string;
+  status: "pending" | "running" | "completed" | "failed" | string;
+  started_at?: string;
+  finished_at?: string;
+  returncode?: number;
+  stdout_tail?: string;
+  stderr_tail?: string;
+}
+
+export interface SubscriptionMappingStatus {
+  subscription_id: string;
+  status: "idle" | "running" | "completed" | "failed" | string;
+  current_stage?: string | null;
+  progress?: number;
+  message?: string;
+  filters?: {
+    resource_groups?: string[];
+    tags?: Record<string, string>;
+  };
+  stages?: SubscriptionMappingStage[];
+  started_at?: string;
+  finished_at?: string;
+}
+
+export interface TerraformUploadResponse {
+  subscription_id: string;
+  subscription_name: string;
+  resource_count: number;
+  edge_count: number;
+  message: string;
+}
+
 export interface RawGraphNode {
   id: string;
   type: string;
@@ -109,17 +154,49 @@ export interface WorkloadRecord extends WorkloadSummary {
   view_state: WorkloadViewState;
 }
 
+export interface ApiRequestError extends Error {
+  code?: string;
+  status?: number;
+}
+
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
-    let bodyText: string | undefined;
+    let message = `Request failed (${res.status})`;
+    let code: string | undefined;
+
     try {
-      bodyText = await res.text();
+      const json = await res.json();
+      const detail = json?.detail;
+
+      if (typeof detail === "string") {
+        message = detail;
+      } else if (detail && typeof detail === "object") {
+        const detailMessage = detail.message;
+        if (typeof detailMessage === "string" && detailMessage.trim()) {
+          message = detailMessage;
+        }
+        if (typeof detail.code === "string") {
+          code = detail.code;
+        }
+      } else if (typeof json?.message === "string" && json.message.trim()) {
+        message = json.message;
+      }
     } catch {
-      bodyText = undefined;
+      try {
+        const bodyText = await res.text();
+        if (bodyText?.trim()) {
+          message = `${message}: ${bodyText}`;
+        }
+      } catch {
+        // ignore
+      }
     }
-    const suffix = bodyText ? `: ${bodyText}` : "";
-    throw new Error(`Request failed (${res.status})${suffix}`);
+
+    const error = new Error(message) as ApiRequestError;
+    error.code = code;
+    error.status = res.status;
+    throw error;
   }
   return (await res.json()) as T;
 }
@@ -144,6 +221,61 @@ export function subscriptionPath(subscriptionId: SubscriptionId, suffix: string)
 
 export async function fetchSubscriptions(): Promise<SubscriptionInfo[]> {
   return await apiJson<SubscriptionInfo[]>("/api/subscriptions");
+}
+
+export async function discoverSubscriptions(): Promise<DiscoverableSubscriptionInfo[]> {
+  return await apiJson<DiscoverableSubscriptionInfo[]>("/api/subscriptions/discover");
+}
+
+export async function discoverSubscriptionResourceGroups(
+  subscriptionId: SubscriptionId
+): Promise<string[]> {
+  return await apiJson<string[]>(
+    subscriptionPath(subscriptionId, "/resource-groups/discover")
+  );
+}
+
+export async function startSubscriptionMapping(
+  subscriptionId: SubscriptionId,
+  payload: SubscriptionMappingRequest
+): Promise<SubscriptionMappingStatus> {
+  return await apiJson<SubscriptionMappingStatus>(
+    subscriptionPath(subscriptionId, "/map"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    }
+  );
+}
+
+export async function fetchSubscriptionMappingStatus(
+  subscriptionId: SubscriptionId
+): Promise<SubscriptionMappingStatus> {
+  return await apiJson<SubscriptionMappingStatus>(
+    subscriptionPath(subscriptionId, "/map/status")
+  );
+}
+
+export async function uploadTerraformScripts(
+  files: File[],
+  subscriptionName: string,
+  subscriptionId?: string
+): Promise<TerraformUploadResponse> {
+  const formData = new FormData();
+  files.forEach(file => {
+    formData.append("files", file);
+  });
+
+  formData.append("subscription_name", subscriptionName);
+  if (subscriptionId) {
+    formData.append("subscription_id", subscriptionId);
+  }
+
+  return await apiJson<TerraformUploadResponse>("/api/terraform/upload", {
+    method: "POST",
+    body: formData,
+  });
 }
 
 export async function fetchWorkloadGraph(subscriptionId: SubscriptionId): Promise<RawGraphSnapshot> {

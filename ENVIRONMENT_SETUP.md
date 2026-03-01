@@ -1,9 +1,103 @@
 # Environment Setup
 
-## Local Development with APIM + Azure AI Foundry Agent
+## Deployment Modes
 
-The backend LLM runtime is APIM + Azure AI Foundry only.
-Direct Azure OpenAI SDK configuration is no longer used by runtime modules.
+This project supports two execution modes:
+
+1. **Automated Azure VM deployment (recommended)**
+2. **Local development**
+
+Use the automated VM path for shared/test/prod-like environments.
+
+---
+
+## Automated Azure VM Deployment (Recommended)
+
+### Terraform approach (`backend/deploy/vm-terraform`)
+
+Terraform provisions and manages:
+
+- Linux VM + network (VNet/subnets/NSG/public IP)
+- Private endpoints + DNS for Foundry/Search
+- Azure AI Foundry account/project (`AIServices`)
+- Model deployments:
+  - reasoning: `gpt-4.1`
+  - embeddings: `text-embedding-3-small`
+- Azure AI Search
+- Required RBAC for VM managed identity (Foundry/OpenAI/Search)
+
+### Required tfvars
+
+Configure `backend/deploy/vm-terraform/terraform.tfvars`:
+
+- `location`
+- `resource_group_name`
+- `embedding_model_capacity` (current validated env max: `350`)
+
+### Full deployment command
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+Force agent recreation/tool reattachment when needed:
+
+```bash
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
+```
+
+### Provisioning flow (automated)
+
+1. Terraform apply (infra + Foundry + model deployments)
+2. Foundry project connection creation/validation (`azure-ai-search-default`)
+3. Search index ensure:
+   - `learn-aprl-index`
+   - `learn-terraform-index`
+4. Agent ensure + tool attachments:
+   - `chat-agent` → APRL index + MCP Learn
+   - `resilience-agent` → APRL index + MCP Learn
+   - `terraform-compiler-agent` → Terraform index
+   - `annotations-agent` → no tools
+5. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
+6. Index hydration (embeddings + upload) using only `backend/agent/rag` for Terraform corpus
+7. Frontend build + backend/nginx restart
+
+---
+
+## Incremental Update Options (Existing VM)
+
+### Option A: Full stack refresh
+
+Use when Terraform/Foundry/model/agent/index provisioning changed:
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+### Option B: App-only incremental deploy
+
+Use when only backend/frontend app code changed:
+
+```bash
+cd backend/deploy/scripts
+./deploy_app_only.sh ../vm-terraform/terraform.tfvars
+```
+
+What it does:
+
+- Computes backend/frontend hashes locally
+- Compares against VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`)
+- Syncs only changed app folders
+- Reinstalls backend deps/restarts service only when backend changed
+- Rebuilds frontend/reloads nginx only when frontend changed
+
+---
+
+## Local Development with Direct Azure AI Foundry SDK
+
+The backend LLM runtime uses direct Azure AI Foundry SDK calls.
 
 ### 1. Configure `backend/config/app_config.yaml`
 
@@ -12,13 +106,14 @@ llm:
   enabled: true
 
 ai_agent:
-  gateway_base_url: "https://<apim-host>/<agent-api-base>"
-  subscription_header_name: "api-key"
+  foundry_project_endpoint: "https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>"
+  openai_api_version: "2024-10-21"
   reasoning_model: "gpt-4.1"
   embedding_model: "text-embedding-3-small"
   chat_agent_reference: "chat-agent"
   resilience_agent_reference: "resilience-agent"
   annotations_agent_reference: "annotations-agent"
+  terraform_agent_reference: "terraform-compiler-agent"
   run_timeout_seconds: 120
   poll_interval_seconds: 1.5
 ```
@@ -29,97 +124,66 @@ ai_agent:
 AZURE_SEARCH_ENDPOINT=<your-search-endpoint>
 AZURE_SEARCH_ADMIN_KEY=<your-search-admin-key>
 
-AI_GATEWAY_SUBSCRIPTION_KEY=<required-apim-subscription-key>
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
 
-# Optional APIM + Agent overrides
-AI_GATEWAY_AGENT_BASE_URL=https://<apim-host>/<agent-api-base>
-AI_GATEWAY_SUBSCRIPTION_HEADER_NAME=api-key
-AI_GATEWAY_REASONING_MODEL=gpt-4.1
-AI_GATEWAY_EMBEDDING_MODEL=text-embedding-3-small
-AI_GATEWAY_CHAT_AGENT_REFERENCE=chat-agent
-AI_GATEWAY_RESILIENCE_AGENT_REFERENCE=resilience-agent
-AI_GATEWAY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+# Optional Foundry + Agent overrides
+AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
+AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
+AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
+AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
 ```
 
-`AI_GATEWAY_SUBSCRIPTION_KEY` is required to call APIM routes.
-If you do not have one, contact the repository maintainer.
+`AI_FOUNDRY_PROJECT_ENDPOINT` is required to call Foundry runtime routes.
+Ensure your principal has permissions on the Foundry project/resource.
 
 ## Workflow: Collector → Resilience Evaluation → LLM Annotation → API
 
 ### Step 1: Run the Azure Resource Graph collector
+
 ```bash
 cd backend
 python -m app.collector.run --subscription-id <your-subscription-id>
 ```
 
-This generates `backend/data/{subscription-id}/resources.json` and `backend/data/{subscription-id}/edges.json`.
+Generates:
+
+- `backend/data/{subscription-id}/resources.json`
+- `backend/data/{subscription-id}/edges.json`
 
 ### Step 2: Run resilience evaluations
+
 ```bash
 cd backend
 python -m app.resilience.run --subscription-id <your-subscription-id>
 ```
 
-This evaluates resources against APRL and saves results to `backend/data/{subscription-id}/resilience_evaluations.json`.
+Saves `backend/data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run the LLM annotator (optional)
+
 ```bash
 cd backend
 python -m app.llm.run --subscription-id <your-subscription-id>
 ```
 
-This generates annotations in `backend/data/{subscription-id}/llm_annotations.json`.
-Requires `llm.enabled: true` and valid APIM + Foundry agent configuration.
+Saves `backend/data/{subscription-id}/llm_annotations.json`.
 
-### Step 4: Start the API server
+### Step 4: Start API server
+
 ```bash
 cd backend
 uvicorn app.main:app --reload
 ```
 
-### Step 5: Access the API
+### Step 5: Access API
+
 ```bash
-# Get workload graph
 curl "http://localhost:8000/api/subscriptions/<your-subscription-id>/graph"
-
-# Get resilience evaluations
 curl "http://localhost:8000/api/resilience/evaluate/<your-subscription-id>"
-
-# Get unified recommendations
 curl "http://localhost:8000/api/<your-subscription-id>/recommendations"
-```
-
-## Application Configuration (`app_config.yaml`)
-
-### Logging
-```yaml
-logging:
-  level: "INFO"
-```
-
-### LLM
-```yaml
-llm:
-  enabled: true
-```
-
-### APIM + Foundry Agent
-```yaml
-ai_agent:
-  gateway_base_url: "..."
-  chat_agent_reference: "chat-agent"
-  resilience_agent_reference: "resilience-agent"
-  annotations_agent_reference: "annotations-agent"
-  subscription_header_name: "api-key"
-```
-
-### Resilience
-```yaml
-resilience:
-  category_weights: { ... }
-  impact_weights: { ... }
-  aprl_root: "aprl"
-  rules_dir: "./config/resiliency_rules"
 ```
 
 ## Notes
@@ -127,4 +191,4 @@ resilience:
 - `.env` is gitignored. Never commit credentials.
 - `.env.sample` is tracked. Use it as a template.
 - APRL deterministic evaluation remains the source of truth.
-- Agent memory is used as continuity/context; memory keys are scoped by subscription/workload/module.
+- Foundry portal "Data + indexes" may not display external Azure AI Search index attachments used by agent tools; use provisioning/diagnostic output for verification.

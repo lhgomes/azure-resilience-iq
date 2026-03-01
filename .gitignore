@@ -87,3 +87,16 @@ htmlcov/
 
 ai-context/
 .*:Zone.Identifier
+
+############################################
+# Terraform files
+############################################
+.terraform/
+.terraform.*
+!.terraform.sample
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.*
+!*.tfvars.example
+tfplan

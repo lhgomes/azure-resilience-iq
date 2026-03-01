@@ -10,6 +10,8 @@ def _read_dict(path) -> Dict[str, Any]:
     payload = read_json(path, default={})
     if isinstance(payload, dict):
         return payload
+    if isinstance(payload, list):
+        return {"resources": payload}
     return {}
 
 

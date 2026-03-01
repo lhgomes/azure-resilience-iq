@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AZURE_ICON_MANIFEST } from "../utils/azureIconManifest";
 import { renderStars } from "../domain/graphView";
+import { CloseIconButton } from "./common/buttons";
 
 export interface NodeData {
   id: string;
@@ -390,25 +391,13 @@ const NodeDrawer: React.FC<Props> = ({ node, aiLayerEnabled, userLayerEnabled, s
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        <button
+        <CloseIconButton
           onClick={onClose}
-          style={{
-            position: "absolute",
-            top: 10,
-            right: 10,
-            width: 30,
-            height: 30,
-            borderRadius: 6,
-            background: "#f3f4f6",
-            color: "#6b7280",
-            border: "1px solid #e5e7eb",
-            fontSize: 14,
-            cursor: "pointer"
-          }}
           title="Close"
-        >
-          X
-        </button>
+          absolute
+          top={10}
+          right={10}
+        />
 
         <div style={{ marginBottom: 16, paddingRight: 40, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
           <div style={{ minWidth: 0 }}>

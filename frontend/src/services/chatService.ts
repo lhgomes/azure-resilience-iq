@@ -55,6 +55,11 @@ export interface RemediationGuide {
   validation_checklist: string[];
 }
 
+export interface ClarifyingQuestion {
+  question: string;
+  possible_answers?: string[];
+}
+
 export interface ChatResponse {
   message: string;
   sources: ChatSource[];
@@ -66,7 +71,9 @@ export interface ChatResponse {
   remediation_guide?: RemediationGuide;
   terraform_code?: string;
   terraform_validation?: string;
-  clarifying_questions: string[];
+  clarifying_questions: ClarifyingQuestion[];
+  agent_flow?: 'chat' | 'terraform';
+  rag_trace?: any;
   raw_llm_output?: any;
 }
 

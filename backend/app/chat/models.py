@@ -62,7 +62,8 @@ class ChatResponse(BaseModel):
     remediation_guide: Optional[Dict[str, Any]] = None
     terraform_code: Optional[str] = None
     terraform_validation: Optional[str] = None
-    clarifying_questions: List[str] = Field(default_factory=list)
+    clarifying_questions: List[Dict[str, Any]] = Field(default_factory=list)
+    agent_flow: Optional[str] = None
     rag_trace: Optional[Dict[str, Any]] = None
     raw_llm_output: Optional[Dict[str, Any]] = None
 

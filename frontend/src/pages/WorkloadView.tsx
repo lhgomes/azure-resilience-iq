@@ -25,6 +25,11 @@ import {
   reverseEdgeDirection,
   fetchWorkloadGraph,
   fetchSubscriptions,
+  discoverSubscriptions,
+  discoverSubscriptionResourceGroups,
+  startSubscriptionMapping,
+  fetchSubscriptionMappingStatus,
+  uploadTerraformScripts,
   patchNode,
   rejectEdge,
   resetNode,
@@ -39,6 +44,8 @@ import {
   updateWorkload,
   deleteWorkload,
   type SubscriptionInfo,
+  type DiscoverableSubscriptionInfo,
+  type SubscriptionMappingStatus,
   type WorkloadRecord,
   type WorkloadSummary,
   type WorkloadViewState,
@@ -160,6 +167,11 @@ const WorkloadView: React.FC = () => {
   const [chatAvailabilityChecked, setChatAvailabilityChecked] = useState(false);
   const [pendingRefreshSubscriptions, setPendingRefreshSubscriptions] = useState<Set<string>>(new Set());
   const [chatRefreshToken, setChatRefreshToken] = useState(0);
+  const [availableSubscriptionsForMapping, setAvailableSubscriptionsForMapping] = useState<DiscoverableSubscriptionInfo[]>([]);
+  const [mappingInProgress, setMappingInProgress] = useState(false);
+  const [mappingStatus, setMappingStatus] = useState<SubscriptionMappingStatus | null>(null);
+  const [mappingError, setMappingError] = useState<string | null>(null);
+  const [mappingAuthRequired, setMappingAuthRequired] = useState(false);
 
   // Weights for resilience score calculation
   const [resilienceWeights, setResiliencyWeights] = useState<ResiliencyWeights>(DEFAULT_WEIGHTS);
@@ -595,41 +607,59 @@ const WorkloadView: React.FC = () => {
     }
   }, [selectedSubscriptionIds]);
 
+  const loadMappedSubscriptions = useCallback(async (restoreSelection: boolean = false) => {
+    const subs = await fetchSubscriptions();
+    setSubscriptions(subs);
+
+    if (!restoreSelection) {
+      return;
+    }
+
+    const storedMulti = localStorage.getItem("awg_subscription_ids");
+    let restored: string[] = [];
+
+    if (storedMulti) {
+      try {
+        const parsed = JSON.parse(storedMulti);
+        if (Array.isArray(parsed)) restored = parsed.map(String);
+      } catch {
+        restored = [];
+      }
+    }
+
+    if (restored.length === 0) {
+      const storedSingle = localStorage.getItem("awg_subscription_id");
+      if (storedSingle) restored = [storedSingle];
+    }
+
+    const valid = restored.filter(id => subs.some(s => s.id === id));
+    setSelectedSubscriptions(new Set(valid));
+
+    if (valid.length === 0) {
+      localStorage.removeItem("awg_subscription_id");
+      localStorage.removeItem("awg_subscription_ids");
+    }
+  }, []);
+
+  const loadAvailableSubscriptionsForMapping = useCallback(async () => {
+    const discovered = await discoverSubscriptions();
+    setAvailableSubscriptionsForMapping(discovered);
+    setMappingError(null);
+    setMappingAuthRequired(false);
+  }, []);
+
   // Fetch subscriptions on mount
   useEffect(() => {
-    fetchSubscriptions()
-      .then(subs => {
-        setSubscriptions(subs);
-
-        const storedMulti = localStorage.getItem("awg_subscription_ids");
-        let restored: string[] = [];
-
-        if (storedMulti) {
-          try {
-            const parsed = JSON.parse(storedMulti);
-            if (Array.isArray(parsed)) restored = parsed.map(String);
-          } catch {
-            restored = [];
-          }
-        }
-
-        if (restored.length === 0) {
-          const storedSingle = localStorage.getItem("awg_subscription_id");
-          if (storedSingle) restored = [storedSingle];
-        }
-
-        const valid = restored.filter(id => subs.some(s => s.id === id));
-        setSelectedSubscriptions(new Set(valid));
-
-        if (valid.length === 0) {
-          localStorage.removeItem("awg_subscription_id");
-          localStorage.removeItem("awg_subscription_ids");
-        }
-      })
-      .catch(err => {
-        console.error("Failed to fetch subscriptions:", err);
-      });
-  }, []);
+    loadMappedSubscriptions(true).catch(err => {
+      console.error("Failed to fetch subscriptions:", err);
+    });
+    loadAvailableSubscriptionsForMapping().catch(err => {
+      console.error("Failed to discover subscriptions:", err);
+      setAvailableSubscriptionsForMapping([]);
+      setMappingError(err?.message ?? "Unable to discover Azure subscriptions. Authenticate first and try again.");
+      setMappingAuthRequired(err?.code === "AZURE_AUTH_REQUIRED");
+    });
+  }, [loadMappedSubscriptions, loadAvailableSubscriptionsForMapping]);
 
   // Check chat availability on mount
   useEffect(() => {
@@ -1861,6 +1891,105 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const handleStartSubscriptionMapping = useCallback(async (
+    payload: {
+      subscriptionId: string;
+      resourceGroups: string[];
+      tags: Record<string, string>;
+    }
+  ) => {
+    if (!payload.subscriptionId || mappingInProgress) return;
+
+    try {
+      setMappingError(null);
+      setMappingStatus(null);
+      setMappingInProgress(true);
+
+      const started = await startSubscriptionMapping(payload.subscriptionId, {
+        resource_groups: payload.resourceGroups,
+        tags: payload.tags,
+      });
+      setMappingStatus(started);
+
+      let currentStatus = started.status;
+      const startTime = Date.now();
+      const timeoutMs = 30 * 60 * 1000;
+
+      while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const polled = await fetchSubscriptionMappingStatus(payload.subscriptionId);
+        setMappingStatus(polled);
+        currentStatus = polled.status;
+      }
+
+      if (currentStatus === "failed") {
+        throw new Error("Subscription mapping failed");
+      }
+
+      if (currentStatus === "completed") {
+        await loadMappedSubscriptions(false);
+        await loadAvailableSubscriptionsForMapping();
+        setSelectedSubscriptions(prev => {
+          const next = new Set(prev);
+          next.add(payload.subscriptionId);
+          return next;
+        });
+      }
+    } catch (err: any) {
+      setMappingError(err?.message ?? "Failed to map subscription");
+    } finally {
+      setMappingInProgress(false);
+    }
+  }, [mappingInProgress, loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
+
+  const handleUploadTerraformScripts = useCallback(async (
+    payload: { files: File[]; subscriptionName: string }
+  ) => {
+    try {
+      setMappingError(null);
+      setMappingAuthRequired(false);
+      setMappingStatus(null);
+      setMappingInProgress(true);
+
+      const uploaded = await uploadTerraformScripts(payload.files, payload.subscriptionName);
+
+      const subscriptionId = uploaded.subscription_id;
+      let polled = await fetchSubscriptionMappingStatus(subscriptionId);
+      setMappingStatus(polled);
+
+      let currentStatus = polled.status;
+      const startTime = Date.now();
+      const timeoutMs = 30 * 60 * 1000;
+
+      while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        polled = await fetchSubscriptionMappingStatus(subscriptionId);
+        setMappingStatus(polled);
+        currentStatus = polled.status;
+      }
+
+      if (currentStatus === "failed") {
+        throw new Error("Terraform mapping failed");
+      }
+
+      await loadMappedSubscriptions(false);
+      await loadAvailableSubscriptionsForMapping();
+
+      setSelectedSubscriptions(prev => {
+        const next = new Set(prev);
+        next.add(subscriptionId);
+        return next;
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      setMappingError(err?.message ?? "Failed to upload Terraform scripts");
+      throw err;
+    } finally {
+      setMappingInProgress(false);
+    }
+  }, [loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
+
   // Always respect the view level selection
   const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
 
@@ -2125,6 +2254,21 @@ const WorkloadView: React.FC = () => {
             onExpandedCategoriesChange={setExpandedCategories}
             showLegend={showLegend}
             onToggleLegend={() => setShowLegend(prev => !prev)}
+            availableSubscriptionsForMapping={availableSubscriptionsForMapping}
+            onRefreshAvailableSubscriptions={() => {
+              loadAvailableSubscriptionsForMapping().catch(err => {
+                setAvailableSubscriptionsForMapping([]);
+                setMappingError(err?.message ?? "Failed to discover subscriptions");
+                setMappingAuthRequired(err?.code === "AZURE_AUTH_REQUIRED");
+              });
+            }}
+            onDiscoverMappingResourceGroups={discoverSubscriptionResourceGroups}
+            onStartSubscriptionMapping={handleStartSubscriptionMapping}
+            onUploadTerraformScripts={handleUploadTerraformScripts}
+            mappingInProgress={mappingInProgress}
+            mappingStatus={mappingStatus}
+            mappingError={mappingError}
+            mappingAuthRequired={mappingAuthRequired}
           />
 
           {/* Group toolbar (shows only for multi-select or selected group) */}

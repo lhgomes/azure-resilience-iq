@@ -116,27 +116,6 @@
   font-size: 20px;
 }
 
-.chat-header-button {
-  background: none;
-  border: none;
-  font-size: 20px;
-  cursor: pointer;
-  padding: 4px;
-  color: #605E5C;
-  transition: all 0.2s;
-  border-radius: 4px;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.chat-header-button:hover {
-  background: #F3F2F1;
-  color: #242424;
-}
-
 .chat-baseline-badge {
   font-size: 11px;
   color: #605E5C;
@@ -409,6 +388,17 @@
   font-weight: 500;
 }
 
+.question-progress {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.question-progress.complete {
+  color: #166534;
+}
+
 .question {
   display: flex;
   align-items: flex-start;
@@ -416,6 +406,93 @@
   margin: 6px 0;
   font-size: 12px;
   color: #333;
+}
+
+.question-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.question-option-btn {
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #374151;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.question-option-btn:hover:not(:disabled) {
+  border-color: #5b5fc7;
+  color: #3730a3;
+  background: #eef2ff;
+}
+
+.question-option-btn.selected {
+  border-color: #5b5fc7;
+  color: #3730a3;
+  background: #e0e7ff;
+}
+
+.question-option-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.question-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.question-submit-btn {
+  border: 1px solid #5b5fc7;
+  background: #5b5fc7;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.question-submit-btn:hover:not(:disabled) {
+  background: #4f46e5;
+  border-color: #4f46e5;
+}
+
+.question-submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.question-proceed-btn {
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.question-proceed-btn:hover:not(:disabled) {
+  background: #e0e7ff;
+}
+
+.question-proceed-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .question-mark {
