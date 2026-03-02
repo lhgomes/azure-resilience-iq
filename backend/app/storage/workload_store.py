@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.config import get_workload_path, get_workloads_dir
 from app.intent.workload import Workload, WorkloadViewState
-from app.storage._json_repo import read_json, write_json
+from app.storage._json_repo import read_json, write_json, list_data_files, path_exists, delete_path
 
 
 def _now() -> str:
@@ -50,11 +50,9 @@ def _load_workload(path: Path) -> Optional[Workload]:
 
 def list_workloads() -> List[Workload]:
     base_dir = get_workloads_dir()
-    if not base_dir.exists():
-        return []
 
     workloads: List[Workload] = []
-    for path in sorted(base_dir.glob("*.json")):
+    for path in list_data_files(base_dir, "*.json"):
         workload = _load_workload(path)
         if workload:
             workloads.append(workload)
@@ -126,7 +124,7 @@ def update_workload(workload_id: str, *, name: Optional[str] = None, view_state:
 
 def delete_workload(workload_id: str) -> bool:
     path = get_workload_path(workload_id)
-    if not path.exists():
+    if not path_exists(path):
         return False
-    path.unlink(missing_ok=True)
+    delete_path(path)
     return True

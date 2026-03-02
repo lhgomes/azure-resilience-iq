@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
+from app.storage._json_repo import read_json, path_exists, list_data_files
 from difflib import SequenceMatcher
 from collections import defaultdict
 
@@ -230,9 +231,8 @@ class UnifiedRecommendationsService:
         wara_path = self._find_wara_file(subscription_id)
         if not wara_path:
             return []
-        
-        with open(wara_path, 'r') as f:
-            wara_data = json.load(f)
+
+        wara_data = read_json(wara_path, default={})
         
         # Convert WARA advisory to unified format
         recommendations = []
@@ -256,12 +256,11 @@ class UnifiedRecommendationsService:
     def _load_resilience_recommendations(self, subscription_id: str) -> List[Dict[str, Any]]:
         """Load recommendations from resilience module."""
         resilience_path = self.data_dir / subscription_id / "resilience_evaluations.json"
-        
-        if not resilience_path.exists():
+
+        if not path_exists(resilience_path):
             return []
-        
-        with open(resilience_path, 'r') as f:
-            resilience_data = json.load(f)
+
+        resilience_data = read_json(resilience_path, default={})
         
         # Convert resilience findings to unified format
         recommendations = []
@@ -390,8 +389,7 @@ class UnifiedRecommendationsService:
     
     def _find_wara_file(self, subscription_id: str) -> Optional[Path]:
         """Find the latest WARA file for a subscription."""
-        pattern = self.data_dir / subscription_id / "WARA-*.json"
-        files = list(self.data_dir.glob(f"{subscription_id}/WARA-*.json"))
+        files = list_data_files(self.data_dir / subscription_id, "WARA-*.json")
         
         if not files:
             return None

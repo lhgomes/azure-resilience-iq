@@ -50,6 +50,7 @@ from app.storage.workload_store import (
     update_workload as update_saved_workload,
     delete_workload as delete_saved_workload,
 )
+from app.storage._json_repo import read_json, write_json, path_exists
 from app.relationships.utils import norm_id
 
 # Load application configuration from app_config.yaml
@@ -616,20 +617,18 @@ def refresh_subscription(subscription_id: str):
     """
     try:
         # Prepare status file
-        sub_dir: Path = get_subscription_dir(subscription_id)
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        status_file = sub_dir / "llm_refresh_status.json"
+        status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
 
         def write_status(data: dict):
             try:
-                status_file.write_text(json.dumps(data, indent=2))
+                write_json(status_file, data)
             except Exception:
                 pass
 
         # If an existing job is running, return current status
-        if status_file.exists():
+        if path_exists(status_file):
             try:
-                current = json.loads(status_file.read_text())
+                current = read_json(status_file, default={})
                 if current.get("status") == "running":
                     return JSONResponse(
                         status_code=202,
@@ -689,9 +688,9 @@ def refresh_status(subscription_id: str):
     """Return the current LLM refresh status for polling."""
     try:
         status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
-        if not status_file.exists():
+        if not path_exists(status_file):
             return JSONResponse(status_code=200, content={"status": "idle"})
-        payload = json.loads(status_file.read_text())
+        payload = read_json(status_file, default={})
         if payload.get("status") == "running":
             return Response(status_code=304)
         return JSONResponse(status_code=200, content=payload)

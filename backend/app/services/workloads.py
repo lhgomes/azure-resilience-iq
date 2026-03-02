@@ -12,15 +12,17 @@ from app.storage.edge_overrides_store import load_overrides
 from app.storage.override_store import load_overrides as load_resilience_overrides
 from app.storage.node_overrides_store import load_node_overrides
 from app.storage.resilience_evaluations_store import load_resilience_evaluations
+from app.storage._json_repo import read_json, path_exists
 
 # Load icon mappings at module level from backend data directory
 from app.config import DATA_DIR
 
 ICON_MAPPINGS_PATH = DATA_DIR / "iconMappings.json"
 ICON_MAPPINGS = {}
-if ICON_MAPPINGS_PATH.exists():
-    with open(ICON_MAPPINGS_PATH, 'r') as f:
-        ICON_MAPPINGS = json.load(f)
+if path_exists(ICON_MAPPINGS_PATH):
+    payload = read_json(ICON_MAPPINGS_PATH, default={})
+    if isinstance(payload, dict):
+        ICON_MAPPINGS = payload
         print(f"✓ Loaded {len(ICON_MAPPINGS)} icon mappings from {ICON_MAPPINGS_PATH}")
 else:
     print(f"✗ Icon mappings file not found at {ICON_MAPPINGS_PATH}")
@@ -42,13 +44,13 @@ def get_icon_for_resource_type(resource_type: str) -> str | None:
 
 def _load_collector_resources(subscription_id: str) -> list[dict]:
     resources_path = get_resources_path(subscription_id)
-    if not resources_path.exists():
+    if not path_exists(resources_path):
         raise HTTPException(
             status_code=404,
             detail="No collector output found. Run the ARG collector first.",
         )
 
-    raw = json.loads(resources_path.read_text())
+    raw = read_json(resources_path, default=[])
     
     # Handle new format with subscription metadata
     if isinstance(raw, dict) and "resources" in raw:

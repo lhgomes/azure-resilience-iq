@@ -24,6 +24,7 @@ from app.storage.conversation_store import (
     set_workload_context_seeded,
 )
 from app.storage.workload_store import get_workload as get_saved_workload
+from app.storage._json_repo import read_json, path_exists
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1062,8 +1063,8 @@ Allowed node IDs (authoritative for references):
         resource_index: Dict[str, Dict[str, Any]] = {}
         try:
             resources_path = get_resources_path(subscription_id)
-            if resources_path.exists():
-                raw = json.loads(resources_path.read_text())
+            if path_exists(resources_path):
+                raw = read_json(resources_path, default=[])
                 resources = raw.get("resources", []) if isinstance(raw, dict) else raw
                 if isinstance(resources, list):
                     for resource in resources:
@@ -1087,8 +1088,8 @@ Allowed node IDs (authoritative for references):
         override_index: Dict[str, Dict[str, Any]] = {}
         try:
             node_overrides_path = get_node_overrides_path(subscription_id)
-            if node_overrides_path.exists():
-                raw = json.loads(node_overrides_path.read_text())
+            if path_exists(node_overrides_path):
+                raw = read_json(node_overrides_path, default={})
                 if isinstance(raw, dict):
                     for resource_id, override in raw.items():
                         if isinstance(resource_id, str) and resource_id.strip() and isinstance(override, dict):

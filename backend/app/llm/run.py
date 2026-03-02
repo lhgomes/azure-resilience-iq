@@ -27,6 +27,7 @@ from app.graph.from_azure import build_graph_from_resources
 from app.config import get_resources_path
 from app.llm.annotator import annotate_graph
 from app.storage.llm_annotations_store import save_llm_annotations
+from app.storage._json_repo import read_json, path_exists
 from app.settings import load_settings, get_settings
 from app.logger import setup_logging, get_logger
 
@@ -58,7 +59,7 @@ def main():
 
     # Check if resources exist
     resources_path = get_resources_path(args.subscription_id)
-    if not resources_path.exists():
+    if not path_exists(resources_path):
         LOGGER.error(
             "Collector resources not found at %s. "
             "Run 'python -m app.collector.run --subscription-id %s' first.",
@@ -69,7 +70,7 @@ def main():
     try:
         # Load resources and build graph
         LOGGER.info("Loading resources from %s", resources_path)
-        resources_data = json.loads(resources_path.read_text())
+        resources_data = read_json(resources_path, default=[])
         
         # Handle new format with subscription metadata
         if isinstance(resources_data, dict) and "resources" in resources_data:

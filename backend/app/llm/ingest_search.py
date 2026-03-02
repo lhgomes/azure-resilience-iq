@@ -95,6 +95,10 @@ def _chunk_text(text: str, chunk_chars: int, overlap_chars: int) -> List[str]:
 
 def _service_from_path(path: Path) -> str:
     parts = [part.lower() for part in path.parts]
+    if "azure-resources" in parts:
+        idx = parts.index("azure-resources")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
     if "aprl" in parts:
         idx = parts.index("aprl")
         if idx + 1 < len(parts):
@@ -102,9 +106,25 @@ def _service_from_path(path: Path) -> str:
     return "general"
 
 
+def _aprl_id_from_path(path: Path) -> str:
+    parts = list(path.parts)
+    parts_lower = [part.lower() for part in parts]
+
+    if "azure-resources" in parts_lower:
+        idx = parts_lower.index("azure-resources")
+        return "/".join(parts[idx:])
+
+    if "aprl" in parts_lower:
+        idx = parts_lower.index("aprl")
+        return "/".join(parts[idx:])
+
+    return path.stem
+
+
 def _collect_local_documents(paths: List[str], include_glob: str) -> List[SourceDocument]:
     documents: List[SourceDocument] = []
     now = datetime.now(timezone.utc).isoformat()
+    allowed_suffixes = {".md", ".txt", ".rst", ".yaml", ".yml", ".kql"}
 
     for path_text in paths:
         root = Path(path_text)
@@ -116,23 +136,25 @@ def _collect_local_documents(paths: List[str], include_glob: str) -> List[Source
         for file_path in files:
             if not file_path.is_file():
                 continue
-            if file_path.suffix.lower() not in {".md", ".txt", ".rst"}:
+            suffix = file_path.suffix.lower()
+            if suffix not in allowed_suffixes:
                 continue
 
             try:
                 raw = file_path.read_text(encoding="utf-8", errors="ignore")
-                content = _strip_markdown(raw)
+                content = _strip_markdown(raw) if suffix in {".md", ".txt", ".rst"} else _normalize_whitespace(raw)
                 if not content:
                     continue
+                is_aprl_path = "aprl" in str(file_path).lower()
                 documents.append(
                     SourceDocument(
                         title=file_path.stem,
                         content=content,
                         url=str(file_path),
-                        source="APRL" if "aprl" in str(file_path).lower() else "LocalDocs",
-                        module="aprl" if "aprl" in str(file_path).lower() else "localdocs",
+                        source="APRL" if is_aprl_path else "LocalDocs",
+                        module="aprl" if is_aprl_path else "localdocs",
                         service=_service_from_path(file_path),
-                        aprl_id=file_path.stem if "aprl" in str(file_path).lower() else "",
+                        aprl_id=_aprl_id_from_path(file_path) if is_aprl_path else "",
                         last_updated=now,
                     )
                 )

@@ -307,7 +307,36 @@ class AppSettings:
     def get_data_dir(self) -> str:
         """Get base data directory for filesystem artifacts."""
         data_cfg = self.config.get("data", {})
-        return data_cfg.get("dir", "./data")
+        return os.getenv("DATA_DIR") or data_cfg.get("dir", "./data")
+
+    def get_data_storage_config(self) -> Dict[str, Any]:
+        """Get data repository backend configuration.
+
+        Environment variables take precedence over YAML values.
+        """
+        data_cfg = self.config.get("data", {})
+        return {
+            "backend": (
+                os.getenv("DATA_STORAGE_BACKEND")
+                or data_cfg.get("storage_backend")
+                or "local"
+            ).strip().lower(),
+            "storage_account": (
+                os.getenv("DATA_STORAGE_ACCOUNT")
+                or data_cfg.get("storage_account")
+                or ""
+            ).strip(),
+            "container": (
+                os.getenv("DATA_STORAGE_CONTAINER")
+                or data_cfg.get("storage_container")
+                or ""
+            ).strip(),
+            "prefix": (
+                os.getenv("DATA_STORAGE_PREFIX")
+                or data_cfg.get("storage_prefix")
+                or ""
+            ).strip().strip("/"),
+        }
 
     def get_monitored_resource_types_path(self) -> str:
         """Path to monitored resource types allowlist."""
