@@ -18,6 +18,16 @@ These rules define how Copilot should behave when generating, modifying, or revi
 
 ---
 
+## Command Output Formatting (Team Convention)
+
+- When providing shell/terminal commands in chat responses, **always use fenced code blocks** with language tags (e.g., `bash`, `sh`, `powershell`).
+- **Do not** present executable commands as inline command links/pills, bullet-level command chips, or mixed prose snippets.
+- Multi-step terminal workflows must be shown in a **single copy-paste-friendly block** when possible.
+- Keep commands explicit and complete (including `cd` when directory context matters).
+- This convention is mandatory for all future Copilot sessions in this repository.
+
+---
+
 ## Design & Decision Making
 
 - **Always evaluate whether a simpler, clearer, or more efficient approach exists**, even if it contradicts the original request.
