@@ -145,6 +145,24 @@ What it does:
 
 ---
 
+## Resource Clean-up
+
+To fully remove the cloud deployment created by this stack:
+
+```bash
+cd backend/deploy/vm-terraform
+terraform destroy -var-file=terraform.tfvars -auto-approve
+```
+
+### Notes
+
+- Run with the same Azure CLI identity/subscription context used for deployment (`az login` + correct subscription).
+- Use the same `terraform.tfvars` file that was used during `apply`.
+- If destroy fails because the resource group still contains resources, remove the reported orphan resource(s) and re-run destroy.
+- This command removes all Terraform-managed resources in this stack (VM, networking, Foundry, Search, Storage, private endpoints, RBAC assignments).
+
+---
+
 ## Local Development with Direct Azure AI Foundry SDK
 
 The backend LLM runtime uses direct Azure AI Foundry SDK calls.

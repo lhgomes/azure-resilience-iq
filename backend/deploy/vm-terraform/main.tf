@@ -323,6 +323,12 @@ resource "azurerm_private_endpoint" "foundry" {
   subnet_id           = azurerm_subnet.private_endpoints.id
   tags                = local.common_tags
 
+  depends_on = [
+    azurerm_cognitive_account_project.this,
+    azurerm_cognitive_deployment.reasoning,
+    azurerm_cognitive_deployment.embedding,
+  ]
+
   private_service_connection {
     name                           = "psc-foundry-${local.prefix}"
     private_connection_resource_id = azurerm_cognitive_account.this.id
