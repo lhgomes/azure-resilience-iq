@@ -58,6 +58,46 @@ if [[ ! -f "$TFVARS_PATH" ]]; then
   exit 1
 fi
 
+ensure_vm_running() {
+  local resource_group="$1"
+  local vm_name="$2"
+  local max_attempts=60
+  local sleep_seconds=5
+
+  local current_state
+  current_state="$(az vm get-instance-view \
+    --resource-group "$resource_group" \
+    --name "$vm_name" \
+    --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" \
+    -o tsv 2>/dev/null || true)"
+
+  if [[ "$current_state" != "VM running" ]]; then
+    echo "==> VM is not running (state: ${current_state:-unknown}); starting it"
+    az vm start --resource-group "$resource_group" --name "$vm_name" --only-show-errors >/dev/null
+  else
+    echo "==> VM is already running"
+  fi
+
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
+    current_state="$(az vm get-instance-view \
+      --resource-group "$resource_group" \
+      --name "$vm_name" \
+      --query "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]" \
+      -o tsv 2>/dev/null || true)"
+
+    if [[ "$current_state" == "VM running" ]]; then
+      echo "✓ VM is running"
+      return 0
+    fi
+
+    echo "Waiting for VM to reach running state (attempt ${attempt}/${max_attempts}, current: ${current_state:-unknown})"
+    sleep "$sleep_seconds"
+  done
+
+  echo "VM did not reach running state in time"
+  return 1
+}
+
 compute_file_hash() {
   local file_path="$1"
   if [[ -f "$file_path" ]]; then
@@ -118,6 +158,9 @@ FOUNDRY_ACCOUNT_NAME="$(echo "$TF_OUT" | jq -r '.foundry_hub_name.value')"
 FOUNDRY_PROJECT_NAME="$(echo "$TF_OUT" | jq -r '.foundry_project_name.value')"
 TF_REASONING_MODEL="$(echo "$TF_OUT" | jq -r '.reasoning_model_deployment_name.value // empty')"
 TF_EMBEDDING_MODEL="$(echo "$TF_OUT" | jq -r '.embedding_model_deployment_name.value // empty')"
+STORAGE_ACCOUNT_NAME="$(echo "$TF_OUT" | jq -r '.storage_account_name.value // empty')"
+DEPLOYMENT_STATE_CONTAINER_NAME="$(echo "$TF_OUT" | jq -r '.deployment_state_container_name.value // empty')"
+DEPLOYMENT_STATE_PREFIX="$(echo "$TF_OUT" | jq -r '.deployment_state_prefix.value // empty')"
 
 ENV_FILE="${REPO_DIR}/backend/.env"
 if [[ -f "$ENV_FILE" ]]; then
@@ -144,6 +187,7 @@ BACKEND_REQUIREMENTS_HASH="$(compute_file_hash "${REPO_DIR}/backend/requirements
 FRONTEND_DEPS_HASH="$(compute_paths_hash "${REPO_DIR}/frontend/package.json" "${REPO_DIR}/frontend/package-lock.json")"
 RAG_INPUT_HASH="$(compute_paths_hash \
   "${REPO_DIR}/backend/aprl/docs" \
+  "${REPO_DIR}/backend/aprl/azure-resources" \
   "${REPO_DIR}/backend/agent/rag/terraform/terraform_urls.txt" \
   "${REPO_DIR}/backend/app/llm/ingest_search.py" \
   "${REPO_DIR}/backend/app/tools/bootstrap_rag_sources.py")"
@@ -151,6 +195,9 @@ RAG_INPUT_HASH="$(compute_paths_hash \
 echo "Using Foundry project endpoint: ${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}"
 echo "Using reasoning deployment: ${REASONING_MODEL}"
 echo "Using embedding deployment: ${EMBEDDING_MODEL}"
+if [[ -n "${STORAGE_ACCOUNT_NAME}" && -n "${DEPLOYMENT_STATE_CONTAINER_NAME}" ]]; then
+  echo "Using deployment state blob container: ${STORAGE_ACCOUNT_NAME}/${DEPLOYMENT_STATE_CONTAINER_NAME}"
+fi
 
 echo "==> Ensuring Foundry project Azure AI Search connection"
 SEARCH_CONNECTION_FILE="$(mktemp)"
@@ -188,6 +235,8 @@ echo "==> Packaging application"
 TMP_DIR="$(mktemp -d)"
 ARCHIVE_PATH="${TMP_DIR}/app.tar.gz"
 SSH_CONFIG_FILE="${TMP_DIR}/ssh_config"
+KNOWN_HOSTS_FILE="${TMP_DIR}/known_hosts"
+touch "${KNOWN_HOSTS_FILE}"
 tar \
   --exclude='.git' \
   --exclude='.github' \
@@ -195,7 +244,6 @@ tar \
   --exclude='.gitmodules' \
   --exclude='.vscode' \
   --exclude='.venv' \
-  --exclude='*.md' \
   --exclude='ai-context' \
   --exclude='frontend/node_modules' \
   --exclude='backend/.env' \
@@ -210,6 +258,7 @@ echo "==> Ensuring az ssh extension"
 az extension add --name ssh --upgrade --only-show-errors >/dev/null
 
 echo "==> Generating Entra SSH config"
+ensure_vm_running "$RESOURCE_GROUP" "$VM_NAME"
 az ssh config \
   --resource-group "$RESOURCE_GROUP" \
   --name "$VM_NAME" \
@@ -223,10 +272,18 @@ if [[ -z "$SSH_TARGET" ]]; then
   exit 1
 fi
 
-scp -F "$SSH_CONFIG_FILE" -o StrictHostKeyChecking=accept-new "$ARCHIVE_PATH" "${SSH_TARGET}:/tmp/azure-resilience-iq.tar.gz"
+scp \
+  -F "$SSH_CONFIG_FILE" \
+  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+  -o StrictHostKeyChecking=accept-new \
+  "$ARCHIVE_PATH" "${SSH_TARGET}:/tmp/azure-resilience-iq.tar.gz"
 
-ssh -F "$SSH_CONFIG_FILE" -o StrictHostKeyChecking=accept-new "$SSH_TARGET" \
-  "VM_USER='${VM_USER}' FOUNDRY_PROJECT_ENDPOINT='${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}' REASONING_MODEL='${REASONING_MODEL}' SEARCH_ENDPOINT='${SEARCH_ENDPOINT}' RECREATE_ARG='${RECREATE_ARG}' OPENAI_API_VERSION='${OPENAI_API_VERSION}' EMBEDDING_MODEL='${EMBEDDING_MODEL}' BACKEND_REQUIREMENTS_HASH='${BACKEND_REQUIREMENTS_HASH}' FRONTEND_DEPS_HASH='${FRONTEND_DEPS_HASH}' RAG_INPUT_HASH='${RAG_INPUT_HASH}' bash -s" <<'EOF'
+ssh \
+  -F "$SSH_CONFIG_FILE" \
+  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+  -o StrictHostKeyChecking=accept-new \
+  "$SSH_TARGET" \
+  "VM_USER='${VM_USER}' FOUNDRY_PROJECT_ENDPOINT='${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}' REASONING_MODEL='${REASONING_MODEL}' SEARCH_ENDPOINT='${SEARCH_ENDPOINT}' RECREATE_ARG='${RECREATE_ARG}' OPENAI_API_VERSION='${OPENAI_API_VERSION}' EMBEDDING_MODEL='${EMBEDDING_MODEL}' BACKEND_REQUIREMENTS_HASH='${BACKEND_REQUIREMENTS_HASH}' FRONTEND_DEPS_HASH='${FRONTEND_DEPS_HASH}' RAG_INPUT_HASH='${RAG_INPUT_HASH}' STORAGE_ACCOUNT_NAME='${STORAGE_ACCOUNT_NAME}' DEPLOYMENT_STATE_CONTAINER_NAME='${DEPLOYMENT_STATE_CONTAINER_NAME}' DEPLOYMENT_STATE_PREFIX='${DEPLOYMENT_STATE_PREFIX}' bash -s" <<'EOF'
 set -euo pipefail
 
 sudo apt-get update
@@ -305,11 +362,79 @@ sudo -u ${VM_USER} \
   BACKEND_REQUIREMENTS_HASH="${BACKEND_REQUIREMENTS_HASH}" \
   FRONTEND_DEPS_HASH="${FRONTEND_DEPS_HASH}" \
   RAG_INPUT_HASH="${RAG_INPUT_HASH}" \
+  STORAGE_ACCOUNT_NAME="${STORAGE_ACCOUNT_NAME}" \
+  DEPLOYMENT_STATE_CONTAINER_NAME="${DEPLOYMENT_STATE_CONTAINER_NAME}" \
+  DEPLOYMENT_STATE_PREFIX="${DEPLOYMENT_STATE_PREFIX}" \
   RECREATE_ARG="${RECREATE_ARG}" \
   bash <<'EOS'
 set -euo pipefail
 
 DEPLOY_STATE_FILE="/opt/azure-resilience-iq/.deploy-state.env"
+DATA_DIR="/opt/azure-resilience-iq/backend/data"
+BLOB_STATE_TMP="/tmp/azure-resilience-iq-deploy-state.env"
+BOOTSTRAP_VENV_DIR="/tmp/azure-resilience-iq-bootstrap-venv"
+export DEPLOY_STATE_FILE DATA_DIR BLOB_STATE_TMP
+STORAGE_ENABLED=false
+if [[ -n "${STORAGE_ACCOUNT_NAME:-}" && -n "${DEPLOYMENT_STATE_CONTAINER_NAME:-}" ]]; then
+  STORAGE_ENABLED=true
+fi
+
+cd /opt/azure-resilience-iq/backend
+
+if [[ ! -f deploy/scripts/provision_foundry_assets.py ]]; then
+  echo "Missing provisioning script at /opt/azure-resilience-iq/backend/deploy/scripts/provision_foundry_assets.py"
+  find /opt/azure-resilience-iq -maxdepth 5 -name provision_foundry_assets.py 2>/dev/null || true
+  exit 1
+fi
+
+if [[ "${STORAGE_ENABLED}" == "true" ]]; then
+  echo "==> Restoring deployment state from Blob (if available)"
+  rm -rf "${BOOTSTRAP_VENV_DIR}"
+  python3 -m venv "${BOOTSTRAP_VENV_DIR}"
+  source "${BOOTSTRAP_VENV_DIR}/bin/activate"
+  pip install --quiet azure-identity azure-storage-blob
+
+  if ! python - <<'PY'; then
+import os
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+from azure.core.exceptions import ResourceNotFoundError
+
+storage_account = os.environ.get("STORAGE_ACCOUNT_NAME", "").strip()
+container_name = os.environ.get("DEPLOYMENT_STATE_CONTAINER_NAME", "").strip()
+prefix = os.environ.get("DEPLOYMENT_STATE_PREFIX", "").strip().strip("/")
+state_target = os.environ.get("BLOB_STATE_TMP", "").strip()
+
+if not storage_account or not container_name:
+    raise SystemExit(0)
+
+state_blob = f"{prefix}/deploy-state.env" if prefix else "deploy-state.env"
+
+service = BlobServiceClient(
+    account_url=f"https://{storage_account}.blob.core.windows.net",
+    credential=DefaultAzureCredential(),
+)
+container = service.get_container_client(container_name)
+
+try:
+  payload = container.download_blob(state_blob).readall()
+except ResourceNotFoundError:
+  raise SystemExit(0)
+
+os.makedirs(os.path.dirname(state_target), exist_ok=True)
+with open(state_target, "wb") as handle:
+  handle.write(payload)
+print(f"✓ Restored deploy-state from blob: {state_blob}")
+PY
+    echo "⚠ Blob restore failed; continuing with local state only"
+  fi
+  deactivate || true
+fi
+
+if [[ -f "${BLOB_STATE_TMP}" ]]; then
+  cp "${BLOB_STATE_TMP}" "${DEPLOY_STATE_FILE}"
+fi
+
 if [[ -f "${DEPLOY_STATE_FILE}" ]]; then
   source "${DEPLOY_STATE_FILE}"
 fi
@@ -320,14 +445,6 @@ PREV_RAG_INPUT_HASH="${RAG_INPUT_HASH_STATE:-}"
 PREV_SEARCH_ENDPOINT="${SEARCH_ENDPOINT_STATE:-}"
 PREV_EMBEDDING_MODEL="${EMBEDDING_MODEL_STATE:-}"
 PREV_FOUNDRY_PROJECT_ENDPOINT="${FOUNDRY_PROJECT_ENDPOINT_STATE:-}"
-
-cd /opt/azure-resilience-iq/backend
-
-if [[ ! -f deploy/scripts/provision_foundry_assets.py ]]; then
-  echo "Missing provisioning script at /opt/azure-resilience-iq/backend/deploy/scripts/provision_foundry_assets.py"
-  find /opt/azure-resilience-iq -maxdepth 5 -name provision_foundry_assets.py 2>/dev/null || true
-  exit 1
-fi
 
 SKIP_BACKEND_DEPS=false
 if [[ -x .venv/bin/python && "${BACKEND_REQUIREMENTS_HASH}" == "${PREV_BACKEND_REQUIREMENTS_HASH}" ]]; then
@@ -539,8 +656,9 @@ else
 
   INGEST_ARGS=(
     --targets aprl,terraform
-    --include-glob '**/*.md'
+    --include-glob '**/*'
     --aprl-local-path /opt/azure-resilience-iq/backend/aprl/docs
+    --aprl-local-path /opt/azure-resilience-iq/backend/aprl/azure-resources
     --terraform-local-path "${TERRAFORM_LOCAL_PATH}"
     --aprl-index-name learn-aprl-index
     --terraform-index-name learn-terraform-index
@@ -581,7 +699,56 @@ EMBEDDING_MODEL_STATE=${EMBEDDING_MODEL}
 FOUNDRY_PROJECT_ENDPOINT_STATE=${FOUNDRY_PROJECT_ENDPOINT}
 UPDATED_AT_STATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOT
+
+if [[ "${STORAGE_ENABLED}" == "true" ]]; then
+  echo "==> Syncing deployment state to Blob"
+
+  rm -rf "${BOOTSTRAP_VENV_DIR}"
+  python3 -m venv "${BOOTSTRAP_VENV_DIR}"
+  source "${BOOTSTRAP_VENV_DIR}/bin/activate"
+  pip install --quiet azure-identity azure-storage-blob
+
+  if ! python - <<'PY'; then
+import os
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+from azure.core.exceptions import ResourceExistsError
+
+storage_account = os.environ.get("STORAGE_ACCOUNT_NAME", "").strip()
+container_name = os.environ.get("DEPLOYMENT_STATE_CONTAINER_NAME", "").strip()
+prefix = os.environ.get("DEPLOYMENT_STATE_PREFIX", "").strip().strip("/")
+state_source = os.environ.get("DEPLOY_STATE_FILE", "").strip()
+
+if not storage_account or not container_name:
+  raise SystemExit(0)
+
+state_blob = f"{prefix}/deploy-state.env" if prefix else "deploy-state.env"
+
+service = BlobServiceClient(
+  account_url=f"https://{storage_account}.blob.core.windows.net",
+  credential=DefaultAzureCredential(),
+)
+container = service.get_container_client(container_name)
+try:
+  container.create_container()
+except ResourceExistsError:
+  pass
+
+with open(state_source, "rb") as state_handle:
+  container.upload_blob(name=state_blob, data=state_handle, overwrite=True)
+
+print(f"✓ Uploaded deploy-state to blob prefix '{prefix}'")
+PY
+  echo "⚠ Blob sync failed; deployment completed with local state only"
+  fi
+  deactivate || true
+fi
 EOS
+
+DATA_STORAGE_BACKEND_VALUE="local"
+if [[ -n "${STORAGE_ACCOUNT_NAME:-}" && -n "${DEPLOYMENT_STATE_CONTAINER_NAME:-}" ]]; then
+  DATA_STORAGE_BACKEND_VALUE="blob"
+fi
 
 sudo tee /etc/azure-resilience-iq.env > /dev/null <<EOT
 AI_FOUNDRY_PROJECT_ENDPOINT=${FOUNDRY_PROJECT_ENDPOINT}
@@ -595,6 +762,10 @@ AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
 AZURE_SEARCH_ENDPOINT=${SEARCH_ENDPOINT}
 AZURE_SEARCH_INDEX_NAME_APRL=learn-aprl-index
 AZURE_SEARCH_INDEX_NAME_TERRAFORM=learn-terraform-index
+DATA_STORAGE_BACKEND=${DATA_STORAGE_BACKEND_VALUE}
+DATA_STORAGE_ACCOUNT=${STORAGE_ACCOUNT_NAME}
+DATA_STORAGE_CONTAINER=${DEPLOYMENT_STATE_CONTAINER_NAME}
+DATA_STORAGE_PREFIX=${DEPLOYMENT_STATE_PREFIX}
 EOT
 
 sudo tee /etc/systemd/system/azure-resilience-iq-backend.service > /dev/null <<EOT
@@ -687,4 +858,3 @@ echo "VM: ${VM_NAME} (${VM_IP})"
 echo "Frontend: http://${VM_IP}"
 echo "Backend health: http://${VM_IP}/health"
 echo "Foundry endpoint (terraform): ${FOUNDRY_PROJECT_ENDPOINT}"
-echo "Foundry endpoint (effective): ${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}"

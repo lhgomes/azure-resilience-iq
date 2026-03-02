@@ -52,3 +52,18 @@ output "embedding_model_deployment_name" {
   value       = azurerm_cognitive_deployment.embedding.name
   description = "Embedding model/deployment name used for hydration and runtime."
 }
+
+output "storage_account_name" {
+  value       = azurerm_storage_account.this.name
+  description = "Storage account used for deployment state persistence."
+}
+
+output "deployment_state_container_name" {
+  value       = var.deployment_state_container_name
+  description = "Blob container used for deployment state and backend data archives."
+}
+
+output "deployment_state_prefix" {
+  value       = local.deployment_state_prefix
+  description = "Blob prefix for deployment state and backend data archives."
+}

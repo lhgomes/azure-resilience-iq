@@ -13,6 +13,7 @@ from typing import Dict, Optional
 from datetime import datetime, timezone
 
 LOGGER = logging.getLogger(__name__)
+from app.storage._json_repo import read_json, write_json, path_exists
 
 # Namespace UUID for azure-resilience-iq resilience checks
 # Using DNS namespace as base for deterministic UUID generation
@@ -42,7 +43,6 @@ def get_overrides_file_path(subscription_id: str) -> Path:
     """Get the path to the overrides JSON file for a subscription."""
     from app.config import get_subscription_dir
     sub_dir = get_subscription_dir(subscription_id)
-    sub_dir.mkdir(parents=True, exist_ok=True)
     return sub_dir / "resilience_overrides.json"
 
 
@@ -67,18 +67,15 @@ def load_overrides(subscription_id: str) -> Dict[str, Dict]:
     """
     overrides_file = get_overrides_file_path(subscription_id)
     
-    if not overrides_file.exists():
+    if not path_exists(overrides_file):
         LOGGER.debug(f"No overrides file found at {overrides_file}")
         return {}
-    
-    try:
-        with open(overrides_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            LOGGER.info(f"Loaded {len(data)} overrides for subscription {subscription_id}")
-            return data
-    except Exception as e:
-        LOGGER.error(f"Failed to load overrides from {overrides_file}: {e}")
+
+    data = read_json(overrides_file, default={})
+    if not isinstance(data, dict):
         return {}
+    LOGGER.info(f"Loaded {len(data)} overrides for subscription {subscription_id}")
+    return data
 
 
 def save_override(
@@ -116,16 +113,10 @@ def save_override(
     }
     
     overrides[check_uuid] = override_data
-    
-    # Save to file
+
     overrides_file = get_overrides_file_path(subscription_id)
-    try:
-        with open(overrides_file, 'w', encoding='utf-8') as f:
-            json.dump(overrides, f, indent=2, ensure_ascii=False)
-        LOGGER.info(f"Saved override for check {check_uuid} in subscription {subscription_id}")
-    except Exception as e:
-        LOGGER.error(f"Failed to save override to {overrides_file}: {e}")
-        raise
+    write_json(overrides_file, overrides)
+    LOGGER.info(f"Saved override for check {check_uuid} in subscription {subscription_id}")
     
     return {
         "check_uuid": check_uuid,
@@ -152,16 +143,10 @@ def delete_override(subscription_id: str, check_uuid: str) -> bool:
     
     del overrides[check_uuid]
     
-    # Save to file
     overrides_file = get_overrides_file_path(subscription_id)
-    try:
-        with open(overrides_file, 'w', encoding='utf-8') as f:
-            json.dump(overrides, f, indent=2, ensure_ascii=False)
-        LOGGER.info(f"Deleted override {check_uuid} from subscription {subscription_id}")
-        return True
-    except Exception as e:
-        LOGGER.error(f"Failed to delete override from {overrides_file}: {e}")
-        raise
+    write_json(overrides_file, overrides)
+    LOGGER.info(f"Deleted override {check_uuid} from subscription {subscription_id}")
+    return True
 
 
 def get_override_for_check(

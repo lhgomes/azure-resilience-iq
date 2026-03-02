@@ -26,6 +26,8 @@ from app.storage.conversation_store import (
 )
 from app.terraform.parser import TerraformParser
 from app.terraform.generator import TerraformResourceGenerator
+from app.storage._json_repo import read_json, write_json, path_exists, list_data_dirs
+from app.storage.data_repository import get_data_repository
 
 router = APIRouter(prefix="/api/terraform", tags=["terraform"])
 LOGGER = logging.getLogger(__name__)
@@ -56,19 +58,15 @@ def _status_file(subscription_id: str) -> Path:
 
 
 def _write_status(subscription_id: str, payload: dict[str, Any]) -> None:
-    sub_dir = get_subscription_dir(subscription_id)
-    sub_dir.mkdir(parents=True, exist_ok=True)
-    _status_file(subscription_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_json(_status_file(subscription_id), payload)
 
 
 def _read_status(subscription_id: str) -> dict[str, Any] | None:
     status_file = _status_file(subscription_id)
-    if not status_file.exists():
+    if not path_exists(status_file):
         return None
-    try:
-        return json.loads(status_file.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    payload = read_json(status_file, default=None)
+    return payload if isinstance(payload, dict) else None
 
 
 def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, bool]:
@@ -192,11 +190,11 @@ async def upload_terraform_files(
             continue
 
         target_path = uploads_dir / original_name
-        if target_path.exists():
+        if path_exists(target_path):
             stem = Path(original_name).stem
             suffix = Path(original_name).suffix
             counter = 1
-            while target_path.exists():
+            while path_exists(target_path):
                 target_path = uploads_dir / f"{stem}_{counter}{suffix}"
                 counter += 1
 
@@ -218,7 +216,7 @@ async def upload_terraform_files(
         for file_path in saved_files:
             if file_path.suffix == ".json":
                 try:
-                    json_data = json.loads(file_path.read_text())
+                    json_data = json.loads(get_data_repository().read_text(file_path))
                     resources = parser.parse_json_state(json_data)
                 except json.JSONDecodeError as e:
                     raise HTTPException(
@@ -241,10 +239,10 @@ async def upload_terraform_files(
         resources_output, edges_output = generator.generate()
 
         resources_path = get_resources_path(subscription_id)
-        resources_path.write_text(json.dumps(resources_output, indent=2))
+        write_json(resources_path, resources_output)
 
         edges_path = get_edges_path(subscription_id)
-        edges_path.write_text(json.dumps(edges_output, indent=2))
+        write_json(edges_path, edges_output)
 
         set_stage(
             "collector",
@@ -384,12 +382,7 @@ async def list_terraform_subscriptions() -> list[dict]:
         re.IGNORECASE
     )
     
-    if not DATA_DIR.exists():
-        return subscriptions
-    
-    for item in DATA_DIR.iterdir():
-        if not item.is_dir():
-            continue
+    for item in list_data_dirs(DATA_DIR):
         
         # Check if directory name is a valid UUID
         if not uuid_pattern.match(item.name):
@@ -398,12 +391,12 @@ async def list_terraform_subscriptions() -> list[dict]:
         subscription_id = item.name
         resources_path = item / "resources.json"
         
-        if not resources_path.exists():
+        if not path_exists(resources_path):
             continue
-        
+
         try:
-            with resources_path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = read_json(resources_path, default={})
+            if isinstance(data, dict):
                 subscriptions.append({
                     "id": subscription_id,
                     "name": data.get("subscription_name", subscription_id),

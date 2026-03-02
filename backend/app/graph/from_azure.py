@@ -11,16 +11,17 @@ from app.relationships.extract_aks import extract_aks_relationships
 from app.storage.manual_edges_store import load_manual_edges
 from app.config import get_edges_path
 from app.graph.bridge_edges import create_bridge_edges_for_non_monitored
+from app.storage._json_repo import read_json, path_exists
 
 
 def load_unified_edges(subscription_id: str) -> List[Dict[str, Any]]:
     """Load multi-source unified edges from collector output if available."""
     edges_path = get_edges_path(subscription_id)
-    if not edges_path.exists():
+    if not path_exists(edges_path):
         return []
-    
+
     try:
-        raw = json.loads(edges_path.read_text())
+        raw = read_json(edges_path, default=[])
         # Handle new format with subscription metadata
         if isinstance(raw, dict) and "edges" in raw:
             return raw["edges"]

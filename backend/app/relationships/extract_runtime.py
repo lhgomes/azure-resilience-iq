@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta
 
 from app.logger import get_logger
+from app.storage._json_repo import write_json
 
 try:
     from azure.monitor.query import LogsQueryClient
@@ -240,12 +241,12 @@ def save_runtime_data(
     
     # Save Flow Logs
     flow_file = output_path / 'flow_logs.json'
-    flow_file.write_text(json.dumps(flow_logs, indent=2))
+    write_json(flow_file, flow_logs)
     LOGGER.info(f"✔ Saved {len(flow_logs)} flow records to {flow_file}")
     
     # Save App Insights
     appinsights_file = output_path / 'appinsights_dependencies.json'
-    appinsights_file.write_text(json.dumps(appinsights, indent=2))
+    write_json(appinsights_file, appinsights)
     LOGGER.info(f"✔ Saved {len(appinsights)} dependency records to {appinsights_file}")
 
 

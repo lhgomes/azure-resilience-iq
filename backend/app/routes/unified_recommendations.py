@@ -14,6 +14,7 @@ from typing import Optional, List
 
 from app.config import get_subscription_dir
 from app.logger import get_logger
+from app.storage._json_repo import path_exists, read_json
 
 LOGGER = get_logger(__name__)
 
@@ -56,14 +57,13 @@ async def get_all_recommendations(
         data_path = get_subscription_dir(subscription_id)
         eval_file = data_path / "resilience_evaluations.json"
         
-        if not eval_file.exists():
+        if not path_exists(eval_file):
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}. Run the resilience evaluation first."
             )
-        
-        with open(eval_file) as f:
-            data = json.load(f)
+
+        data = read_json(eval_file, default={})
         
         # Extract recommendations from evaluations (only failed checks)
         recommendations = []
@@ -156,14 +156,13 @@ async def get_resource_recommendations(
         data_path = get_subscription_dir(subscription_id)
         eval_file = data_path / "resilience_evaluations.json"
         
-        if not eval_file.exists():
+        if not path_exists(eval_file):
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(eval_file) as f:
-            data = json.load(f)
+        data = read_json(eval_file, default={})
         
         # Filter by resource ID (case-insensitive comparison)
         resource_id_lower = resource_id.lower()
@@ -230,14 +229,13 @@ async def get_recommendations_by_category(
         data_path = get_subscription_dir(subscription_id)
         eval_file = data_path / "resilience_evaluations.json"
         
-        if not eval_file.exists():
+        if not path_exists(eval_file):
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(eval_file) as f:
-            data = json.load(f)
+        data = read_json(eval_file, default={})
         
         # Filter by category (case-insensitive)
         matching = []
@@ -304,14 +302,13 @@ async def get_recommendations_summary(
         data_path = get_subscription_dir(subscription_id)
         eval_file = data_path / "resilience_evaluations.json"
         
-        if not eval_file.exists():
+        if not path_exists(eval_file):
             raise HTTPException(
                 status_code=404,
                 detail=f"No recommendations found for subscription {subscription_id}"
             )
         
-        with open(eval_file) as f:
-            data = json.load(f)
+        data = read_json(eval_file, default={})
         
         # Extract failed checks as recommendations
         recommendations = []
@@ -400,7 +397,7 @@ async def get_zonal_resilience(subscription_id: str):
     """
     zonal_file = get_subscription_dir(subscription_id) / "zonal_resilience.json"
     
-    if not zonal_file.exists():
+    if not path_exists(zonal_file):
         raise HTTPException(
             status_code=404,
             detail=f"Zonal resilience data not found for subscription {subscription_id}. "
@@ -408,8 +405,7 @@ async def get_zonal_resilience(subscription_id: str):
         )
     
     try:
-        with open(zonal_file, 'r') as f:
-            data = json.load(f)
+        data = read_json(zonal_file, default={})
         return data
     except Exception as e:
         LOGGER.error(f"Error reading zonal resilience data: {e}", exc_info=True)
@@ -432,15 +428,14 @@ async def get_zonal_resilience_summary(subscription_id: str):
     """
     zonal_file = get_subscription_dir(subscription_id) / "zonal_resilience.json"
     
-    if not zonal_file.exists():
+    if not path_exists(zonal_file):
         raise HTTPException(
             status_code=404,
             detail=f"Zonal resilience data not found for subscription {subscription_id}"
         )
     
     try:
-        with open(zonal_file, 'r') as f:
-            data = json.load(f)
+        data = read_json(zonal_file, default={})
         
         # Return only summary data
         return {

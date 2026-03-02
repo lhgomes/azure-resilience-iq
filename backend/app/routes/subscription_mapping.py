@@ -23,6 +23,7 @@ from app.storage.conversation_store import (
     get_subscription_conversation_id,
     set_subscription_conversation_id,
 )
+from app.storage._json_repo import read_json, write_json, path_exists
 
 router = APIRouter(prefix="/api/subscriptions", tags=["subscription-mapping"])
 LOGGER = logging.getLogger(__name__)
@@ -44,19 +45,15 @@ def _status_file(subscription_id: str) -> Path:
 
 
 def _write_status(subscription_id: str, payload: dict[str, Any]) -> None:
-    sub_dir = get_subscription_dir(subscription_id)
-    sub_dir.mkdir(parents=True, exist_ok=True)
-    _status_file(subscription_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_json(_status_file(subscription_id), payload)
 
 
 def _read_status(subscription_id: str) -> dict[str, Any] | None:
     status_file = _status_file(subscription_id)
-    if not status_file.exists():
+    if not path_exists(status_file):
         return None
-    try:
-        return json.loads(status_file.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    payload = read_json(status_file, default=None)
+    return payload if isinstance(payload, dict) else None
 
 
 def _sanitize_filters(payload: SubscriptionMappingRequest) -> tuple[list[str], dict[str, str]]:

@@ -117,3 +117,15 @@ variable "tags" {
   default     = {}
   description = "Optional tags map."
 }
+
+variable "storage_replication_type" {
+  type        = string
+  default     = "LRS"
+  description = "Replication type for deployment state storage account (LRS, ZRS, GRS, RAGRS)."
+}
+
+variable "deployment_state_container_name" {
+  type        = string
+  default     = "deployment-state"
+  description = "Blob container name used to persist deploy state and backend data archives."
+}

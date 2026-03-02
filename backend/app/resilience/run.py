@@ -33,6 +33,7 @@ from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, Zona
 from app.settings import get_settings, load_settings
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
+from app.storage._json_repo import read_json, write_json, path_exists
 
 LOGGER = get_logger(__name__)
 
@@ -507,8 +508,7 @@ def analyze_and_save_zonal_resilience(
     
     # Save to file
     output_file = data_dir / "zonal_resilience.json"
-    with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
+    write_json(output_file, results)
     
     # Generate zone recommendation checks for resilience_evaluations.json
     zone_recommendations_by_resource = {}
@@ -557,7 +557,7 @@ def main():
 
     # Check if resources exist
     resources_path = get_resources_path(args.subscription_id)
-    if not resources_path.exists():
+    if not path_exists(resources_path):
         LOGGER.error(
             "Collector resources not found at %s. "
             "Run 'python -m app.collector.run --subscription-id %s' first.",
@@ -584,7 +584,7 @@ def main():
 
         # Load resources
         LOGGER.debug("Loading resources from %s", resources_path)
-        resources_data = json.loads(resources_path.read_text())
+        resources_data = read_json(resources_path, default=[])
         
         # Handle new format with subscription metadata
         if isinstance(resources_data, dict) and "resources" in resources_data:
@@ -696,8 +696,7 @@ def main():
             "subscription_id": args.subscription_id,
             "recommendation_runs": detail_log,
         }
-        with open(detailed_path, "w") as f:
-            json.dump(detailed_payload, f, indent=2)
+        write_json(detailed_path, detailed_payload)
 
         # ========================================
         # All calculations done client-side
@@ -710,9 +709,9 @@ def main():
             subscription_dir = get_subscription_dir(args.subscription_id)
             # Load detailed evaluations to extract zone findings
             zone_findings = None
-            if detailed_path.exists():
+            if path_exists(detailed_path):
                 try:
-                    zone_findings = json.loads(detailed_path.read_text())
+                    zone_findings = read_json(detailed_path, default={})
                 except Exception as e:
                     LOGGER.debug(f"Could not load detailed evaluations for zone findings: {e}")
             
@@ -725,7 +724,7 @@ def main():
 
             zonal_data_list = []
             try:
-                zonal_payload = json.loads((subscription_dir / "zonal_resilience.json").read_text())
+                zonal_payload = read_json(subscription_dir / "zonal_resilience.json", default={})
                 zonal_data_list = zonal_payload.get("resources", [])
             except Exception as e:
                 LOGGER.debug(f"Could not load zonal_resilience.json for heuristic updates: {e}")

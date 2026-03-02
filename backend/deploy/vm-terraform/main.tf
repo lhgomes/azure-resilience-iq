@@ -15,19 +15,21 @@ locals {
   prefix              = "${var.project_name}-${var.environment}"
   resource_group_name = var.resource_group_name != "" ? var.resource_group_name : "rg-${local.prefix}"
 
-  vnet_name             = "vnet-${local.prefix}"
-  subnet_name           = "snet-app"
-  pe_subnet_name        = "snet-private-endpoints"
-  nsg_name              = "nsg-${local.prefix}"
-  pip_name              = "pip-${local.prefix}"
-  nic_name              = "nic-${local.prefix}"
-  vm_name               = "vm-${local.prefix}"
-  foundry_hub_name      = "fdh-${local.prefix}-${random_string.suffix.result}"
-  foundry_account_name  = "fdh-${local.prefix}-${random_string.suffix.result}"
-  foundry_subdomain     = substr(replace("fdry${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 63)
-  foundry_project_name  = "fdp-${local.prefix}-${random_string.suffix.result}"
-  search_name           = substr(replace("srch${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 60)
-  entra_admin_object_id = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
+  vnet_name               = "vnet-${local.prefix}"
+  subnet_name             = "snet-app"
+  pe_subnet_name          = "snet-private-endpoints"
+  nsg_name                = "nsg-${local.prefix}"
+  pip_name                = "pip-${local.prefix}"
+  nic_name                = "nic-${local.prefix}"
+  vm_name                 = "vm-${local.prefix}"
+  foundry_hub_name        = "fdh-${local.prefix}-${random_string.suffix.result}"
+  foundry_account_name    = "fdh-${local.prefix}-${random_string.suffix.result}"
+  foundry_subdomain       = substr(replace("fdry${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 63)
+  foundry_project_name    = "fdp-${local.prefix}-${random_string.suffix.result}"
+  search_name             = substr(replace("srch${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 60)
+  storage_account_name    = substr(replace("st${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 24)
+  deployment_state_prefix = "${var.project_name}/${var.environment}"
+  entra_admin_object_id   = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
 
   common_tags = merge(
     {
@@ -123,6 +125,13 @@ resource "azurerm_public_ip" "this" {
   allocation_method   = "Static"
   sku                 = "Standard"
   tags                = local.common_tags
+
+  lifecycle {
+    ignore_changes = [
+      ip_tags,
+      zones,
+    ]
+  }
 }
 
 resource "azurerm_network_interface" "this" {
@@ -176,17 +185,17 @@ resource "azurerm_linux_virtual_machine" "this" {
 }
 
 resource "azurerm_cognitive_account" "this" {
-  name                  = local.foundry_account_name
-  location              = azurerm_resource_group.this.location
-  resource_group_name   = azurerm_resource_group.this.name
-  kind                  = "AIServices"
-  sku_name              = "S0"
-  custom_subdomain_name = local.foundry_subdomain
-  project_management_enabled = true
-  local_auth_enabled    = false
+  name                          = local.foundry_account_name
+  location                      = azurerm_resource_group.this.location
+  resource_group_name           = azurerm_resource_group.this.name
+  kind                          = "AIServices"
+  sku_name                      = "S0"
+  custom_subdomain_name         = local.foundry_subdomain
+  project_management_enabled    = true
+  local_auth_enabled            = false
   public_network_access_enabled = false
-  dynamic_throttling_enabled = false
-  tags                  = local.common_tags
+  dynamic_throttling_enabled    = false
+  tags                          = local.common_tags
 
   identity {
     type = "SystemAssigned"
@@ -194,10 +203,10 @@ resource "azurerm_cognitive_account" "this" {
 }
 
 resource "azurerm_cognitive_account_project" "this" {
-  name               = local.foundry_project_name
-  location           = azurerm_resource_group.this.location
+  name                 = local.foundry_project_name
+  location             = azurerm_resource_group.this.location
   cognitive_account_id = azurerm_cognitive_account.this.id
-  tags               = local.common_tags
+  tags                 = local.common_tags
 
   identity {
     type = "SystemAssigned"
@@ -237,15 +246,29 @@ resource "azurerm_cognitive_deployment" "embedding" {
 }
 
 resource "azurerm_search_service" "this" {
-  name                         = local.search_name
-  resource_group_name          = azurerm_resource_group.this.name
-  location                     = azurerm_resource_group.this.location
-  sku                          = var.search_sku
-  replica_count                = 1
-  partition_count              = 1
-  local_authentication_enabled = false
+  name                          = local.search_name
+  resource_group_name           = azurerm_resource_group.this.name
+  location                      = azurerm_resource_group.this.location
+  sku                           = var.search_sku
+  replica_count                 = 1
+  partition_count               = 1
+  local_authentication_enabled  = false
   public_network_access_enabled = false
-  tags                         = local.common_tags
+  tags                          = local.common_tags
+}
+
+resource "azurerm_storage_account" "this" {
+  name                            = local.storage_account_name
+  resource_group_name             = azurerm_resource_group.this.name
+  location                        = azurerm_resource_group.this.location
+  account_tier                    = "Standard"
+  account_replication_type        = var.storage_replication_type
+  account_kind                    = "StorageV2"
+  public_network_access_enabled   = false
+  allow_nested_items_to_be_public = false
+  shared_access_key_enabled       = false
+  min_tls_version                 = "TLS1_2"
+  tags                            = local.common_tags
 }
 
 resource "azurerm_private_dns_zone" "foundry" {
@@ -308,7 +331,7 @@ resource "azurerm_private_endpoint" "foundry" {
   }
 
   private_dns_zone_group {
-    name                 = "foundry-dns"
+    name = "foundry-dns"
     private_dns_zone_ids = [
       azurerm_private_dns_zone.foundry.id,
       azurerm_private_dns_zone.foundry_cognitiveservices.id,
@@ -323,9 +346,24 @@ resource "azurerm_private_dns_zone" "search" {
   tags                = local.common_tags
 }
 
+resource "azurerm_private_dns_zone" "blob" {
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = azurerm_resource_group.this.name
+  tags                = local.common_tags
+}
+
 resource "azurerm_private_dns_zone_virtual_network_link" "search" {
   name                  = "link-search-${local.prefix}"
   private_dns_zone_name = azurerm_private_dns_zone.search.name
+  resource_group_name   = azurerm_resource_group.this.name
+  virtual_network_id    = azurerm_virtual_network.this.id
+  registration_enabled  = false
+  tags                  = local.common_tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "blob" {
+  name                  = "link-blob-${local.prefix}"
+  private_dns_zone_name = azurerm_private_dns_zone.blob.name
   resource_group_name   = azurerm_resource_group.this.name
   virtual_network_id    = azurerm_virtual_network.this.id
   registration_enabled  = false
@@ -349,6 +387,26 @@ resource "azurerm_private_endpoint" "search" {
   private_dns_zone_group {
     name                 = "search-dns"
     private_dns_zone_ids = [azurerm_private_dns_zone.search.id]
+  }
+}
+
+resource "azurerm_private_endpoint" "blob" {
+  name                = "pe-blob-${local.prefix}"
+  location            = azurerm_resource_group.this.location
+  resource_group_name = azurerm_resource_group.this.name
+  subnet_id           = azurerm_subnet.private_endpoints.id
+  tags                = local.common_tags
+
+  private_service_connection {
+    name                           = "psc-blob-${local.prefix}"
+    private_connection_resource_id = azurerm_storage_account.this.id
+    subresource_names              = ["blob"]
+    is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "blob-dns"
+    private_dns_zone_ids = [azurerm_private_dns_zone.blob.id]
   }
 }
 
@@ -399,5 +457,11 @@ resource "azurerm_role_assignment" "vm_search_service_contributor" {
 resource "azurerm_role_assignment" "vm_search_index_data_contributor" {
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Index Data Contributor"
+  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "vm_storage_blob_data_contributor" {
+  scope                = azurerm_storage_account.this.id
+  role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
 }
