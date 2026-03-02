@@ -51,17 +51,25 @@ bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
 
 1. Terraform apply (infra + Foundry + model deployments)
 2. Foundry project connection creation/validation (`azure-ai-search-default`)
-3. Search index ensure:
+3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy
+4. Search index ensure:
    - `learn-aprl-index`
    - `learn-terraform-index`
-4. Agent ensure + tool attachments:
+5. Agent ensure + tool attachments:
    - `chat-agent` → APRL index + MCP Learn
    - `resilience-agent` → APRL index + MCP Learn
    - `terraform-compiler-agent` → Terraform index
    - `annotations-agent` → no tools
-5. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
-6. Index hydration (embeddings + upload) using only `backend/agent/rag` for Terraform corpus
-7. Frontend build + backend/nginx restart
+6. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
+7. Index hydration (embeddings + upload):
+  - APRL from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`)
+  - Terraform from `backend/agent/rag` only
+8. Frontend build + backend/nginx restart
+
+### Blob data persistence behavior
+
+- In blob mode, runtime data is persisted as per-file blobs under `DATA_STORAGE_PREFIX`.
+- Deployment persists only deploy state (`deploy-state.env`) to blob.
 
 ---
 
@@ -134,6 +142,13 @@ AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
 AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
 AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
 AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
+
+# Optional data storage mode (default local)
+DATA_STORAGE_BACKEND=local
+# DATA_STORAGE_ACCOUNT=<storage-account-name>
+# DATA_STORAGE_CONTAINER=deployment-state
+# DATA_STORAGE_PREFIX=<project/environment-prefix>
+# DATA_DIR=./data
 ```
 
 `AI_FOUNDRY_PROJECT_ENDPOINT` is required to call Foundry runtime routes.

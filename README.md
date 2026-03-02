@@ -48,6 +48,7 @@ bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
 
 1. Terraform apply for infra + Foundry + model deployments.
 2. Create/verify Foundry project Azure AI Search connection (`azure-ai-search-default`).
+3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy.
 3. Ensure Search indexes:
   - `learn-aprl-index`
   - `learn-terraform-index`
@@ -57,16 +58,10 @@ bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
   - `terraform-compiler-agent` → Search (`learn-terraform-index`)
   - `annotations-agent` → no tools
 5. Refresh RAG data into `backend/agent/rag` (staged swap on success).
-6. Hydrate indexes (embeddings + upload) using only `backend/agent/rag` for Terraform corpus.
-6. Build frontend, configure systemd + nginx.
-
-### Important runtime behavior
-
-- Embedding inference supports fallback to account OpenAI endpoint (`*.openai.azure.com`) when project endpoint embeddings return 404 in current SDK/runtime combinations.
-- Chat flow auto-recovers from `conversation_not_found` by resetting the stale conversation id, replaying full context, and retrying once.
-- Nginx SPA config includes loop-safe rules for `/` and `/favicon.ico`.
-- RAG Terraform hydration source is `backend/agent/rag` only.
-- If RAG refresh fails, deployment keeps using the already-available local content under `backend/agent/rag`.
+6. Hydrate indexes (embeddings + upload):
+  - APRL corpus from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`).
+  - Terraform corpus from `backend/agent/rag` only.
+7. Build frontend, configure systemd + nginx.
 
 ### Incremental updates (no Terraform re-provision)
 
@@ -153,6 +148,13 @@ AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
 AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
 AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
 AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
+
+# Optional data storage mode (default local)
+DATA_STORAGE_BACKEND=local
+# DATA_STORAGE_ACCOUNT=<storage-account-name>
+# DATA_STORAGE_CONTAINER=deployment-state
+# DATA_STORAGE_PREFIX=<project/environment-prefix>
+# DATA_DIR=./data
 ```
 
 **Features**:
