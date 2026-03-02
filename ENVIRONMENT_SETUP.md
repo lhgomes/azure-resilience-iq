@@ -47,6 +47,48 @@ Force agent recreation/tool reattachment when needed:
 bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
 ```
 
+### Permissions and credentials
+
+#### Operator identity (who runs Terraform/deploy)
+
+The signed-in Azure CLI principal (`az login`) is used for Terraform apply and deployment orchestration.
+
+Minimum required permissions on the target subscription/resource group:
+
+- Create/update/delete Azure resources managed by this stack (VM, network, Foundry, Search, Storage, private endpoints/DNS).
+- Create role assignments (RBAC) for managed identities.
+  - In practice this requires permissions equivalent to **Owner** or **Contributor + User Access Administrator** at the deployment scope.
+
+If role assignment permission is missing, Terraform may create resources but fail when assigning runtime access roles.
+
+#### VM managed identity permissions (runtime)
+
+Terraform grants the VM system-assigned managed identity these roles:
+
+- Foundry account scope:
+  - **Azure AI User**
+  - **Cognitive Services OpenAI User**
+- Foundry project scope:
+  - **Azure AI User**
+- Search service scope:
+  - **Search Service Contributor**
+  - **Search Index Data Contributor**
+- Storage account scope:
+  - **Storage Blob Data Contributor**
+
+These roles are required for:
+
+- Foundry agent provisioning and runtime calls.
+- Embedding generation and search index hydration.
+- Blob-backed data repository read/write in runtime.
+
+#### Credentials model in this solution
+
+- No static cloud credentials are embedded in app code.
+- Deployment host uses the operator Azure CLI session (`az login`).
+- VM runtime uses **Managed Identity** (`DefaultAzureCredential`) for Foundry, Search, and Blob access.
+- Runtime environment values (endpoints/model names/storage settings) are written to `/etc/azure-resilience-iq.env` by the deployment script.
+
 ### Provisioning flow (automated)
 
 1. Terraform apply (infra + Foundry + model deployments)
