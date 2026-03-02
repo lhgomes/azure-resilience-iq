@@ -11,6 +11,15 @@ resource "tls_private_key" "vm_admin" {
 
 data "azurerm_client_config" "current" {}
 
+data "http" "operator_public_ip" {
+  count = !var.private_only && (length(var.admin_allowed_cidrs) == 0 || length(var.app_allowed_cidrs) == 0) ? 1 : 0
+  url   = "https://api.ipify.org"
+
+  request_headers = {
+    Accept = "text/plain"
+  }
+}
+
 locals {
   prefix              = "${var.project_name}-${var.environment}"
   resource_group_name = var.resource_group_name != "" ? var.resource_group_name : "rg-${local.prefix}"
@@ -30,6 +39,18 @@ locals {
   storage_account_name    = substr(replace("st${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 24)
   deployment_state_prefix = "${var.project_name}/${var.environment}"
   entra_admin_object_id   = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
+  operator_public_ip      = length(data.http.operator_public_ip) > 0 ? trimspace(data.http.operator_public_ip[0].response_body) : ""
+  operator_public_cidr    = local.operator_public_ip != "" ? "${local.operator_public_ip}/32" : ""
+
+  provided_admin_allowed_cidrs = [for cidr in var.admin_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
+  provided_app_allowed_cidrs   = [for cidr in var.app_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
+
+  effective_admin_allowed_cidrs = length(local.provided_admin_allowed_cidrs) > 0 ? local.provided_admin_allowed_cidrs : (
+    local.operator_public_cidr != "" ? [local.operator_public_cidr] : []
+  )
+  effective_app_allowed_cidrs = length(local.provided_app_allowed_cidrs) > 0 ? local.provided_app_allowed_cidrs : (
+    local.operator_public_cidr != "" ? [local.operator_public_cidr] : []
+  )
 
   common_tags = merge(
     {
@@ -39,6 +60,20 @@ locals {
     },
     var.tags
   )
+}
+
+resource "terraform_data" "validate_public_ingress_cidrs" {
+  input = true
+
+  lifecycle {
+    precondition {
+      condition = var.private_only || (
+        length(local.effective_admin_allowed_cidrs) > 0 &&
+        length(local.effective_app_allowed_cidrs) > 0
+      )
+      error_message = "No effective CIDR allowlists were resolved while private_only=false. Provide admin_allowed_cidrs and app_allowed_cidrs explicitly, or ensure the Terraform runner can reach https://api.ipify.org for auto-discovery."
+    }
+  }
 }
 
 resource "azurerm_resource_group" "this" {
@@ -75,42 +110,51 @@ resource "azurerm_network_security_group" "this" {
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
   tags                = local.common_tags
+}
 
-  security_rule {
-    name                       = "allow-ssh"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
+resource "azurerm_network_security_rule" "allow_ssh" {
+  count                       = !var.private_only && length(local.effective_admin_allowed_cidrs) > 0 ? 1 : 0
+  name                        = "allow-ssh"
+  priority                    = 100
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "22"
+  source_address_prefixes     = local.effective_admin_allowed_cidrs
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.this.name
+  network_security_group_name = azurerm_network_security_group.this.name
+}
 
-  security_rule {
-    name                       = "allow-http"
-    priority                   = 110
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "80"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
+resource "azurerm_network_security_rule" "allow_http" {
+  count                       = !var.private_only && length(local.effective_app_allowed_cidrs) > 0 ? 1 : 0
+  name                        = "allow-http"
+  priority                    = 110
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "80"
+  source_address_prefixes     = local.effective_app_allowed_cidrs
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.this.name
+  network_security_group_name = azurerm_network_security_group.this.name
+}
 
-  security_rule {
-    name                       = "allow-https"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "443"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
+resource "azurerm_network_security_rule" "allow_https" {
+  count                       = !var.private_only && length(local.effective_app_allowed_cidrs) > 0 ? 1 : 0
+  name                        = "allow-https"
+  priority                    = 120
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
+  destination_port_range      = "443"
+  source_address_prefixes     = local.effective_app_allowed_cidrs
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.this.name
+  network_security_group_name = azurerm_network_security_group.this.name
 }
 
 resource "azurerm_subnet_network_security_group_association" "this" {
@@ -119,6 +163,7 @@ resource "azurerm_subnet_network_security_group_association" "this" {
 }
 
 resource "azurerm_public_ip" "this" {
+  count               = var.private_only ? 0 : 1
   name                = local.pip_name
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
@@ -144,7 +189,7 @@ resource "azurerm_network_interface" "this" {
     name                          = "ipconfig1"
     subnet_id                     = azurerm_subnet.this.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.this.id
+    public_ip_address_id          = var.private_only ? null : azurerm_public_ip.this[0].id
   }
 }
 

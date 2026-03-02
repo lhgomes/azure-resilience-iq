@@ -98,6 +98,33 @@ ensure_vm_running() {
   return 1
 }
 
+run_with_retries() {
+  local attempts="$1"
+  local base_sleep_seconds="$2"
+  shift 2
+
+  local cmd=("$@")
+  local attempt
+  local exit_code
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    if "${cmd[@]}"; then
+      return 0
+    fi
+
+    exit_code=$?
+    if [[ "$attempt" -lt "$attempts" ]]; then
+      local sleep_seconds=$((base_sleep_seconds * attempt))
+      echo "⚠ Command failed (exit ${exit_code}), retrying in ${sleep_seconds}s (attempt ${attempt}/${attempts})"
+      sleep "$sleep_seconds"
+      continue
+    fi
+
+    return "$exit_code"
+  done
+
+  return 1
+}
+
 compute_file_hash() {
   local file_path="$1"
   if [[ -f "$file_path" ]]; then
@@ -144,7 +171,34 @@ fi
 echo "==> Provisioning Azure infrastructure"
 pushd "$TF_DIR" >/dev/null
 terraform init
-terraform apply -var-file="$TFVARS_PATH" -auto-approve
+TF_APPLY_ATTEMPTS=3
+TF_APPLY_SUCCESS=false
+TF_APPLY_LOG="$(mktemp)"
+for ((attempt=1; attempt<=TF_APPLY_ATTEMPTS; attempt++)); do
+  echo "==> Terraform apply attempt ${attempt}/${TF_APPLY_ATTEMPTS}"
+  if terraform apply -var-file="$TFVARS_PATH" -auto-approve 2>&1 | tee "$TF_APPLY_LOG"; then
+    TF_APPLY_SUCCESS=true
+    break
+  fi
+
+  if grep -q "IfMatchPreconditionFailed" "$TF_APPLY_LOG"; then
+    if [[ "$attempt" -lt "$TF_APPLY_ATTEMPTS" ]]; then
+      SLEEP_SECONDS=$((attempt * 20))
+      echo "⚠ Detected transient Azure ETag precondition race (IfMatchPreconditionFailed). Retrying in ${SLEEP_SECONDS}s..."
+      sleep "$SLEEP_SECONDS"
+      continue
+    fi
+  fi
+
+  break
+done
+
+rm -f "$TF_APPLY_LOG"
+if [[ "$TF_APPLY_SUCCESS" != "true" ]]; then
+  echo "Terraform apply failed"
+  exit 1
+fi
+
 TF_OUT="$(terraform output -json)"
 popd >/dev/null
 
@@ -152,6 +206,7 @@ RESOURCE_GROUP="$(echo "$TF_OUT" | jq -r '.resource_group_name.value')"
 VM_NAME="$(echo "$TF_OUT" | jq -r '.vm_name.value')"
 VM_USER="$(echo "$TF_OUT" | jq -r '.vm_admin_username.value')"
 VM_IP="$(echo "$TF_OUT" | jq -r '.vm_public_ip.value')"
+VM_PRIVATE_IP="$(echo "$TF_OUT" | jq -r '.vm_private_ip.value // empty')"
 SEARCH_ENDPOINT="$(echo "$TF_OUT" | jq -r '.search_endpoint.value')"
 FOUNDRY_PROJECT_ENDPOINT="$(echo "$TF_OUT" | jq -r '.foundry_project_endpoint.value')"
 FOUNDRY_ACCOUNT_NAME="$(echo "$TF_OUT" | jq -r '.foundry_hub_name.value')"
@@ -272,18 +327,20 @@ if [[ -z "$SSH_TARGET" ]]; then
   exit 1
 fi
 
-scp \
-  -F "$SSH_CONFIG_FILE" \
-  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-  -o StrictHostKeyChecking=accept-new \
-  "$ARCHIVE_PATH" "${SSH_TARGET}:/tmp/azure-resilience-iq.tar.gz"
+run_with_retries 4 10 \
+  scp \
+    -F "$SSH_CONFIG_FILE" \
+    -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+    -o StrictHostKeyChecking=accept-new \
+    "$ARCHIVE_PATH" "${SSH_TARGET}:/tmp/azure-resilience-iq.tar.gz"
 
-ssh \
-  -F "$SSH_CONFIG_FILE" \
-  -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
-  -o StrictHostKeyChecking=accept-new \
-  "$SSH_TARGET" \
-  "VM_USER='${VM_USER}' FOUNDRY_PROJECT_ENDPOINT='${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}' REASONING_MODEL='${REASONING_MODEL}' SEARCH_ENDPOINT='${SEARCH_ENDPOINT}' RECREATE_ARG='${RECREATE_ARG}' OPENAI_API_VERSION='${OPENAI_API_VERSION}' EMBEDDING_MODEL='${EMBEDDING_MODEL}' BACKEND_REQUIREMENTS_HASH='${BACKEND_REQUIREMENTS_HASH}' FRONTEND_DEPS_HASH='${FRONTEND_DEPS_HASH}' RAG_INPUT_HASH='${RAG_INPUT_HASH}' STORAGE_ACCOUNT_NAME='${STORAGE_ACCOUNT_NAME}' DEPLOYMENT_STATE_CONTAINER_NAME='${DEPLOYMENT_STATE_CONTAINER_NAME}' DEPLOYMENT_STATE_PREFIX='${DEPLOYMENT_STATE_PREFIX}' bash -s" <<'EOF'
+run_with_retries 4 15 \
+  ssh \
+    -F "$SSH_CONFIG_FILE" \
+    -o UserKnownHostsFile="${KNOWN_HOSTS_FILE}" \
+    -o StrictHostKeyChecking=accept-new \
+    "$SSH_TARGET" \
+    "VM_USER='${VM_USER}' FOUNDRY_PROJECT_ENDPOINT='${EFFECTIVE_FOUNDRY_PROJECT_ENDPOINT}' REASONING_MODEL='${REASONING_MODEL}' SEARCH_ENDPOINT='${SEARCH_ENDPOINT}' RECREATE_ARG='${RECREATE_ARG}' OPENAI_API_VERSION='${OPENAI_API_VERSION}' EMBEDDING_MODEL='${EMBEDDING_MODEL}' BACKEND_REQUIREMENTS_HASH='${BACKEND_REQUIREMENTS_HASH}' FRONTEND_DEPS_HASH='${FRONTEND_DEPS_HASH}' RAG_INPUT_HASH='${RAG_INPUT_HASH}' STORAGE_ACCOUNT_NAME='${STORAGE_ACCOUNT_NAME}' DEPLOYMENT_STATE_CONTAINER_NAME='${DEPLOYMENT_STATE_CONTAINER_NAME}' DEPLOYMENT_STATE_PREFIX='${DEPLOYMENT_STATE_PREFIX}' bash -s" <<'EOF'
 set -euo pipefail
 
 sudo apt-get update
@@ -854,7 +911,15 @@ rm -rf "$TMP_DIR"
 
 echo
 echo "Deployment complete"
-echo "VM: ${VM_NAME} (${VM_IP})"
-echo "Frontend: http://${VM_IP}"
-echo "Backend health: http://${VM_IP}/health"
+if [[ -n "${VM_IP}" ]]; then
+  echo "VM: ${VM_NAME} (${VM_IP})"
+  echo "Frontend: http://${VM_IP}"
+  echo "Backend health: http://${VM_IP}/health"
+else
+  echo "VM: ${VM_NAME} (private-only mode; no public IP)"
+  if [[ -n "${VM_PRIVATE_IP}" ]]; then
+    echo "VM private IP: ${VM_PRIVATE_IP}"
+  fi
+  echo "Frontend/API access requires private network connectivity (VPN/ExpressRoute/peering or approved private ingress path)."
+fi
 echo "Foundry endpoint (terraform): ${FOUNDRY_PROJECT_ENDPOINT}"

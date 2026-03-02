@@ -34,6 +34,23 @@ Configure `backend/deploy/vm-terraform/terraform.tfvars`:
 - `resource_group_name`
 - `embedding_model_capacity` (current validated env max: `350`)
 
+Optional network exposure controls:
+
+- `private_only` (`false` by default)
+  - `true`: no VM public IP and no internet-facing NSG ingress rules for `22/80/443`
+  - `false`: VM public IP enabled and ingress allowlists apply
+- `admin_allowed_cidrs` (optional list)
+  - Used for SSH (`22`) when `private_only=false`
+  - If omitted, auto-discovered from operator public IP as `/32`
+- `app_allowed_cidrs` (optional list)
+  - Used for app ingress (`80/443`) when `private_only=false`
+  - If omitted, auto-discovered from operator public IP as `/32`
+
+Guardrail behavior:
+
+- When `private_only=false`, Terraform fails early if no effective CIDRs can be resolved.
+- If your environment blocks outbound access to `https://api.ipify.org`, set both `admin_allowed_cidrs` and `app_allowed_cidrs` explicitly.
+
 ### Full deployment command
 
 ```bash
@@ -88,6 +105,7 @@ These roles are required for:
 - Deployment host uses the operator Azure CLI session (`az login`).
 - VM runtime uses **Managed Identity** (`DefaultAzureCredential`) for Foundry, Search, and Blob access.
 - Runtime environment values (endpoints/model names/storage settings) are written to `/etc/azure-resilience-iq.env` by the deployment script.
+- With `private_only=true`, deployment/operations still require network path to the VM (for example VPN/ExpressRoute/peering or another private access path).
 
 ### Provisioning flow (automated)
 
@@ -147,7 +165,14 @@ What it does:
 
 ## Resource Clean-up
 
-To fully remove the cloud deployment created by this stack:
+Preferred (safe) clean-up command with unmanaged-resource audit:
+
+```bash
+cd backend/deploy/scripts
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
+```
+
+Direct Terraform destroy (advanced/manual):
 
 ```bash
 cd backend/deploy/vm-terraform
@@ -158,7 +183,8 @@ terraform destroy -var-file=terraform.tfvars -auto-approve
 
 - Run with the same Azure CLI identity/subscription context used for deployment (`az login` + correct subscription).
 - Use the same `terraform.tfvars` file that was used during `apply`.
-- If destroy fails because the resource group still contains resources, remove the reported orphan resource(s) and re-run destroy.
+- `safe_destroy_vm_stack.sh` maps unmanaged resources in the RG, auto-removes only known ephemeral network orphans, and blocks deletion if unexpected unmanaged resources are found.
+- Use `--force` with `safe_destroy_vm_stack.sh` only when you intentionally want to continue despite unexpected unmanaged resources.
 - This command removes all Terraform-managed resources in this stack (VM, networking, Foundry, Search, Storage, private endpoints, RBAC assignments).
 
 ---

@@ -14,8 +14,23 @@ output "vm_admin_username" {
 }
 
 output "vm_public_ip" {
-  value       = azurerm_public_ip.this.ip_address
-  description = "VM public IP address."
+  value       = try(azurerm_public_ip.this[0].ip_address, "")
+  description = "VM public IP address (empty when private_only=true)."
+}
+
+output "vm_private_ip" {
+  value       = azurerm_network_interface.this.private_ip_address
+  description = "VM private IP address."
+}
+
+output "effective_admin_allowed_cidrs" {
+  value       = local.effective_admin_allowed_cidrs
+  description = "Effective SSH allowlist CIDRs (provided values or auto-discovered /32)."
+}
+
+output "effective_app_allowed_cidrs" {
+  value       = local.effective_app_allowed_cidrs
+  description = "Effective app ingress allowlist CIDRs (provided values or auto-discovered /32)."
 }
 
 output "search_service_name" {
