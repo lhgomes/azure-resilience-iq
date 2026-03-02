@@ -129,3 +129,21 @@ variable "deployment_state_container_name" {
   default     = "deployment-state"
   description = "Blob container name used to persist deploy state and backend data archives."
 }
+
+variable "private_only" {
+  type        = bool
+  default     = false
+  description = "When true, do not create a public IP and do not create internet-facing NSG ingress rules for SSH/HTTP/HTTPS."
+}
+
+variable "admin_allowed_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Allowed CIDRs for SSH (port 22) when private_only=false. If empty, auto-discovered from the deploy operator public IP (/32)."
+}
+
+variable "app_allowed_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Allowed CIDRs for app ingress (ports 80/443) when private_only=false. If empty, auto-discovered from the deploy operator public IP (/32)."
+}

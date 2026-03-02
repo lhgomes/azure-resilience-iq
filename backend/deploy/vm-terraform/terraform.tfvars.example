@@ -8,6 +8,15 @@ vm_size = "Standard_B2als_v2"
 # Optional: target a specific availability zone when SKU capacity is constrained
 # vm_zone = "1"
 
+# Access mode controls
+# private_only = true disables VM public IP and internet-facing NSG ingress rules.
+private_only = false
+
+# Optional explicit CIDR allowlists (used only when private_only = false).
+# If omitted, both are auto-discovered from the deploy operator public IP as /32.
+# admin_allowed_cidrs = ["203.0.113.10/32"]
+# app_allowed_cidrs   = ["203.0.113.10/32"]
+
 # Optional: override Foundry model deployments used by backend and ingestion
 # reasoning_model_deployment_name = "gpt-4.1"
 # reasoning_model_name            = "gpt-4.1"
