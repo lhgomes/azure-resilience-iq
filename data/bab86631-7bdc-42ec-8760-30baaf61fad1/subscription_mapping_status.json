@@ -1,0 +1,39 @@
+{
+  "subscription_id": "bab86631-7bdc-42ec-8760-30baaf61fad1",
+  "status": "failed",
+  "current_stage": "conversation",
+  "progress": 48,
+  "message": "Cannot create conversation context: Foundry agent gateway is not available",
+  "filters": {
+    "resource_groups": [
+      "resilience"
+    ],
+    "tags": {}
+  },
+  "stages": [
+    {
+      "name": "collector",
+      "status": "completed",
+      "started_at": "2026-05-21T12:08:54.708629+00:00",
+      "returncode": 0,
+      "stdout_tail": "🔍 Querying subresources (DNS zone groups, firewall rules)...\n✔ Found 0 subresources\n🔍 Querying role assignments (ACR pull, Key Vault, Storage)...\n✔ Found 0 relevant role assignments\n🔗 Populating backend pool IDs from network interfaces...\n✔ Backend pool IDs populated\n🔗 Extracting session affinity configuration from load balancers and gateways...\n✔ Session affinity information extracted\n✔ Collected 24 resources\n✔ Subscription: Microsoft\n✔ Written to data/bab86631-7bdc-42ec-8760-30baaf61fad1/resources.json\n📊 Extracting multi-source signals...\n🔍 Auto-discovering Log Analytics workspaces from collected resources...\n  ⚠️  No Log Analytics workspaces found in collected resources\n      Tip: Use --log-analytics-workspace-id to specify manually (repeatable)\n✔ Extracted 23 unified edges with multi-source signals\n✔ Written to data/bab86631-7bdc-42ec-8760-30baaf61fad1/edges.json\n",
+      "stderr_tail": "Config file not found at ./config/app_config.yaml, using defaults\nHA/DR resource type config not found at config/monitored_resource_types.yaml; no monitoring tags will be applied\n",
+      "finished_at": "2026-05-21T12:09:16.985391+00:00"
+    },
+    {
+      "name": "conversation",
+      "status": "running",
+      "started_at": "2026-05-21T12:09:17.077009+00:00"
+    },
+    {
+      "name": "llm",
+      "status": "pending"
+    },
+    {
+      "name": "resilience",
+      "status": "pending"
+    }
+  ],
+  "started_at": "2026-05-21T12:08:54.683073+00:00",
+  "finished_at": "2026-05-21T12:09:17.108294+00:00"
+}

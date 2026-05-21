@@ -477,7 +477,7 @@ resource "azurerm_role_assignment" "entra_vm_admin_login" {
 
 resource "azurerm_role_assignment" "vm_foundry_hub_user" {
   scope                = azurerm_cognitive_account.this.id
-  role_definition_name = "Azure AI User"
+  role_definition_name = "Foundry User"
   principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
 }
 
@@ -489,13 +489,13 @@ resource "azurerm_role_assignment" "vm_foundry_openai_user" {
 
 resource "azurerm_role_assignment" "vm_foundry_project_user" {
   scope                = azurerm_cognitive_account_project.this.id
-  role_definition_name = "Azure AI User"
+  role_definition_name = "Foundry User"
   principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "foundry_project_identity_hub_user" {
   scope                = azurerm_cognitive_account.this.id
-  role_definition_name = "Azure AI User"
+  role_definition_name = "Foundry User"
   principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
 }
 

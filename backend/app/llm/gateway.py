@@ -324,8 +324,24 @@ class FoundryAgentGateway(LLMGateway):
             "input": combined_prompt,
             "extra_body": extra_body,
         }
-        if conversation_id and str(conversation_id).strip():
-            create_args["conversation"] = str(conversation_id).strip()
+        effective_conversation_id = (
+            str(conversation_id).strip() if conversation_id and str(conversation_id).strip() else None
+        )
+        if effective_conversation_id is None:
+            # Foundry's Responses API is stateless unless a conversation is attached.
+            # If the caller didn't provide one (e.g. first turn, or after a
+            # conversation_not_found recovery), pre-create one so the agent
+            # accumulates memory across turns.
+            try:
+                effective_conversation_id = self.create_conversation()
+            except Exception as conv_error:  # noqa: BLE001
+                LOGGER.warning(
+                    "Failed to pre-create Foundry conversation; falling back to stateless call: %s",
+                    conv_error,
+                )
+                effective_conversation_id = None
+        if effective_conversation_id:
+            create_args["conversation"] = effective_conversation_id
 
         response, retry_meta = self._create_response_with_retries(create_args)
 
@@ -333,7 +349,7 @@ class FoundryAgentGateway(LLMGateway):
         response_payload = self._to_dict(response)
         resolved_conversation_id = self._extract_conversation_id(
             response,
-            fallback_conversation_id=conversation_id,
+            fallback_conversation_id=effective_conversation_id,
         )
 
         self._last_metrics = {
