@@ -40,12 +40,22 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
         short_id = ensure_short_id(node_id, short_id)
         id_to_short[node_id] = short_id
 
+        zones_meta = meta.get("zones")
+        if isinstance(zones_meta, (list, tuple, set)):
+            zones_meta = [str(z).strip() for z in zones_meta if str(z).strip()]
+        elif zones_meta is not None and str(zones_meta).strip():
+            zones_meta = [str(zones_meta).strip()]
+        else:
+            zones_meta = None
+
         safe_nodes.append(
             {
                 "id": node_id,
                 "short_id": short_id,
                 "type": nd.get("type") or "unknown",
                 "name": nd.get("name") or node_id.split("/")[-1] or "unknown",
+                "region": meta.get("location"),
+                "zones": zones_meta,
                 "importance": meta.get("importance"),
                 "criticality_override": meta.get("criticality_override"),
                 "connections": [],

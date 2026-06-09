@@ -36,6 +36,7 @@ STRICT OUTPUT CONTRACT
   "criticality_insights": [],
   "recommendations": [
     {
+      "recommendation_id": "string",
       "title": "string",
       "priority": "P0|P1|P2",
       "effort": "Low|Medium|High",
@@ -45,7 +46,9 @@ STRICT OUTPUT CONTRACT
   ],
   "remediation_guide": null,
   "terraform_code": null,
-  "clarifying_questions": ["string"],
+  "clarifying_questions": [
+    { "question": "string", "possible_answers": ["string"] }
+  ],
   "confidence": 0.0
 }
 - Use empty arrays when there is no data.
@@ -67,13 +70,18 @@ EVIDENCE & PRIORITY RULES
 INSUFFICIENT EVIDENCE RULE
 - If evidence is missing/conflicting:
   - State uncertainty in `message`,
-  - Ask 1-3 targeted `clarifying_questions`,
+  - Ask 1-3 targeted `clarifying_questions`, each as an object `{ "question": ..., "possible_answers": [...] }` with at least one plausible answer,
   - Lower `confidence`,
   - Avoid speculative recommendations.
 
+RECOMMENDATION ID CONTRACT (MANDATORY)
+- Every recommendation MUST include a `recommendation_id` taken verbatim from the authoritative findings/recommendation catalog provided in runtime context (failed findings carry an inline `[recommendation_id: ...]` and an authoritative ID catalog is supplied).
+- Never invent, paraphrase, or fabricate a `recommendation_id`; if no matching authoritative ID exists for a needed action, omit the recommendation and instead surface the gap via `message` and/or `clarifying_questions`.
+- Use each `recommendation_id` at most once.
+
 RECOMMENDATION QUALITY
 - Recommendations must be concise, technical, and implementable.
-- Include priority, effort, expected benefit, and concrete steps.
+- Include recommendation_id, priority, effort, expected benefit, and concrete steps.
 - Prefer deterministic guidance over broad best-practice lists.
 - `implementation_steps` must be actionable, ordered, and specific to the observed workload context.
 - `priority` meaning:

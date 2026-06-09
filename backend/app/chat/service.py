@@ -828,6 +828,33 @@ USER QUERY: {query}
             data.get('criticality_score'),
         )
 
+    def _node_region(self, node: Dict[str, Any]) -> Optional[str]:
+        metadata = self._node_metadata(node)
+        data = self._node_data(node)
+        value = self._first_non_empty(
+            metadata.get('location'),
+            metadata.get('region'),
+            data.get('location'),
+            data.get('region'),
+        )
+        return str(value) if value is not None else None
+
+    def _node_zones(self, node: Dict[str, Any]) -> List[str]:
+        metadata = self._node_metadata(node)
+        data = self._node_data(node)
+        raw = self._first_non_empty(
+            metadata.get('zones'),
+            data.get('zones'),
+            metadata.get('zone'),
+            metadata.get('availability_zone'),
+        )
+        if raw is None:
+            return []
+        if isinstance(raw, (list, tuple, set)):
+            return [str(z).strip() for z in raw if str(z).strip()]
+        text = str(raw).strip()
+        return [text] if text else []
+
     @staticmethod
     def _to_float(value: Any, default: float = 0.0) -> float:
         try:
@@ -895,7 +922,8 @@ USER QUERY: {query}
         """Build prompt with optional full graph context for first-turn grounding only."""
         if include_full_context:
             nodes_summary = self._summarize_nodes(graph.get('nodes', []))
-            edges_summary = self._summarize_edges(graph.get('edges', []))
+            edges_summary = self._summarize_edges(graph.get('edges', []), graph.get('nodes', []))
+            resilience_groups_summary = self._summarize_resilience_groups(graph)
             llm_baseline_summary = self._build_llm_baseline_summary(graph)
             if query_type == 'terraform':
                 failed_findings_summary = self._summarize_failed_findings(
@@ -935,6 +963,9 @@ Top resources by criticality:
 
 Key relationships:
 {edges_summary}
+
+Resilience groups (HA/redundancy membership; do not recommend changes already satisfied here):
+{resilience_groups_summary}
 
 Failed findings (authoritative):
 {failed_findings_summary}
@@ -1153,6 +1184,16 @@ Allowed node IDs (authoritative for references):
             "type": resource.get("type"),
             "location": resource.get("location"),
         }
+
+        zones_raw = resource.get("zones")
+        zones: List[str] = []
+        if isinstance(zones_raw, (list, tuple, set)):
+            zones = [str(z).strip() for z in zones_raw if str(z).strip()]
+        elif zones_raw is not None and str(zones_raw).strip():
+            zones = [str(zones_raw).strip()]
+        if zones:
+            facts["zones"] = zones
+            facts["zone_redundant"] = len(zones) >= 2
 
         if sku_data.get("name"):
             facts["sku_name"] = sku_data.get("name")
@@ -1543,15 +1584,18 @@ Do not invent resources, module names, or unsupported fields.
                 impact = check.get("impact", "").lower()
                 potential_benefits = check.get("potential_benefits", "").strip()
                 learn_more = check.get("learn_more", {})
-                
+                recommendation_id = str(check.get("recommendation_id") or "").strip()
+
                 # Build detailed check summary
                 detail_parts = [description]
                 if include_long_description and long_description:
                     # Take first 150 chars of long description for context
                     context_snippet = long_description.replace("\n", " ")[:150]
                     detail_parts.append(f"({context_snippet}...)")
-                
+
                 detail = " ".join(detail_parts)
+                if recommendation_id:
+                    detail += f" [recommendation_id: {recommendation_id}]"
                 if impact:
                     detail += f" [Impact: {impact}]"
                 
@@ -1752,39 +1796,97 @@ Do not invent resources, module names, or unsupported fields.
         """Create concise node summary."""
         if not nodes:
             return "No nodes available"
-        
+
+        max_nodes = 15
         # Sort by criticality
         sorted_nodes = sorted(
             nodes,
             key=lambda n: self._to_float(self._node_criticality(n), 0.0),
             reverse=True
-        )[:15]
+        )[:max_nodes]
 
         summary = []
         for node in sorted_nodes:
             label = self._node_display_name(node)
             resource_type = self._node_resource_type(node)
             criticality = self._first_non_empty(self._node_criticality(node), 'unknown')
-            summary.append(
-                f"- {label} ({resource_type}) [Criticality: {criticality}]"
-            )
+            line = f"- {label} ({resource_type}) [Criticality: {criticality}]"
+            region = self._node_region(node)
+            if region:
+                line += f" [Region: {region}]"
+            zones = self._node_zones(node)
+            if zones:
+                line += f" [Zones: {','.join(zones)}]"
+            summary.append(line)
+
+        if len(nodes) > max_nodes:
+            summary.append(f"- (+{len(nodes) - max_nodes} more resources not shown)")
 
         return '\n'.join(summary) if summary else "No nodes available"
 
-    def _summarize_edges(self, edges: List[Dict[str, Any]]) -> str:
-        """Create concise edge summary."""
+    def _summarize_edges(
+        self,
+        edges: List[Dict[str, Any]],
+        nodes: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Create concise edge summary using display names for readability."""
         if not edges:
             return "No relationships found"
-        
+
+        name_by_id: Dict[str, str] = {}
+        for node in nodes or []:
+            if isinstance(node, dict) and node.get('id'):
+                name_by_id[str(node['id'])] = self._node_display_name(node)
+
+        def label_for(node_id: Any) -> str:
+            key = str(node_id) if node_id is not None else '...'
+            return name_by_id.get(key, key)
+
+        max_edges = 25
         summary = []
-        for edge in edges[:25]:  # Limit to first 25
-            source = edge.get('source', '...')
-            target = edge.get('target', '...')
+        for edge in edges[:max_edges]:
+            source = label_for(edge.get('source'))
+            target = label_for(edge.get('target'))
             rel = self._edge_relationship(edge)
             confidence = self._edge_confidence(edge, 1.0)
             summary.append(f"- {source} --[{rel}:{confidence:.2f}]--> {target}")
 
+        if len(edges) > max_edges:
+            summary.append(f"- (+{len(edges) - max_edges} more relationships not shown)")
+
         return '\n'.join(summary) if summary else "No relationships found"
+
+    def _summarize_resilience_groups(self, graph: Dict[str, Any], max_groups: int = 15) -> str:
+        """Summarize resilience/HA correlation groups so the model avoids redundant advice."""
+        groups = graph.get('groups') or []
+        if not isinstance(groups, list) or not groups:
+            return "No resilience groups identified."
+
+        nodes_by_id = {n.get('id'): n for n in graph.get('nodes', []) if isinstance(n, dict)}
+
+        lines: List[str] = []
+        for group in groups[:max_groups]:
+            if not isinstance(group, dict):
+                continue
+            name = str(group.get('name') or group.get('id') or 'group').strip()
+            member_ids = group.get('nodes') or []
+            if not isinstance(member_ids, list):
+                member_ids = []
+            member_names = [
+                self._node_display_name(nodes_by_id[mid])
+                for mid in member_ids
+                if mid in nodes_by_id
+            ]
+            shown = member_names[:6]
+            members_text = ", ".join(shown)
+            if len(member_names) > len(shown):
+                members_text += f", +{len(member_names) - len(shown)} more"
+            lines.append(f"- {name} ({len(member_ids)} members): {members_text}".rstrip(": ").rstrip())
+
+        if len(groups) > max_groups:
+            lines.append(f"- (+{len(groups) - max_groups} more groups not shown)")
+
+        return '\n'.join(lines) if lines else "No resilience groups identified."
 
     def _extract_terraform_code(self, llm_output: Dict[str, Any]) -> Optional[str]:
         """Extract terraform code from LLM output, converting dict to HCL string if needed."""

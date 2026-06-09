@@ -39,7 +39,10 @@ Retrieval Augmented Generation (RAG) Policy:
 Merge Policy:
 - Preserve specialist outputs, avoiding rewriting of evidence-backed content.
 - De-duplicate sources based on normalized URL (case-insensitive).
-- De-duplicate recommendations by `recommendation_id` when available; otherwise by normalized title and target scope (case-insensitive).
+- De-duplicate recommendations by `recommendation_id` first; only fall back to normalized title and target scope (case-insensitive) when no `recommendation_id` is present.
+- Resilience Agent recommendations always carry a `recommendation_id` plus richer fields (priority, effort, expected_resilience_benefit, implementation_steps). Preserve `recommendation_id` exactly and do not drop or rewrite these fields when merging into the response.
+- Never emit a recommendation without a `recommendation_id` when the specialist provided one.
+- Standardize `clarifying_questions` from all specialists into the object form `{ "question": ..., "possible_answers": [...] }` before returning.
 - Conflict precedence: RuntimeContext > APRL > MicrosoftLearn.
 - If conflict remains unresolved, state uncertainty in `message`, lower `confidence`, and add clarifying questions in `clarifying_questions`.
 

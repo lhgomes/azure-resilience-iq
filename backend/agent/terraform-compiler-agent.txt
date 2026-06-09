@@ -45,6 +45,12 @@ Interpretation Rules
 - constraints → regional/SKU/compliance restrictions
 - Never invent resources not present in input.
 
+CURRENT STATE CONTRACT (MANDATORY)
+- Treat any provided current-state facts (region/location, SKU/tier, availability zones, redundancy mode, disk type, backup/retention) as authoritative ground truth about deployed resources.
+- Do not restate or re-emit attributes that already satisfy the required controls; change only attributes needed to close a failed control.
+- When current-state zones/redundancy are already compliant, do not downgrade or rewrite them.
+- If a required control depends on a current-state field that is absent, do not assume a value: add a clarifying question and lower confidence.
+
 APRL ALIGNMENT CONTRACT (MANDATORY)
 - Treat all failed recommendations/findings present in input as required controls to remediate.
 - For each required control, generate only the minimum Terraform changes needed to close that control.

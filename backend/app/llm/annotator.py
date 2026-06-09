@@ -74,11 +74,20 @@ def _prepare_summary_for_prompt(summary: Dict[str, Any]) -> Dict[str, Any]:
     for node in nodes_raw:
         if not isinstance(node, dict):
             continue
+        zones_raw = node.get("zones")
+        if isinstance(zones_raw, (list, tuple, set)):
+            zones = [_sanitize_prompt_text(item) for item in zones_raw if str(item).strip()]
+        elif zones_raw is not None and str(zones_raw).strip():
+            zones = [_sanitize_prompt_text(zones_raw)]
+        else:
+            zones = []
         nodes.append(
             {
                 "short_id": _sanitize_prompt_text(node.get("short_id")),
                 "type": _sanitize_prompt_text(node.get("type")),
                 "name": _sanitize_prompt_text(node.get("name")) or _sanitize_prompt_text(node.get("short_id")),
+                "region": _sanitize_prompt_text(node.get("region")),
+                "zones": zones,
                 "importance": node.get("importance"),
                 "criticality_override": node.get("criticality_override"),
                 "connections": [_sanitize_prompt_text(item) for item in (node.get("connections") or [])],

@@ -56,6 +56,7 @@ def _merge_graph_payloads(payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
     merged_edge_overrides: Dict[str, Any] = {}
     merged_resilience_evals: Dict[str, Any] = {}
     merged_resilience_overrides: Dict[str, Any] = {}
+    merged_groups: List[Dict[str, Any]] = []
 
     for payload in payloads:
         merged_nodes.extend(payload.get("nodes", []) or [])
@@ -66,6 +67,7 @@ def _merge_graph_payloads(payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
         merged_edge_overrides.update(payload.get("edge_overrides") or {})
         merged_resilience_evals.update((payload.get("resilience_evaluations") or {}).get("evaluations", {}) or {})
         merged_resilience_overrides.update(payload.get("resilience_overrides") or {})
+        merged_groups.extend(payload.get("groups", []) or [])
 
     llm_edge_seen: set[str] = set()
     deduped_llm_edges: List[Dict[str, Any]] = []
@@ -95,6 +97,7 @@ def _merge_graph_payloads(payloads: List[Dict[str, Any]]) -> Dict[str, Any]:
         "edge_overrides": merged_edge_overrides,
         "resilience_evaluations": {"evaluations": merged_resilience_evals},
         "resilience_overrides": merged_resilience_overrides,
+        "groups": _dedupe_by_key(merged_groups, "id"),
     }
 
 
