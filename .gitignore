@@ -40,6 +40,14 @@ backend/**/*.json
 # Allow example/sample data if you ever add it
 !backend/data/.gitkeep
 
+# Generated/cloned RAG doc mirrors — rebuilt on deploy by
+# app.tools.bootstrap_rag_sources (clones AVM/CAF repos and exports docs).
+# Only the small curated *_urls.txt / *-resource-types.txt inputs are tracked.
+backend/agent/rag/avm/
+backend/agent/rag/caf/
+backend/agent/rag/terraform/docs/
+backend/agent/rag/terraform/source-repos/
+
 ############################################
 # Azure / Auth / Secrets
 ############################################
