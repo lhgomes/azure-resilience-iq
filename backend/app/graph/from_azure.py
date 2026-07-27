@@ -11,16 +11,17 @@ from app.relationships.extract_aks import extract_aks_relationships
 from app.storage.manual_edges_store import load_manual_edges
 from app.config import get_edges_path
 from app.graph.bridge_edges import create_bridge_edges_for_non_monitored
+from app.storage._json_repo import read_json, path_exists
 
 
 def load_unified_edges(subscription_id: str) -> List[Dict[str, Any]]:
     """Load multi-source unified edges from collector output if available."""
     edges_path = get_edges_path(subscription_id)
-    if not edges_path.exists():
+    if not path_exists(edges_path):
         return []
-    
+
     try:
-        raw = json.loads(edges_path.read_text())
+        raw = read_json(edges_path, default=[])
         # Handle new format with subscription metadata
         if isinstance(raw, dict) and "edges" in raw:
             return raw["edges"]
@@ -102,6 +103,18 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
     for rid, r in by_id.items():
         base_name = r.get("name") or rid.split("/")[-1]
         importance = node_importance(r.get("type"))
+        zones_value = r.get("zones")
+        if isinstance(zones_value, list):
+            zones_value = [str(z).strip() for z in zones_value if str(z).strip()]
+            zones_value = zones_value if zones_value else None
+        elif zones_value is not None:
+            zones_value = [str(zones_value).strip()] if str(zones_value).strip() else None
+        zone_value = (
+            r.get("zone")
+            or r.get("availability_zone")
+            or r.get("availabilityZone")
+            or (zones_value[0] if isinstance(zones_value, list) and zones_value else None)
+        )
 
         gb.add_node(Node(
             id=rid,
@@ -111,6 +124,9 @@ def build_graph_from_resources(resources: List[Dict[str, Any]], workload_id: str
             metadata={
                 "azure_type": r.get("type"),
                 "location": r.get("location"),
+                "zone": zone_value,
+                "availability_zone": zone_value,
+                "zones": zones_value,
                 "resource_group": r.get("resource_group") or r.get("resourceGroup"),
                 "subscription_id": r.get("subscription_id") or r.get("subscriptionId"),
                 "tags": r.get("tags") or {},

@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -9,6 +10,7 @@ from app.routes.resilience import router as resilience_router
 from app.routes.unified_recommendations import router as unified_recommendations_router
 from app.routes.terraform import router as terraform_router
 from app.routes.chat import router as chat_router, chat_router as chat_availability_router
+from app.routes.subscription_mapping import router as subscription_mapping_router
 from app.graph.builder import edge_id as build_edge_id
 from app.services.workloads import get_workload_graph, get_review_inbox
 from app.services.subscriptions import list_subscriptions
@@ -49,6 +51,7 @@ from app.storage.workload_store import (
     update_workload as update_saved_workload,
     delete_workload as delete_saved_workload,
 )
+from app.storage._json_repo import read_json, write_json, path_exists
 from app.relationships.utils import norm_id
 
 # Load application configuration from app_config.yaml
@@ -56,10 +59,19 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
+# CORS origins are env-driven (comma-separated) and default to local dev origins.
+# Set CORS_ALLOWED_ORIGINS explicitly for any non-local deployment.
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
+
 app = FastAPI(title="Azure Resiliency IQ")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +83,7 @@ app.include_router(unified_recommendations_router)
 app.include_router(terraform_router)
 app.include_router(chat_router)
 app.include_router(chat_availability_router)
+app.include_router(subscription_mapping_router)
 
 
 class CreateEdgeRequest(BaseModel):
@@ -614,20 +627,18 @@ def refresh_subscription(subscription_id: str):
     """
     try:
         # Prepare status file
-        sub_dir: Path = get_subscription_dir(subscription_id)
-        sub_dir.mkdir(parents=True, exist_ok=True)
-        status_file = sub_dir / "llm_refresh_status.json"
+        status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
 
         def write_status(data: dict):
             try:
-                status_file.write_text(json.dumps(data, indent=2))
+                write_json(status_file, data)
             except Exception:
                 pass
 
         # If an existing job is running, return current status
-        if status_file.exists():
+        if path_exists(status_file):
             try:
-                current = json.loads(status_file.read_text())
+                current = read_json(status_file, default={})
                 if current.get("status") == "running":
                     return JSONResponse(
                         status_code=202,
@@ -687,9 +698,9 @@ def refresh_status(subscription_id: str):
     """Return the current LLM refresh status for polling."""
     try:
         status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
-        if not status_file.exists():
+        if not path_exists(status_file):
             return JSONResponse(status_code=200, content={"status": "idle"})
-        payload = json.loads(status_file.read_text())
+        payload = read_json(status_file, default={})
         if payload.get("status") == "running":
             return Response(status_code=304)
         return JSONResponse(status_code=200, content=payload)

@@ -9,6 +9,7 @@ from app.relationships.extract_runtime import query_flow_logs, query_application
 from app.relationships.utils import norm_id, short_id
 from app.graph.builder import edge_id
 from app.resource_filters import load_monitored_resource_types
+from app.storage._json_repo import write_json
 
 def normalize_resource_groups(resource_groups):
     return [rg.lower() for rg in resource_groups]
@@ -169,9 +170,9 @@ def main():
         "resources": output,
         "role_assignments": role_assignments  # Include role assignments in output
     }
-    
+
     out_file = get_resources_path(args.subscription_id)
-    out_file.write_text(json.dumps(resources_output, indent=2))
+    write_json(out_file, resources_output)
 
     print(f"✔ Collected {len(resources)} resources")
     print(f"✔ Subscription: {subscription_name}")
@@ -264,7 +265,7 @@ def main():
         "subscription_name": subscription_name,
         "edges": edges_output
     }
-    edges_file.write_text(json.dumps(edges_output_data, indent=2))
+    write_json(edges_file, edges_output_data)
     
     print(f"✔ Extracted {len(unified_edges)} unified edges with multi-source signals")
     print(f"✔ Written to {edges_file}")

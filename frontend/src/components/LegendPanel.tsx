@@ -1,4 +1,5 @@
 import React from "react";
+import { CloseIconButton } from "./common/buttons";
 
 interface Props {
   open: boolean;
@@ -28,21 +29,13 @@ const LegendPanel: React.FC<Props> = ({ open, onClose }) => {
     >
       <div style={{ marginBottom: 16 }}>
         <h4 style={{ marginTop: 0, marginBottom: 8 }}>Visual Legend</h4>
-        <button
+        <CloseIconButton
           onClick={onClose}
-          style={{
-            position: "absolute",
-            top: 8,
-            right: 8,
-            background: "transparent",
-            border: "none",
-            color: "#9AA0A6",
-            cursor: "pointer",
-            fontSize: 16,
-          }}
-        >
-          ✕
-        </button>
+          title="Close"
+          absolute
+          top={8}
+          right={8}
+        />
       </div>
 
       <div style={{ fontSize: 12, lineHeight: 1.6 }}>

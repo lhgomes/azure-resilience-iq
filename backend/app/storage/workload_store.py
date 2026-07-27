@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.config import get_workload_path, get_workloads_dir
 from app.intent.workload import Workload, WorkloadViewState
-from app.storage._json_repo import read_json, write_json
+from app.storage._json_repo import read_json, write_json, list_data_files, path_exists, delete_path
 
 
 def _now() -> str:
@@ -28,6 +28,7 @@ def _load_workload(path: Path) -> Optional[Workload]:
     view_state_raw = raw.get("view_state") or {}
     created_at = raw.get("created_at") or _now()
     updated_at = raw.get("updated_at") or created_at
+    conversation_id = raw.get("conversation_id")
 
     if not isinstance(name, str) or not name.strip():
         return None
@@ -43,16 +44,15 @@ def _load_workload(path: Path) -> Optional[Workload]:
         view_state=view_state,
         created_at=str(created_at),
         updated_at=str(updated_at),
+        conversation_id=str(conversation_id).strip() if conversation_id else None,
     )
 
 
 def list_workloads() -> List[Workload]:
     base_dir = get_workloads_dir()
-    if not base_dir.exists():
-        return []
 
     workloads: List[Workload] = []
-    for path in sorted(base_dir.glob("*.json")):
+    for path in list_data_files(base_dir, "*.json"):
         workload = _load_workload(path)
         if workload:
             workloads.append(workload)
@@ -88,6 +88,7 @@ def create_workload(name: str, view_state: WorkloadViewState) -> Workload:
         view_state=view_state,
         created_at=created_at,
         updated_at=created_at,
+        conversation_id=None,
     )
     write_json(get_workload_path(workload_id), workload.model_dump())
     return workload
@@ -115,6 +116,7 @@ def update_workload(workload_id: str, *, name: Optional[str] = None, view_state:
         view_state=next_view_state,
         created_at=existing.created_at,
         updated_at=_now(),
+        conversation_id=existing.conversation_id,
     )
     write_json(get_workload_path(workload_id), updated.model_dump())
     return updated
@@ -122,7 +124,7 @@ def update_workload(workload_id: str, *, name: Optional[str] = None, view_state:
 
 def delete_workload(workload_id: str) -> bool:
     path = get_workload_path(workload_id)
-    if not path.exists():
+    if not path_exists(path):
         return False
-    path.unlink(missing_ok=True)
+    delete_path(path)
     return True

@@ -1,4 +1,5 @@
 import React from "react";
+import { CloseIconButton } from "./common/buttons";
 
 export interface EdgeData {
   id: string;
@@ -56,22 +57,13 @@ const EdgeDrawer: React.FC<Props> = ({
       }}
     >
       {/* Close button */}
-      <button
+      <CloseIconButton
         onClick={onClose}
-        style={{
-          position: "absolute",
-          top: 12,
-          right: 12,
-          background: "transparent",
-          color: "#aaa",
-          border: "none",
-          fontSize: 16,
-          cursor: "pointer"
-        }}
         title="Close"
-      >
-        ✕
-      </button>
+        absolute
+        top={12}
+        right={12}
+      />
 
       {/* Header */}
       <h3 style={{ marginTop: 0, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>

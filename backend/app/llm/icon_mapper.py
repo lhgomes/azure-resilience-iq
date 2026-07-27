@@ -6,13 +6,12 @@ and available icon files. It should be run once to generate the mapping.
 """
 
 import json
+import os
 from pathlib import Path
-from typing import Dict, List, Set
-
-from azure.identity import DefaultAzureCredential
-from openai import AzureOpenAI
+from typing import Dict, List, Optional, Set
 
 from app.settings import load_settings
+from app.llm.model_client import FoundryModelClient, create_model_client
 
 
 def get_all_icon_files(icons_dir: Path) -> Dict[str, List[str]]:
@@ -175,8 +174,8 @@ def get_microsoft_resource_types() -> Set[str]:
 def generate_icon_mappings_with_llm(
     resource_types: List[str],
     icon_categories: Dict[str, List[str]],
-    client: AzureOpenAI,
-    deployment: str,
+    model_client: FoundryModelClient,
+    model: Optional[str],
     batch_size: int = 100
 ) -> Dict[str, str]:
     """Use LLM to generate mappings from resource types to icon paths in batches."""
@@ -192,71 +191,44 @@ def generate_icon_mappings_with_llm(
         print(f"\nProcessing batch {batch_num}/{total_batches} ({len(batch)} resource types)...")
         
         # Prepare the prompt for this batch
-        prompt = f"""You are an expert in Azure resource types and icon mapping.
+        prompt = f"""Map each Azure resource type to the best icon path.
 
-I have a batch of {len(batch)} Azure resource types and {sum(len(icons) for icons in icon_categories.values())} icon files.
-
-Azure Resource Types for this batch:
+Resource types ({len(batch)}):
 {json.dumps(batch, indent=2)}
 
-Available Icon Categories and Files (showing sample):
-{json.dumps({k: v[:5] + (['...'] if len(v) > 5 else []) for k, v in list(icon_categories.items())[:15]}, indent=2)}
-
-Full icon list available in all categories:
+Available icon files by category:
 {json.dumps(icon_categories, indent=2)}
 
-Your task: Create a JSON mapping from each Azure resource type to the BEST matching icon file path.
-
 Rules:
-1. Map resource type (e.g., "microsoft.app/containerapps") to icon path (e.g., "containers/02989-icon-service-Container-Apps-Environments.svg")
-2. Choose the most semantically appropriate icon for each resource type
-3. Parse the resource type: "microsoft.CATEGORY/RESOURCETYPE" - use CATEGORY and RESOURCETYPE to find matches
-4. Icon filenames often match service names (e.g., "Container-Apps", "Virtual-Machines", "Kubernetes")
-5. If no good match exists, use "general/10001-icon-service-All-Resources.svg"
-6. Output format: category folder + "/" + icon filename
+1. Output key = resource type, value = category/icon-filename.svg
+2. Choose the closest semantic icon based on provider/type name
+3. If no good match exists, use general/10001-icon-service-All-Resources.svg
+4. Return mappings for all resource types in this batch
 
-Output ONLY valid JSON (no markdown, no explanation):
+Return valid JSON only (no markdown):
 {{
-  "microsoft.app/containerapps": "containers/02989-icon-service-Container-Apps-Environments.svg",
-  ...
-}}
-
-Map ALL {len(batch)} resource types in this batch:
-"""
+    "microsoft.app/containerapps": "containers/02989-icon-service-Container-Apps-Environments.svg"
+}}"""
 
         try:
-            response = client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert system that generates accurate Azure resource type to icon mappings. Output only valid JSON without markdown formatting. Map every single resource type provided."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+            batch_mappings = model_client.generate_json(
+                system_prompt=(
+                    "You are an expert system that generates accurate Azure resource type to icon mappings. "
+                    "Output only valid JSON without markdown formatting. "
+                    "Map every single resource type provided."
+                ),
+                user_prompt=prompt,
                 temperature=0.3,
-                max_tokens=16000
+                max_tokens=16000,
+                model=model,
             )
-            
-            response_text = response.choices[0].message.content.strip()
-            
-            # Remove markdown code blocks if present
-            if response_text.startswith('```'):
-                lines = response_text.split('\n')
-                response_text = '\n'.join(lines[1:-1]) if len(lines) > 2 else response_text
-                if response_text.startswith('json'):
-                    response_text = response_text[4:].strip()
-            
-            batch_mappings = json.loads(response_text)
+
+            if not isinstance(batch_mappings, dict):
+                raise ValueError("Invalid mapping payload returned by LLM")
+
             all_mappings.update(batch_mappings)
             print(f"  ✓ Generated {len(batch_mappings)} mappings for this batch")
             
-        except json.JSONDecodeError as e:
-            print(f"  ✗ Failed to parse LLM response for batch {batch_num}: {e}")
-            print(f"  Response preview: {response_text[:200]}")
         except Exception as e:
             print(f"  ✗ Error processing batch {batch_num}: {e}")
     
@@ -283,38 +255,23 @@ def main():
     print(f"\nFound {len(icon_categories)} icon categories")
     print(f"Using {len(resource_types)} Azure resource types from Microsoft ARI documentation")
     
-    # Initialize Azure OpenAI client
-    aoai_cfg = settings.get_azure_openai_config()
-    endpoint = aoai_cfg["endpoint"]
-    api_version = aoai_cfg["api_version"]
-    deployment = aoai_cfg["deployment"]
-    api_key = aoai_cfg.get("api_key")
-
-    if not endpoint or not deployment:
-        print("Azure OpenAI configuration missing endpoint or deployment; aborting icon generation.")
+    # Initialize direct Foundry model client
+    model_client = create_model_client(settings)
+    if not model_client.is_available():
+        print("Foundry model client unavailable; aborting icon generation.")
         return
-    
-    if api_key:
-        client = AzureOpenAI(
-            api_key=api_key,
-            api_version=api_version,
-            azure_endpoint=endpoint,
-        )
-    else:
-        # Use managed identity
-        credential = DefaultAzureCredential()
-        token = credential.get_token("https://cognitiveservices.azure.com/.default")
-        client = AzureOpenAI(
-            api_key=token.token,
-            api_version=api_version,
-            azure_endpoint=endpoint,
-        )
-    
+
+    ai_agent_cfg = settings.get_ai_agent_config()
+    deployment = ai_agent_cfg.get("reasoning_model") or settings.get_llm_generation_config().get("model")
+    if not deployment:
+        print("Reasoning model not configured; set ai_agent.reasoning_model.")
+        return
+
     # Generate mappings with LLM
     mappings = generate_icon_mappings_with_llm(
         sorted(resource_types),
         icon_categories,
-        client,
+        model_client,
         deployment,
     )
     

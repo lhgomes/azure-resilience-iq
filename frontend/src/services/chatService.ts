@@ -18,6 +18,24 @@ export interface CriticalityInsight {
   current_score?: number;
 }
 
+export interface ChatSource {
+  title?: string;
+  url: string;
+  type?: string;
+}
+
+export interface ChatMetrics {
+  provider?: string;
+  model?: string;
+  status?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  total_ms?: number;
+  queue_ms?: number;
+  processing_ms?: number;
+}
+
 export interface RemediationStep {
   step: number;
   title: string;
@@ -37,8 +55,15 @@ export interface RemediationGuide {
   validation_checklist: string[];
 }
 
+export interface ClarifyingQuestion {
+  question: string;
+  possible_answers?: string[];
+}
+
 export interface ChatResponse {
   message: string;
+  sources: ChatSource[];
+  metrics?: ChatMetrics;
   suggested_edges: SuggestedEdge[];
   resources_to_highlight: string[];
   criticality_insights: CriticalityInsight[];
@@ -46,7 +71,9 @@ export interface ChatResponse {
   remediation_guide?: RemediationGuide;
   terraform_code?: string;
   terraform_validation?: string;
-  clarifying_questions: string[];
+  clarifying_questions: ClarifyingQuestion[];
+  agent_flow?: 'chat' | 'terraform';
+  rag_trace?: any;
   raw_llm_output?: any;
 }
 
@@ -68,6 +95,7 @@ export interface ChatMessage {
 export interface ChatContext {
   selected_resource_id?: string;
   selected_recommendation_id?: string;
+  referenced_resource_ids?: string[];
   tab?: 'overview' | 'findings' | 'graph' | 'workloads';
   [key: string]: any;
 }
@@ -113,7 +141,8 @@ export class LLMChatService {
   async sendMessage(
     message: string,
     context?: ChatContext,
-    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
+    referencedResourceIds?: string[]
   ): Promise<ChatResponse> {
     try {
       const response = await fetch(
@@ -128,6 +157,7 @@ export class LLMChatService {
             subscription_id: this.subscriptionId,
             context,
             conversation_history: conversationHistory,
+            referenced_resource_ids: referencedResourceIds,
           }),
         }
       );

@@ -1,0 +1,3 @@
+https://azure.github.io/Azure-Verified-Modules/
+https://github.com/Azure/Azure-Verified-Modules
+https://aka.ms/avm

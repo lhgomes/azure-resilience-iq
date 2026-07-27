@@ -1,173 +1,295 @@
 # Environment Setup
 
-## Local Development with Azure OpenAI
+## Deployment Modes
 
-To enable LLM-based architecture annotation in your local environment, edit `backend/config/app_config.yaml`:
+This project supports two execution modes:
+
+1. **Automated Azure VM deployment (recommended)**
+2. **Local development**
+
+Use the automated VM path for shared/test/prod-like environments.
+
+---
+
+## Automated Azure VM Deployment (Recommended)
+
+### Terraform approach (`backend/deploy/vm-terraform`)
+
+Terraform provisions and manages:
+
+- Linux VM + network (VNet/subnets/NSG/public IP)
+- Private endpoints + DNS for Foundry/Search
+- Azure AI Foundry account/project (`AIServices`)
+- Model deployments:
+  - reasoning: `gpt-4.1`
+  - embeddings: `text-embedding-3-small`
+- Azure AI Search
+- Required RBAC for VM managed identity (Foundry/OpenAI/Search)
+
+### Required tfvars
+
+Configure `backend/deploy/vm-terraform/terraform.tfvars`:
+
+- `location`
+- `resource_group_name`
+- `embedding_model_capacity` (current validated env max: `350`)
+
+Optional network exposure controls:
+
+- `private_only` (`false` by default)
+  - `true`: no VM public IP and no internet-facing NSG ingress rules for `22/80/443`
+  - `false`: VM public IP enabled and ingress allowlists apply
+- `admin_allowed_cidrs` (optional list)
+  - Used for SSH (`22`) when `private_only=false`
+  - If omitted, auto-discovered from operator public IP as `/32`
+- `app_allowed_cidrs` (optional list)
+  - Used for app ingress (`80/443`) when `private_only=false`
+  - If omitted, auto-discovered from operator public IP as `/32`
+
+Guardrail behavior:
+
+- When `private_only=false`, Terraform fails early if no effective CIDRs can be resolved.
+- If your environment blocks outbound access to `https://api.ipify.org`, set both `admin_allowed_cidrs` and `app_allowed_cidrs` explicitly.
+
+### Full deployment command
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+Force agent recreation/tool reattachment when needed:
+
+```bash
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
+```
+
+### Permissions and credentials
+
+#### Operator identity (who runs Terraform/deploy)
+
+The signed-in Azure CLI principal (`az login`) is used for Terraform apply and deployment orchestration.
+
+Minimum required permissions on the target subscription/resource group:
+
+- Create/update/delete Azure resources managed by this stack (VM, network, Foundry, Search, Storage, private endpoints/DNS).
+- Create role assignments (RBAC) for managed identities.
+  - In practice this requires permissions equivalent to **Owner** or **Contributor + User Access Administrator** at the deployment scope.
+
+If role assignment permission is missing, Terraform may create resources but fail when assigning runtime access roles.
+
+#### VM managed identity permissions (runtime)
+
+Terraform grants the VM system-assigned managed identity these roles:
+
+- Foundry account scope:
+  - **Azure AI User**
+  - **Cognitive Services OpenAI User**
+- Foundry project scope:
+  - **Azure AI User**
+- Search service scope:
+  - **Search Service Contributor**
+  - **Search Index Data Contributor**
+- Storage account scope:
+  - **Storage Blob Data Contributor**
+
+These roles are required for:
+
+- Foundry agent provisioning and runtime calls.
+- Embedding generation and search index hydration.
+- Blob-backed data repository read/write in runtime.
+
+#### Credentials model in this solution
+
+- No static cloud credentials are embedded in app code.
+- Deployment host uses the operator Azure CLI session (`az login`).
+- VM runtime uses **Managed Identity** (`DefaultAzureCredential`) for Foundry, Search, and Blob access.
+- Runtime environment values (endpoints/model names/storage settings) are written to `/etc/azure-resilience-iq.env` by the deployment script.
+- With `private_only=true`, deployment/operations still require network path to the VM (for example VPN/ExpressRoute/peering or another private access path).
+
+### Provisioning flow (automated)
+
+1. Terraform apply (infra + Foundry + model deployments)
+2. Foundry project connection creation/validation (`azure-ai-search-default`)
+3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy
+4. Search index ensure:
+   - `learn-aprl-index`
+   - `learn-terraform-index`
+5. Agent ensure + tool attachments:
+   - `chat-agent` → APRL index + MCP Learn
+   - `resilience-agent` → APRL index + MCP Learn
+   - `terraform-compiler-agent` → Terraform index
+   - `annotations-agent` → no tools
+6. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
+7. Index hydration (embeddings + upload):
+  - APRL from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`)
+  - Terraform from `backend/agent/rag` only
+8. Frontend build + backend/nginx restart
+
+### Blob data persistence behavior
+
+- In blob mode, runtime data is persisted as per-file blobs under `DATA_STORAGE_PREFIX`.
+- Deployment persists only deploy state (`deploy-state.env`) to blob.
+
+---
+
+## Incremental Update Options (Existing VM)
+
+### Option A: Full stack refresh
+
+Use when Terraform/Foundry/model/agent/index provisioning changed:
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+### Option B: App-only incremental deploy
+
+Use when only backend/frontend app code changed:
+
+```bash
+cd backend/deploy/scripts
+./deploy_app_only.sh ../vm-terraform/terraform.tfvars
+```
+
+What it does:
+
+- Computes backend/frontend hashes locally
+- Compares against VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`)
+- Syncs only changed app folders
+- Reinstalls backend deps/restarts service only when backend changed
+- Rebuilds frontend/reloads nginx only when frontend changed
+
+---
+
+## Resource Clean-up
+
+Preferred (safe) clean-up command with unmanaged-resource audit:
+
+```bash
+cd backend/deploy/scripts
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
+```
+
+Direct Terraform destroy (advanced/manual):
+
+```bash
+cd backend/deploy/vm-terraform
+terraform destroy -var-file=terraform.tfvars -auto-approve
+```
+
+### Notes
+
+- Run with the same Azure CLI identity/subscription context used for deployment (`az login` + correct subscription).
+- Use the same `terraform.tfvars` file that was used during `apply`.
+- `safe_destroy_vm_stack.sh` maps unmanaged resources in the RG, auto-removes only known ephemeral network orphans, and blocks deletion if unexpected unmanaged resources are found.
+- Use `--force` with `safe_destroy_vm_stack.sh` only when you intentionally want to continue despite unexpected unmanaged resources.
+- This command removes all Terraform-managed resources in this stack (VM, networking, Foundry, Search, Storage, private endpoints, RBAC assignments).
+
+---
+
+## Local Development with Direct Azure AI Foundry SDK
+
+The backend LLM runtime uses direct Azure AI Foundry SDK calls.
+
+### 1. Configure `backend/config/app_config.yaml`
 
 ```yaml
-azure_openai:
-  endpoint: "https://<your-resource>.openai.azure.com/"
-  deployment: "<your-deployment-name>"
-  api_key: ""  # optional; leave empty to use DefaultAzureCredential
-
 llm:
   enabled: true
+
+ai_agent:
+  foundry_project_endpoint: "https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>"
+  openai_api_version: "2024-10-21"
+  reasoning_model: "gpt-4.1"
+  embedding_model: "text-embedding-3-small"
+  chat_agent_reference: "chat-agent"
+  resilience_agent_reference: "resilience-agent"
+  annotations_agent_reference: "annotations-agent"
+  terraform_agent_reference: "terraform-compiler-agent"
+  run_timeout_seconds: 120
+  poll_interval_seconds: 1.5
 ```
 
-Get endpoint/deployment from your Azure OpenAI resource in the Azure Portal.
+### 2. Configure `backend/.env`
 
-### 2. Ensure DefaultAzureCredential is configured
-The backend uses **DefaultAzureCredential**, which checks (in order):
-1. Environment variables (`AZURE_*`)
-2. Managed Identity (if running in Azure)
-3. Azure CLI credentials (`az login`)
-4. Visual Studio credentials
-5. IntelliJ credentials
+```env
+AZURE_SEARCH_ENDPOINT=<your-search-endpoint>
+AZURE_SEARCH_ADMIN_KEY=<your-search-admin-key>
 
-For local development, run:
-```bash
-az login
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
+
+# Optional Foundry + Agent overrides
+AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
+AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
+AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
+AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
+
+# Optional data storage mode (default local)
+DATA_STORAGE_BACKEND=local
+# DATA_STORAGE_ACCOUNT=<storage-account-name>
+# DATA_STORAGE_CONTAINER=deployment-state
+# DATA_STORAGE_PREFIX=<project/environment-prefix>
+# DATA_DIR=./data
 ```
 
-## Workflow: Collector → Resiliency Evaluation → LLM Annotation → API
+`AI_FOUNDRY_PROJECT_ENDPOINT` is required to call Foundry runtime routes.
+Ensure your principal has permissions on the Foundry project/resource.
+
+## Workflow: Collector → Resilience Evaluation → LLM Annotation → API
 
 ### Step 1: Run the Azure Resource Graph collector
+
 ```bash
 cd backend
 python -m app.collector.run --subscription-id <your-subscription-id>
 ```
 
-This generates `backend/data/{subscription-id}/resources.json` and `backend/data/{subscription-id}/edges.json`.
+Generates:
 
-If you want to store artifacts somewhere else, set `AZURE_WORKLOAD_GRAPH_DATA_DIR` (default: `data`).
+- `backend/data/{subscription-id}/resources.json`
+- `backend/data/{subscription-id}/edges.json`
 
-### Step 2: Run Resiliency evaluations
+### Step 2: Run resilience evaluations
+
 ```bash
 cd backend
-python -m app.Resiliency.run --subscription-id <your-subscription-id>
+python -m app.resilience.run --subscription-id <your-subscription-id>
 ```
 
-This evaluates resources against Azure Proactive Resiliency Library (APRL) and saves results to `backend/data/{subscription-id}/Resiliency_evaluations.json`.
-(Takes 5–10 seconds depending on resource count.)
+Saves `backend/data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run the LLM annotator (optional)
+
 ```bash
 cd backend
 python -m app.llm.run --subscription-id <your-subscription-id>
 ```
 
-This processes the collected resources with the LLM and saves annotations to `backend/data/{subscription-id}/llm_annotations.json`.
-(Takes 10–15 seconds depending on graph size.)
-Requires `USE_REAL_LLM=true` and Azure OpenAI configuration.
+Saves `backend/data/{subscription-id}/llm_annotations.json`.
 
-### Step 4: Start the API server
+### Step 4: Start API server
+
 ```bash
 cd backend
 uvicorn app.main:app --reload
 ```
 
-### Step 5: Access the API
-All data is now pre-computed and served instantly:
+### Step 5: Access API
 
 ```bash
-# Get workload graph
 curl "http://localhost:8000/api/subscriptions/<your-subscription-id>/graph"
-
-# Get Resiliency evaluations
-curl "http://localhost:8000/api/Resiliency/evaluate/<your-subscription-id>"
-
-# Get unified recommendations
+curl "http://localhost:8000/api/resilience/evaluate/<your-subscription-id>"
 curl "http://localhost:8000/api/<your-subscription-id>/recommendations"
 ```
 
-Or start the frontend and toggle visibility options in the UI.
-
-## Application Configuration (app_config.yaml)
-
-The `backend/config/app_config.yaml` file controls application behavior and Resiliency analysis settings.
-
-### Logging Configuration
-
-```yaml
-logging:
-  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-```
-
-- **level**: Controls logging verbosity. Can be overridden by `LOG_LEVEL` environment variable.
-
-### LLM Configuration
-
-```yaml
-llm:
-  enabled: true                # Enable/disable LLM (compute + serve)
-```
-
-- **enabled**: Toggle LLM end-to-end. Set to `false` to skip processing and serving LLM annotations.
-
-### Resiliency Analysis Configuration
-
-```yaml
-Resiliency:
-  category_weights:
-    "HighAvailability": 0.30
-    "DisasterRecovery": 0.20
-    "Scalability": 0.20
-    "MonitoringAndAlerting": 0.15
-    "Security": 0.10
-    "OtherBestPractices": 0.05
-
-  impact_weights:
-    "High": 0.6
-    "Medium": 0.3
-    "Low": 0.1
-
-  aprl_root: "aprl"
-  rules_dir: "./config/resiliency_rules"
-```
-
-**Category Weights** (must sum to 1.0):
-- **HighAvailability** (0.30): Redundancy, failover, and availability patterns
-- **DisasterRecovery** (0.20): Backup, restoration, and recovery procedures
-- **Scalability** (0.20): Auto-scaling, performance, and capacity planning
-- **MonitoringAndAlerting** (0.15): Observability, logging, and alerting
-- **Security** (0.10): Access control, encryption, and compliance
-- **OtherBestPractices** (0.05): General best practices and recommendations
-
-**Impact Weights** (must sum to 1.0):
-- **High** (0.6): Critical recommendations that significantly affect Resiliency
-- **Medium** (0.3): Important recommendations with moderate impact
-- **Low** (0.1): Minor recommendations and optimizations
-
-**Paths**:
-- **aprl_root**: Location of the Azure Proactive Resiliency Library v2 (relative to backend directory or absolute path)
-- **rules_dir**: Directory containing custom resiliency rule definitions
-
-### Customizing Configuration
-
-To modify settings:
-
-1. Edit `backend/config/app_config.yaml`
-2. Restart the API server (`uvicorn app.main:app --reload`)
-
-Example: To increase weight for Security and reduce Others:
-```yaml
-Resiliency:
-  category_weights:
-    "HighAvailability": 0.25
-    "DisasterRecovery": 0.20
-    "Scalability": 0.20
-    "MonitoringAndAlerting": 0.15
-    "Security": 0.15        # Increased from 0.10
-    "OtherBestPractices": 0.05
-```
-
-The weights will be auto-normalized if they don't sum to exactly 1.0.
-
 ## Notes
 
-- **`.env` is gitignored** – never commit credentials.
-- **`.env.example` is tracked** – use it as a template for setting up new environments.
-- **DefaultAzureCredential** avoids hardcoding API keys; prefer it over static keys.
-- **Resiliency evaluation is recommended** – provides APRL-based recommendations before optional LLM processing.
-- **LLM Annotator is optional** – skip step 3 if you want to test without LLM suggestions.
-- **API doesn't compute evaluations** – all results are pre-computed for instant response times.
+- `.env` is gitignored. Never commit credentials.
+- `.env.sample` is tracked. Use it as a template.
+- APRL deterministic evaluation remains the source of truth.
+- Foundry portal "Data + indexes" may not display external Azure AI Search index attachments used by agent tools; use provisioning/diagnostic output for verification.

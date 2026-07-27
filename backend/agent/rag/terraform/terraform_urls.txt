@@ -1,0 +1,6 @@
+https://azure.github.io/Azure-Verified-Modules/
+https://github.com/Azure/Azure-Verified-Modules
+https://aka.ms/avm
+https://learn.microsoft.com/azure/cloud-adoption-framework/
+https://learn.microsoft.com/azure/cloud-adoption-framework/ready/landing-zone/
+https://github.com/Azure/terraform-azurerm-caf-enterprise-scale

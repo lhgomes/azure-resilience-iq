@@ -19,9 +19,24 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.llm.gateway import create_llm_gateway
 from app.settings import load_settings
+from app.storage.conversation_store import (
+    get_subscription_conversation_id,
+    set_subscription_conversation_id,
+)
 
 LOGGER = logging.getLogger(__name__)
+
+RESILIENCE_UTILITY_JSON_HINT = (
+    "Embedded agent instructions are authoritative for safety. "
+    "Runtime mode: resilience_utility_json. Return valid JSON only."
+)
+
+RESILIENCE_UTILITY_TEXT_HINT = (
+    "Embedded agent instructions are authoritative for safety. "
+    "Runtime mode: resilience_utility_text. Return concise plain text only."
+)
 
 
 def _resource_id_to_uuid(resource_id: str) -> str:
@@ -96,18 +111,75 @@ class HeuristicValidator:
     how to validate recommendations without KQL files.
     """
 
-    def __init__(self, aoai_client=None):
+    def __init__(
+        self,
+        llm_gateway=None,
+        subscription_id: Optional[str] = None,
+        resource_type: Optional[str] = None,
+    ):
         """
         Initialize validator.
         
         Args:
-            aoai_client: Optional Azure OpenAI client for LLM analysis
+            llm_gateway: Optional provider-agnostic LLM gateway
+            subscription_id: Optional subscription identifier for conversation reuse
+            resource_type: Optional resource type for finer memory partitioning
         """
         settings = load_settings()
-        self.aoai_client = aoai_client
+        self.llm_gateway = llm_gateway
+        self.subscription_id = subscription_id
+        self.conversation_id = get_subscription_conversation_id(subscription_id) if subscription_id else None
+        LOGGER.debug("Resilience conversation_id=%s", self.conversation_id)
+
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
         self.learn_more_defaults = settings.get_learn_more_defaults()
-        self.aoai_config = settings.get_azure_openai_config()
+        self.llm_generation_config = settings.get_llm_generation_config()
+        self.resilience_agent_id = settings.get_agent_id_for_flow("resilience")
+
+    def _get_llm_gateway(self):
+        if self.llm_gateway is None:
+            settings = load_settings()
+            self.llm_gateway = create_llm_gateway(settings)
+        return self.llm_gateway
+
+    def _llm_available(self) -> bool:
+        gateway = self._get_llm_gateway()
+        return bool(gateway and gateway.is_available())
+
+    def _generate_text_response(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        deployment = self.llm_generation_config.get("model")
+        gateway = self._get_llm_gateway()
+        if gateway is None:
+            raise RuntimeError("LLM gateway is unavailable")
+        if not self.resilience_agent_id:
+            raise RuntimeError(
+                "Resilience agent reference not configured. "
+                "Set AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE."
+            )
+
+        response = gateway.generate_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            model=deployment,
+            conversation_id=self.conversation_id,
+            agent_id=self.resilience_agent_id,
+        )
+        metrics = gateway.get_last_metrics()
+        generated_conversation_id = metrics.get("conversation_id") if isinstance(metrics, dict) else None
+        if generated_conversation_id and str(generated_conversation_id).strip():
+            self.conversation_id = str(generated_conversation_id).strip()
+            if self.subscription_id:
+                set_subscription_conversation_id(self.subscription_id, self.conversation_id)
+        return response
 
     @staticmethod
     def _extract_keywords(text: str) -> List[str]:
@@ -157,7 +229,7 @@ class HeuristicValidator:
         )
         
         # If heuristics found a low-confidence strategy and LLM is available, try LLM instead
-        if strategy and strategy.confidence < 0.5 and use_llm and self.aoai_client:
+        if strategy and strategy.confidence < 0.5 and use_llm and self._llm_available():
             LOGGER.debug(
                 f"Heuristic confidence too low ({strategy.confidence:.1%}) for {aprl_guid}, trying LLM analysis"
             )
@@ -174,7 +246,7 @@ class HeuristicValidator:
             return strategy
         
         # If heuristics fail completely and LLM available, try LLM analysis
-        if use_llm and self.aoai_client:
+        if use_llm and self._llm_available():
             strategy = self._llm_strategy(
                 recommendation_id, aprl_guid, resource_type, description, long_description
             )
@@ -331,65 +403,41 @@ class HeuristicValidator:
         Sends recommendation details to Azure OpenAI and asks for property-based
         validation strategies when heuristics fail.
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return None
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             LOGGER.warning("azure_openai.deployment not set, cannot use LLM")
             return None
         
-        prompt = f"""You are an Azure resilience expert. Given this recommendation, suggest how to validate if an Azure resource complies.
+        prompt = f"""Build property-based validation checks (no KQL) for this recommendation.
 
-IMPORTANT: Do NOT suggest KQL queries (we don't have KQL). Instead, suggest property-based checks using Azure Resource Manager properties that can be accessed from resource metadata.
-
-Recommendation Title: {description}
-
+Recommendation: {description}
 Resource Type: {resource_type}
+Details: {long_description}
 
-Recommendation Details:
-{long_description}
-
-Please provide validation checks in this JSON format:
+Return valid JSON only:
 {{
-  "checks": [
-    {{"property_path": "properties.xyz or sku.name", "condition": "should have", "expected_value": "specific value or pattern"}},
-    ...
-  ],
-  "confidence": 0.65,
-  "logic": "Brief explanation of the validation logic",
-  "notes": "Any special considerations"
+    "checks": [
+        {{"property_path": "properties.xyz or sku.name", "condition": "should have", "expected_value": "value/pattern"}}
+    ],
+    "confidence": 0.0,
+    "logic": "brief rationale",
+    "notes": "special considerations"
 }}
 
-Examples of valid property paths:
-- properties.zones (for availability zones)
-- properties.replicationSettings.regions (for multi-region)
-- sku.name (for SKU/performance tier)
-- properties.backup.enabled (for backup config)
-- tags (for tag-based validation)
-
-RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
+Use ARM property paths only (for example: properties.zones, properties.replicationSettings.regions, sku.name, properties.backup.enabled, tags)."""
         
         try:
             LOGGER.debug(f"Calling LLM for recommendation {aprl_guid}: {description[:50]}...")
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,  # Use deployment from environment variable
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt=RESILIENCE_UTILITY_JSON_HINT,
+                user_prompt=prompt,
                 temperature=0.3,
                 max_tokens=500,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
             LOGGER.debug("LLM raw response (truncated): %s", response_text[:2000])
             
@@ -456,10 +504,10 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
         Returns:
             (is_failing, reasoning): True if resource fails recommendation, with explanation
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return False, None
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return False, None
         
@@ -475,45 +523,33 @@ RETURN ONLY VALID JSON, no markdown, no explanation text outside the JSON."""
             "zones": resource.get("zones"),
         }
         
-        prompt = f"""You are an Azure resilience expert analyzing a resource against a specific recommendation.
+        prompt = f"""Determine if this resource fails the recommendation.
 
 Recommendation: {description}
 Impact: {impact}
 Details: {long_description}
-
 Resource Configuration:
 {json.dumps(clean_resource, indent=2)}
 
-Analyze whether this resource FAILS to meet the recommendation. Respond in JSON format:
+Return valid JSON only:
 {{
-  "fails_recommendation": true/false,
-  "reasoning": "Specific explanation of why the resource fails or passes",
-  "missing_properties": ["list of missing or incorrect properties"],
-  "confidence": 0.0-1.0
-}}
-
-Be specific about which properties are missing or incorrectly configured.
-RETURN ONLY VALID JSON."""
+    "fails_recommendation": true,
+    "reasoning": "specific pass/fail explanation",
+    "missing_properties": ["missing or incorrect properties"],
+    "confidence": 0.0
+}}"""
         
         try:
             LOGGER.debug(
                 f"Deep LLM analysis for {aprl_guid} (impact: {impact}) on resource {resource.get('name')}"
             )
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an Azure cloud architect specializing in resilience. Provide only valid JSON responses.",
-                    },
-                    {"role": "user", "content": prompt}
-                ],
+            response_text = self._generate_text_response(
+                system_prompt=RESILIENCE_UTILITY_JSON_HINT,
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=800,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             
             # Parse JSON response
             try:
@@ -551,52 +587,29 @@ RETURN ONLY VALID JSON."""
         """
         Generate specific user guidance for manual validation when automated checks cannot be performed.
         """
-        if not self.aoai_client:
+        if not self._llm_available():
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return "Manual review required. Please consult the Azure Well-Architected Framework documentation for guidance."
         
-        prompt = f"""You are an Azure resilience expert. Create clear, specific user guidance for manually validating this recommendation.
+        prompt = f"""Create concise manual validation guidance (plain text, max 150 words).
 
-Recommendation: {description}
-Impact Level: {impact}
+    Recommendation: {description}
+    Impact: {impact}
+    Details: {long_description}
+    Benefits: {potential_benefits}
 
-Details:
-{long_description}
-
-Benefits:
-{potential_benefits}
-
-Generate concise, actionable steps for a user to MANUALLY validate whether their Azure resource complies with this recommendation.
-
-Include:
-1. Specific things to check in Azure Portal or Azure CLI
-2. What properties or configurations to look for
-3. Why this matters for resilience
-4. Where to find the setting in Azure Portal
-
-Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
+    Include what to check, where in Azure Portal, and optional Azure CLI verification."""
         
         try:
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful Azure guide. Provide clear, actionable guidance for manual validation steps.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            guidance = self._generate_text_response(
+                system_prompt=RESILIENCE_UTILITY_TEXT_HINT,
+                user_prompt=prompt,
                 temperature=0.3,
                 max_tokens=200,
             )
-            
-            guidance = response.choices[0].message.content.strip()
             LOGGER.info(f"Generated user guidance for manual validation")
             return guidance
             
@@ -612,7 +625,7 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
         if not pending_items:
             return {}
 
-        if not self.aoai_client:
+        if not self._llm_available():
             return {
                 item['id']: {
                     'quick_header': 'Manual review required',
@@ -621,7 +634,7 @@ Format as a practical guide (plain text, no JSON). Keep it under 150 words."""
                 for item in pending_items
             }
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return {
                 item['id']: {
@@ -645,59 +658,34 @@ Details: {item['long_description']}
 Benefits: {item['potential_benefits']}
 ---"""
 
-        prompt = f"""You are an Azure resilience expert. For each recommendation below, generate TWO things:
-1. A QUICK HEADER (max 10 words) that summarizes what to check
-2. A PRACTICAL GUIDE (max 150 words) with specific validation steps
+        prompt = f"""For each item below, generate:
+1) quick_header (max 10 words)
+2) practical_guide (max 150 words, actionable verification steps)
 
-Respond in JSON format ONLY, with this structure:
+Return valid JSON only:
 {{
-  "recommendations": [
-    {{
-      "id": "the-recommendation-uuid",
-      "quick_header": "Check if backup is enabled and retention is set",
-      "practical_guide": "Go to Azure Portal > [Resource Type] > Backup. Verify backup is enabled and retention policy meets your requirements. Can also use: az backup vault list --resource-group <rg-name>. See: https://learn.microsoft.com/azure/backup/backup-overview"
-    }},
-    ...
-  ]
+    "recommendations": [
+        {{
+            "id": "uuid",
+            "quick_header": "short check summary",
+            "practical_guide": "portal path, key properties to verify, optional CLI example, official learn link"
+        }}
+    ]
 }}
 
 RECOMMENDATIONS TO PROCESS:{recommendations_text}
 
-Requirements for practical guides:
-- Include specific Azure Portal navigation path
-- Include Azure CLI command example if applicable (escape quotes properly for JSON)
-- Include official Microsoft documentation link
-- Focus on what to verify, not how to implement
-- Be actionable in 5 minutes
-- Keep under 150 words per guide
-
-IMPORTANT: When including Azure CLI queries, escape all quotes properly:
-- Use single quotes for the outer query string
-- Use escaped double quotes (\\\" ) inside JMESPath queries
-- Example: 'az storage account list --query \"[?sku.name==\\\"Standard_GRS\\\"]\"'
-
-RETURN ONLY VALID JSON, no markdown, no explanations."""
+When including Azure CLI queries, ensure JSON-safe quoting."""
 
         try:
             LOGGER.info(f"Generating batch user guidance for {len(pending_items)} pending items")
 
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert Azure compliance guide. Generate only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt=RESILIENCE_UTILITY_JSON_HINT,
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=4000,
             )
-
-            response_text = response.choices[0].message.content.strip()
 
             try:
                 parsed = json.loads(response_text)
@@ -898,7 +886,7 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
         if not pending_items:
             return {}
         
-        if not self.aoai_client:
+        if not self._llm_available():
             # Without LLM, mark all as requiring review
             return {
                 item['id']: {
@@ -910,7 +898,7 @@ RETURN ONLY VALID JSON, no markdown, no explanations."""
                 for item in pending_items
             }
         
-        deployment = self.aoai_config.get("deployment")
+        deployment = self.llm_generation_config.get("model")
         if not deployment:
             return {
                 item['id']: {
@@ -988,89 +976,49 @@ Resource Configuration:
                     return candidate
             return _default_learn_url(resource_type)
 
-        prompt = f"""You are an Azure resilience expert evaluating resources against Azure best practices.
+        prompt = f"""Evaluate each resource/recommendation pair for resilience compliance.
 
-These resources may be:
-- Terraform-defined resources (analyze configuration directly)
-- Azure resources from Azure Portal (analyze actual properties)
+Decision rules:
+- pass: required resilience properties are present and enabled
+- fail: required properties are missing, null/empty, or explicitly disabled
+- pending: only when evidence is truly ambiguous (rare)
 
-For each resource and recommendation pair below, determine COMPLIANCE:
+Use only the provided resource JSON and recommendation text.
+If a required property is absent, treat it as not configured (fail).
 
-STATUS RULES (STRICT):
-- "pass" = All required configuration is present and correctly set
-- "fail" = Required configuration is MISSING or EXPLICITLY DISABLED (this is the default assumption)
-- "pending" = ONLY if the property is truly ambiguous or cannot be determined from the data
-           (Use "pending" very rarely - only for properties that are genuinely unclear)
-
-For each evaluation, provide:
-1. id: The item UUID
-2. status: "pass" or "fail" (almost never "pending")
-3. reasoning: Why it passes or fails (1-2 sentences, be specific)
-4. quick_header: Short status label (e.g., "Pass - Zone Redundant" or "Fail - GRS Not Enabled")
-5. practical_guide: Specific steps to fix the issue:
-   - For Terraform: Specific properties to add/modify (e.g., "Set 'zone_redundant = true' in the configuration")
-   - For Azure resources: Steps using Azure Portal (e.g., "Go to Portal > [Resource] > Settings and enable GRS replication")
-6. learn_more_url: Official Microsoft Learn documentation URL most relevant to this recommendation (e.g., https://learn.microsoft.com/en-us/azure/reliability/...); if uncertain, leave empty and the system will apply an official default URL.
-
-Response format - RETURN ONLY VALID JSON:
+Return valid JSON with this exact shape:
 {{
-  "evaluations": [
-    {{
-      "id": "uuid-here",
-      "status": "pass" or "fail",
-      "reasoning": "Specific reason based on observed properties...",
-      "quick_header": "Status header",
-      "practical_guide": "Specific steps to address (Terraform properties or Portal steps)...",
-      "learn_more_url": "https://learn.microsoft.com/en-us/azure/..."
-    }},
-    ...
-  ]
+    "evaluations": [
+        {{
+            "id": "uuid",
+            "status": "pass|fail|pending",
+            "reasoning": "1-2 specific sentences",
+            "quick_header": "short status",
+            "practical_guide": "actionable fix steps (Terraform property names and/or Azure Portal path)",
+            "learn_more_url": "https://learn.microsoft.com/... or empty string"
+        }}
+    ]
 }}
 
-RESOURCES AND RECOMMENDATIONS:{evaluations_text}
+Check patterns to consider when relevant:
+- zone redundancy: availability_zones, zones, zone_redundant, enable_zone_redundancy
+- multi-region: locations, regions, geo-replication/failover config
+- SQL resilience: zone_redundant, active geo-replication, failover groups
+- AKS resilience: availability_zones/zones in default node pool
 
-PROPERTY DETECTION RULES:
-- If a property is NOT in the resource JSON, assume it's not configured → "fail"
-- If a property is explicitly false/disabled (e.g., zone_redundant=false) → "fail"
-- If a property is empty/null and required → "fail"
-- If all required properties are present and enabled → "pass"
-- Only use "pending" if a property's meaning is genuinely ambiguous (extremely rare)
+For learn_more_url, prefer a specific https://learn.microsoft.com/en-us/azure/ page. If uncertain, return an empty string.
 
-SPECIFIC CHECKS:
-- SQL databases: Check for zone_redundant=true, active_geo_replication, failover groups
-- AKS clusters: Check 'availability_zones', 'zones' in default_node_pool
-- Multi-region: Check 'locations' or 'regions' arrays for multiple entries
-- Zone redundancy: Look for 'availability_zones', 'zones', 'zone_redundant', 'enable_zone_redundancy'
-- Replication: Check for failover groups, secondary replicas, geo-replication config
-
-MICROSOFT LEARN URL GUIDELINES:
-- Use base URLs from https://learn.microsoft.com/en-us/azure/ (not docs.microsoft.com or other domains)
-- Include specific resource type in path (e.g., azure/storage, azure/reliability, azure/sql-database)
-- Prefer "/reliability/" or "/architecture/" sections for resilience topics
-- If you are not certain of the exact page, leave the URL blank (the system will supply a correct official link)
-
-CRITICAL: Absence of evidence IS evidence of absence. If a resilience property is missing from the configuration, the resource FAILS that requirement."""
+RESOURCES AND RECOMMENDATIONS:{evaluations_text}"""
         
         try:
             LOGGER.info(f"Evaluating {len(pending_items)} resources without KQL with LLM")
             
-            response = self.aoai_client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert Azure resilience evaluator. Analyze Terraform resources for compliance. Generate only valid JSON responses.",
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
+            response_text = self._generate_text_response(
+                system_prompt=RESILIENCE_UTILITY_JSON_HINT,
+                user_prompt=prompt,
                 temperature=0.2,
                 max_tokens=4500,
             )
-            
-            response_text = response.choices[0].message.content.strip()
             LOGGER.debug("LLM raw response (truncated 2000 chars): %s", response_text[:2000])
             
             # Sanitize CLI commands: replace double quotes with single quotes in Azure CLI examples

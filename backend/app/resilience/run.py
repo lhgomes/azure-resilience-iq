@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config import get_resources_path, get_subscription_dir
+from app.llm.gateway import create_llm_gateway
 from app.logger import get_logger, setup_logging
 from app.resilience.aprl_integration import APRLEvaluator, generate_resilience_check_id, load_aprl_catalog
 from app.resilience.resilience_correlator import ResourceCorrelator, ResiliencyGroupType
@@ -32,71 +33,33 @@ from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, Zona
 from app.settings import get_settings, load_settings
 from app.storage.llm_annotations_store import load_llm_annotations
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
+from app.storage._json_repo import read_json, write_json, path_exists
 
 LOGGER = get_logger(__name__)
 
 
-def get_aoai_client(use_real_llm: bool) -> Optional[object]:
+def get_llm_gateway(use_real_llm: bool) -> Optional[object]:
     """
-    Initialize Azure OpenAI client if LLM is enabled.
-    
-    Uses Azure AD authentication (DefaultAzureCredential) if no API key is provided.
-    This allows running in user login context without storing API keys.
+    Initialize configured LLM gateway if LLM is enabled.
     
     Args:
         use_real_llm: Whether to enable LLM (from merged toggle)
         
     Returns:
-        AzureOpenAI client or None if disabled or credentials missing
+        LLM gateway instance or None if disabled/unavailable
     """
     if not use_real_llm:
         return None
-    
+
     try:
-        from openai import AzureOpenAI
-        from azure.identity import DefaultAzureCredential
-    except ImportError:
-        LOGGER.warning("OpenAI or azure-identity package not installed. LLM disabled.")
-        return None
-    
-    aoai_cfg = get_settings().get_azure_openai_config()
-    endpoint = aoai_cfg["endpoint"]
-    deployment = aoai_cfg["deployment"]
-    
-    if not endpoint or not deployment:
-        LOGGER.warning(
-            "LLM enabled but azure_openai.endpoint or azure_openai.deployment not set. LLM disabled."
-        )
-        return None
-    
-    try:
-        api_version = aoai_cfg["api_version"]
-        timeout_seconds = aoai_cfg["timeout_seconds"]
-        
-        # Prefer API key if provided; otherwise use Azure AD (DefaultAzureCredential)
-        api_key = aoai_cfg.get("api_key")
-        if api_key:
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                api_key=api_key,
-                api_version=api_version,
-                timeout=timeout_seconds,
-            )
-            LOGGER.info("✓ Azure OpenAI client initialized with API key")
-        else:
-            credential = DefaultAzureCredential()
-            token = credential.get_token("https://cognitiveservices.azure.com/.default")
-            client = AzureOpenAI(
-                azure_endpoint=endpoint,
-                azure_ad_token=token.token,
-                api_version=api_version,
-                timeout=timeout_seconds,
-            )
-            LOGGER.info("✓ Azure OpenAI client initialized with Azure AD authentication")
-        
-        return client
+        gateway = create_llm_gateway(get_settings())
+        if not gateway.is_available():
+            LOGGER.warning("LLM enabled but configured provider is unavailable. LLM disabled.")
+            return None
+        LOGGER.info("✓ LLM gateway initialized")
+        return gateway
     except Exception as e:
-        LOGGER.warning("Failed to initialize Azure OpenAI client: %s. LLM disabled.", e)
+        LOGGER.warning("Failed to initialize LLM gateway: %s. LLM disabled.", e)
         return None
 
 
@@ -545,8 +508,7 @@ def analyze_and_save_zonal_resilience(
     
     # Save to file
     output_file = data_dir / "zonal_resilience.json"
-    with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
+    write_json(output_file, results)
     
     # Generate zone recommendation checks for resilience_evaluations.json
     zone_recommendations_by_resource = {}
@@ -595,7 +557,7 @@ def main():
 
     # Check if resources exist
     resources_path = get_resources_path(args.subscription_id)
-    if not resources_path.exists():
+    if not path_exists(resources_path):
         LOGGER.error(
             "Collector resources not found at %s. "
             "Run 'python -m app.collector.run --subscription-id %s' first.",
@@ -609,10 +571,10 @@ def main():
         settings = get_settings()
         setup_logging(args.log_level)
         
-        # Initialize Azure OpenAI client if LLM is enabled
+        # Initialize LLM gateway if LLM is enabled
         use_real_llm = settings.use_real_llm()
-        aoai_client = get_aoai_client(use_real_llm)
-        if use_real_llm and not aoai_client:
+        llm_gateway = get_llm_gateway(use_real_llm)
+        if use_real_llm and not llm_gateway:
             LOGGER.warning("LLM was enabled in config but could not initialize. Using heuristics only.")
         
         LOGGER.info("Loading APRL catalog...")
@@ -622,7 +584,7 @@ def main():
 
         # Load resources
         LOGGER.debug("Loading resources from %s", resources_path)
-        resources_data = json.loads(resources_path.read_text())
+        resources_data = read_json(resources_path, default=[])
         
         # Handle new format with subscription metadata
         if isinstance(resources_data, dict) and "resources" in resources_data:
@@ -659,8 +621,8 @@ def main():
         # Load LLM annotations
         LOGGER.debug("Loading LLM annotations...")
 
-        # Create evaluator with optional LLM client
-        evaluator = APRLEvaluator(catalog, aoai_client=aoai_client)
+        # Create evaluator with optional LLM gateway
+        evaluator = APRLEvaluator(catalog, llm_gateway=llm_gateway)
 
         # Evaluate all resources (one KQL per recommendation per resource type)
         LOGGER.info("Running resilience evaluation on %d resources...", len(resources))
@@ -734,8 +696,7 @@ def main():
             "subscription_id": args.subscription_id,
             "recommendation_runs": detail_log,
         }
-        with open(detailed_path, "w") as f:
-            json.dump(detailed_payload, f, indent=2)
+        write_json(detailed_path, detailed_payload)
 
         # ========================================
         # All calculations done client-side
@@ -748,9 +709,9 @@ def main():
             subscription_dir = get_subscription_dir(args.subscription_id)
             # Load detailed evaluations to extract zone findings
             zone_findings = None
-            if detailed_path.exists():
+            if path_exists(detailed_path):
                 try:
-                    zone_findings = json.loads(detailed_path.read_text())
+                    zone_findings = read_json(detailed_path, default={})
                 except Exception as e:
                     LOGGER.debug(f"Could not load detailed evaluations for zone findings: {e}")
             
@@ -763,7 +724,7 @@ def main():
 
             zonal_data_list = []
             try:
-                zonal_payload = json.loads((subscription_dir / "zonal_resilience.json").read_text())
+                zonal_payload = read_json(subscription_dir / "zonal_resilience.json", default={})
                 zonal_data_list = zonal_payload.get("resources", [])
             except Exception as e:
                 LOGGER.debug(f"Could not load zonal_resilience.json for heuristic updates: {e}")

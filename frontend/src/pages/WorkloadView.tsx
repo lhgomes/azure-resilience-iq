@@ -25,6 +25,11 @@ import {
   reverseEdgeDirection,
   fetchWorkloadGraph,
   fetchSubscriptions,
+  discoverSubscriptions,
+  discoverSubscriptionResourceGroups,
+  startSubscriptionMapping,
+  fetchSubscriptionMappingStatus,
+  uploadTerraformScripts,
   patchNode,
   rejectEdge,
   resetNode,
@@ -39,6 +44,8 @@ import {
   updateWorkload,
   deleteWorkload,
   type SubscriptionInfo,
+  type DiscoverableSubscriptionInfo,
+  type SubscriptionMappingStatus,
   type WorkloadRecord,
   type WorkloadSummary,
   type WorkloadViewState,
@@ -71,7 +78,7 @@ const WorkloadView: React.FC = () => {
     () =>
       subscriptions
         .filter(sub => selectedSubscriptions.has(sub.id))
-        .map(sub => ({ id: sub.id, name: sub.name })),
+        .map(sub => ({ id: sub.id, name: sub.name, resource_count: sub.resource_count })),
     [subscriptions, selectedSubscriptions]
   );
   const selectionKey = useMemo(
@@ -113,6 +120,22 @@ const WorkloadView: React.FC = () => {
   const [activeWorkloadState, setActiveWorkloadState] = useState<WorkloadViewState | null>(null);
   const [workloadName, setWorkloadName] = useState("");
   const [workloadError, setWorkloadError] = useState<string | null>(null);
+  const chatSubscriptionId = useMemo(() => {
+    if (singleSubscriptionId) return singleSubscriptionId;
+    if (selectedSubscriptionIds.length === 0) return "";
+    if (activeWorkloadId) return selectedSubscriptionIds[0];
+
+    const selected = subscriptions.filter(sub => selectedSubscriptions.has(sub.id));
+    if (selected.length === 0) return selectedSubscriptionIds[0];
+
+    const ranked = [...selected].sort((a, b) => {
+      const countA = a.resource_count ?? 0;
+      const countB = b.resource_count ?? 0;
+      if (countA !== countB) return countB - countA;
+      return a.id.localeCompare(b.id);
+    });
+    return ranked[0]?.id || selectedSubscriptionIds[0];
+  }, [singleSubscriptionId, selectedSubscriptionIds, activeWorkloadId, subscriptions, selectedSubscriptions]);
 
   // Default both layers to enabled; no URL sync
   const [aiLayerEnabled, setAiLayerEnabled] = useState(true);
@@ -144,6 +167,11 @@ const WorkloadView: React.FC = () => {
   const [chatAvailabilityChecked, setChatAvailabilityChecked] = useState(false);
   const [pendingRefreshSubscriptions, setPendingRefreshSubscriptions] = useState<Set<string>>(new Set());
   const [chatRefreshToken, setChatRefreshToken] = useState(0);
+  const [availableSubscriptionsForMapping, setAvailableSubscriptionsForMapping] = useState<DiscoverableSubscriptionInfo[]>([]);
+  const [mappingInProgress, setMappingInProgress] = useState(false);
+  const [mappingStatus, setMappingStatus] = useState<SubscriptionMappingStatus | null>(null);
+  const [mappingError, setMappingError] = useState<string | null>(null);
+  const [mappingAuthRequired, setMappingAuthRequired] = useState(false);
 
   // Weights for resilience score calculation
   const [resilienceWeights, setResiliencyWeights] = useState<ResiliencyWeights>(DEFAULT_WEIGHTS);
@@ -153,14 +181,31 @@ const WorkloadView: React.FC = () => {
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const skipFilterResetRef = useRef(false);
   const pendingWorkloadApplyRef = useRef(false);
+  const suppressNextNodeDrawerOpenRef = useRef(false);
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const [selectedRecommendationFocus, setSelectedRecommendationFocus] = useState<{ id?: string; title?: string } | null>(null);
+
+  useEffect(() => {
+    if (activeTabIndex !== 1) return;
+    setSelectedNode(null);
+    setSelectedEdge(null);
+  }, [activeTabIndex]);
 
   const pendingRefreshCount = useMemo(
     () => pendingRefreshSubscriptions.size,
     [pendingRefreshSubscriptions]
   );
+
+  const handleRecommendationSelect = useCallback((recommendationId: string, recommendationTitle?: string) => {
+    if (!recommendationId && !recommendationTitle) return;
+    setSelectedRecommendationFocus({
+      id: recommendationId || undefined,
+      title: recommendationTitle || undefined,
+    });
+    setActiveTabIndex(1);
+  }, []);
 
   const markSubscriptionDirty = useCallback((subscriptionId: string | null) => {
     if (!subscriptionId) return;
@@ -489,14 +534,57 @@ const WorkloadView: React.FC = () => {
     // Validation overrides should not trigger Refresh Annotations & Scores
   }, [removeResiliencyOverride, applyOptimisticOverrideRemoval]);
 
-  const handleShowInGraph = useCallback((resourceId: string) => {
-    // Switch to the Graph tab
+  const handleOpenResourceDetails = (resourceId: string) => {
+    const targetResourceId = String(resourceId || "").trim();
+    if (!targetResourceId) return;
+
+    const allNodes = [...(viewGraph?.nodes ?? []), ...(graph?.nodes ?? [])];
+    const matchedNode = allNodes.find((node) =>
+      String(node?.id ?? "").toLowerCase() === targetResourceId.toLowerCase()
+    );
+    if (!matchedNode) return;
+
+    setSelectedNode(buildSelectedNodeData(matchedNode));
+    setSelectedEdge(null);
+    setActiveSubscriptionId(resolveSubscriptionIdForNode(matchedNode.id));
+  };
+
+  const handleShowInGraph = (resourceId: string) => {
+    const targetResourceId = String(resourceId || "").trim();
+    if (!targetResourceId) return;
+
+    const matchedNode = (graph?.nodes ?? []).find((node) =>
+      String(node?.id ?? "").toLowerCase() === targetResourceId.toLowerCase()
+    );
+    const resolvedNodeId = matchedNode?.id ?? targetResourceId;
+
+    suppressNextNodeDrawerOpenRef.current = true;
+
     setActiveTabIndex(0);
-    // Select the node in the graph to highlight it and open the node drawer
-    setTimeout(() => {
-      graphCanvasRef.current?.selectNode(resourceId);
-    }, 100);
-  }, []);
+
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    const trySelectNode = () => {
+      const canvas = graphCanvasRef.current;
+      if (canvas) {
+        canvas.selectNode(resolvedNodeId);
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < maxAttempts) {
+        window.setTimeout(trySelectNode, 50);
+      }
+    };
+
+    window.setTimeout(trySelectNode, 0);
+  };
+
+  const handleChatResourceHighlight = (resourceIds: string[]) => {
+    if (!resourceIds.length) return;
+    handleOpenResourceDetails(resourceIds[0]);
+  };
 
   const fetchZonalResiliency = useCallback(async () => {
     if (selectedSubscriptionIds.length === 0) return;
@@ -519,41 +607,59 @@ const WorkloadView: React.FC = () => {
     }
   }, [selectedSubscriptionIds]);
 
+  const loadMappedSubscriptions = useCallback(async (restoreSelection: boolean = false) => {
+    const subs = await fetchSubscriptions();
+    setSubscriptions(subs);
+
+    if (!restoreSelection) {
+      return;
+    }
+
+    const storedMulti = localStorage.getItem("awg_subscription_ids");
+    let restored: string[] = [];
+
+    if (storedMulti) {
+      try {
+        const parsed = JSON.parse(storedMulti);
+        if (Array.isArray(parsed)) restored = parsed.map(String);
+      } catch {
+        restored = [];
+      }
+    }
+
+    if (restored.length === 0) {
+      const storedSingle = localStorage.getItem("awg_subscription_id");
+      if (storedSingle) restored = [storedSingle];
+    }
+
+    const valid = restored.filter(id => subs.some(s => s.id === id));
+    setSelectedSubscriptions(new Set(valid));
+
+    if (valid.length === 0) {
+      localStorage.removeItem("awg_subscription_id");
+      localStorage.removeItem("awg_subscription_ids");
+    }
+  }, []);
+
+  const loadAvailableSubscriptionsForMapping = useCallback(async () => {
+    const discovered = await discoverSubscriptions();
+    setAvailableSubscriptionsForMapping(discovered);
+    setMappingError(null);
+    setMappingAuthRequired(false);
+  }, []);
+
   // Fetch subscriptions on mount
   useEffect(() => {
-    fetchSubscriptions()
-      .then(subs => {
-        setSubscriptions(subs);
-
-        const storedMulti = localStorage.getItem("awg_subscription_ids");
-        let restored: string[] = [];
-
-        if (storedMulti) {
-          try {
-            const parsed = JSON.parse(storedMulti);
-            if (Array.isArray(parsed)) restored = parsed.map(String);
-          } catch {
-            restored = [];
-          }
-        }
-
-        if (restored.length === 0) {
-          const storedSingle = localStorage.getItem("awg_subscription_id");
-          if (storedSingle) restored = [storedSingle];
-        }
-
-        const valid = restored.filter(id => subs.some(s => s.id === id));
-        setSelectedSubscriptions(new Set(valid));
-
-        if (valid.length === 0) {
-          localStorage.removeItem("awg_subscription_id");
-          localStorage.removeItem("awg_subscription_ids");
-        }
-      })
-      .catch(err => {
-        console.error("Failed to fetch subscriptions:", err);
-      });
-  }, []);
+    loadMappedSubscriptions(true).catch(err => {
+      console.error("Failed to fetch subscriptions:", err);
+    });
+    loadAvailableSubscriptionsForMapping().catch(err => {
+      console.error("Failed to discover subscriptions:", err);
+      setAvailableSubscriptionsForMapping([]);
+      setMappingError(err?.message ?? "Unable to discover Azure subscriptions. Authenticate first and try again.");
+      setMappingAuthRequired(err?.code === "AZURE_AUTH_REQUIRED");
+    });
+  }, [loadMappedSubscriptions, loadAvailableSubscriptionsForMapping]);
 
   // Check chat availability on mount
   useEffect(() => {
@@ -759,6 +865,16 @@ const WorkloadView: React.FC = () => {
         return node;
       }
 
+      const passedChecks = typeof evaluation.passed_checks === "number"
+        ? evaluation.passed_checks
+        : checks.filter((check: any) => String(check?.status || "").toLowerCase() === "pass").length;
+      const failedChecks = typeof evaluation.failed_checks === "number"
+        ? evaluation.failed_checks
+        : checks.filter((check: any) => String(check?.status || "").toLowerCase() === "fail").length;
+      const totalChecks = typeof evaluation.total_checks === "number"
+        ? evaluation.total_checks
+        : checks.length;
+
       const elementWeight = getElementWeight(nodeId, annotationMap);
       const score = calculateResiliencyScore(checks, elementWeight, resilienceWeights);
 
@@ -770,6 +886,10 @@ const WorkloadView: React.FC = () => {
           resilience: {
             ...resilience,
             resilience_score: score,
+            checks,
+            passed_checks: passedChecks,
+            failed_checks: failedChecks,
+            total_checks: totalChecks,
           },
         },
       };
@@ -863,6 +983,44 @@ const WorkloadView: React.FC = () => {
     const meta = (node as any)?.metadata ?? (node as any)?.data ?? {};
     return meta.display_name || meta.label || (node as any)?.name || nodeId;
   }, [graph, viewGraph]);
+
+  const mentionableResources = useMemo(() => {
+    const sourceNodes = (graph?.nodes && graph.nodes.length > 0)
+      ? graph.nodes
+      : (viewGraph?.nodes || []);
+
+    const seen = new Set<string>();
+    const items: Array<{ id: string; label?: string }> = [];
+
+    sourceNodes.forEach((node: any) => {
+      const nodeId = String(node?.id || '').trim();
+      if (!nodeId) return;
+      const key = nodeId.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      const meta = (node?.metadata ?? node?.data ?? {}) as any;
+      const label = meta.display_name || meta.label || node?.name || undefined;
+      items.push({ id: nodeId, label });
+    });
+
+    return items;
+  }, [graph, viewGraph]);
+
+  const chatTabContext = useMemo<"graph" | "overview" | "workloads">(() => {
+    if (activeTabIndex === 1) return "overview";
+    if (activeTabIndex === 0) return "graph";
+    return "workloads";
+  }, [activeTabIndex]);
+
+  const chatContext = useMemo(() => ({
+    tab: chatTabContext,
+    selected_resource_id: selectedNode?.id,
+    selected_edge_id: chatTabContext === "graph" ? selectedEdge?.id : undefined,
+    view_level: chatTabContext === "overview" ? viewLevel : undefined,
+    selected_subscriptions: selectedSubscriptionIds,
+    active_workload_id: activeWorkloadId,
+  }), [chatTabContext, selectedNode?.id, selectedEdge?.id, viewLevel, selectedSubscriptionIds, activeWorkloadId]);
 
   // Persist subscription selection
   useEffect(() => {
@@ -1100,6 +1258,13 @@ const WorkloadView: React.FC = () => {
       setSelectedNode(null);
       setSelectedEdge(null);
       setActiveSubscriptionId(null);
+      return;
+    }
+    if (suppressNextNodeDrawerOpenRef.current) {
+      suppressNextNodeDrawerOpenRef.current = false;
+      setSelectedNode(null);
+      setSelectedEdge(null);
+      setActiveSubscriptionId(resolveSubscriptionIdForNode(nodeId));
       return;
     }
     if (!viewGraph) return;
@@ -1726,6 +1891,105 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const handleStartSubscriptionMapping = useCallback(async (
+    payload: {
+      subscriptionId: string;
+      resourceGroups: string[];
+      tags: Record<string, string>;
+    }
+  ) => {
+    if (!payload.subscriptionId || mappingInProgress) return;
+
+    try {
+      setMappingError(null);
+      setMappingStatus(null);
+      setMappingInProgress(true);
+
+      const started = await startSubscriptionMapping(payload.subscriptionId, {
+        resource_groups: payload.resourceGroups,
+        tags: payload.tags,
+      });
+      setMappingStatus(started);
+
+      let currentStatus = started.status;
+      const startTime = Date.now();
+      const timeoutMs = 30 * 60 * 1000;
+
+      while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const polled = await fetchSubscriptionMappingStatus(payload.subscriptionId);
+        setMappingStatus(polled);
+        currentStatus = polled.status;
+      }
+
+      if (currentStatus === "failed") {
+        throw new Error("Subscription mapping failed");
+      }
+
+      if (currentStatus === "completed") {
+        await loadMappedSubscriptions(false);
+        await loadAvailableSubscriptionsForMapping();
+        setSelectedSubscriptions(prev => {
+          const next = new Set(prev);
+          next.add(payload.subscriptionId);
+          return next;
+        });
+      }
+    } catch (err: any) {
+      setMappingError(err?.message ?? "Failed to map subscription");
+    } finally {
+      setMappingInProgress(false);
+    }
+  }, [mappingInProgress, loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
+
+  const handleUploadTerraformScripts = useCallback(async (
+    payload: { files: File[]; subscriptionName: string }
+  ) => {
+    try {
+      setMappingError(null);
+      setMappingAuthRequired(false);
+      setMappingStatus(null);
+      setMappingInProgress(true);
+
+      const uploaded = await uploadTerraformScripts(payload.files, payload.subscriptionName);
+
+      const subscriptionId = uploaded.subscription_id;
+      let polled = await fetchSubscriptionMappingStatus(subscriptionId);
+      setMappingStatus(polled);
+
+      let currentStatus = polled.status;
+      const startTime = Date.now();
+      const timeoutMs = 30 * 60 * 1000;
+
+      while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        polled = await fetchSubscriptionMappingStatus(subscriptionId);
+        setMappingStatus(polled);
+        currentStatus = polled.status;
+      }
+
+      if (currentStatus === "failed") {
+        throw new Error("Terraform mapping failed");
+      }
+
+      await loadMappedSubscriptions(false);
+      await loadAvailableSubscriptionsForMapping();
+
+      setSelectedSubscriptions(prev => {
+        const next = new Set(prev);
+        next.add(subscriptionId);
+        return next;
+      });
+
+      return uploaded;
+    } catch (err: any) {
+      setMappingError(err?.message ?? "Failed to upload Terraform scripts");
+      throw err;
+    } finally {
+      setMappingInProgress(false);
+    }
+  }, [loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
+
   // Always respect the view level selection
   const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
 
@@ -1990,6 +2254,21 @@ const WorkloadView: React.FC = () => {
             onExpandedCategoriesChange={setExpandedCategories}
             showLegend={showLegend}
             onToggleLegend={() => setShowLegend(prev => !prev)}
+            availableSubscriptionsForMapping={availableSubscriptionsForMapping}
+            onRefreshAvailableSubscriptions={() => {
+              loadAvailableSubscriptionsForMapping().catch(err => {
+                setAvailableSubscriptionsForMapping([]);
+                setMappingError(err?.message ?? "Failed to discover subscriptions");
+                setMappingAuthRequired(err?.code === "AZURE_AUTH_REQUIRED");
+              });
+            }}
+            onDiscoverMappingResourceGroups={discoverSubscriptionResourceGroups}
+            onStartSubscriptionMapping={handleStartSubscriptionMapping}
+            onUploadTerraformScripts={handleUploadTerraformScripts}
+            mappingInProgress={mappingInProgress}
+            mappingStatus={mappingStatus}
+            mappingError={mappingError}
+            mappingAuthRequired={mappingAuthRequired}
           />
 
           {/* Group toolbar (shows only for multi-select or selected group) */}
@@ -2222,7 +2501,8 @@ const WorkloadView: React.FC = () => {
             display: "flex",
             gap: 12,
             alignItems: "center",
-            color: "#323130"
+            color: "#323130",
+            flexWrap: "wrap",
           }}
         >
           <button
@@ -2246,8 +2526,8 @@ const WorkloadView: React.FC = () => {
           >
             {sidebarOpen ? <ArrowCollapseAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} /> : <ArrowExpandAll16Regular style={{ fontSize: 16, rotate: "-90deg" }} />}
           </button>
-          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: 1 }}>Azure Resiliency IQ</h2>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: "1 1 220px", minWidth: 180 }}>Azure Resiliency IQ</h2>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
             <button
               onClick={() => {
                 fetchGraph();
@@ -2425,30 +2705,6 @@ const WorkloadView: React.FC = () => {
                           }}
                         />
                       </ReactFlowProvider>
-                      {/* Floating chat badge on Graph Tab */}
-                      {isChatAvailable && (
-                        <ChatPanel
-                          subscriptionId={singleSubscriptionId ?? ""}
-                          refreshToken={chatRefreshToken}
-                          getResourceLabel={getResourceLabel}
-                          context={{
-                            tab: "graph",
-                            selected_resource_id: selectedNode?.id,
-                            selected_edge_id: selectedEdge?.id,
-                          }}
-                          onResourceHighlight={(resourceIds) => {
-                            if (resourceIds.length > 0 && graphCanvasRef.current) {
-                              handleShowInGraph(resourceIds[0]);
-                            }
-                          }}
-                          onEdgeSuggest={(edges) => {
-                            console.log("Chat suggested edges:", edges);
-                          }}
-                          height={600}
-                          isMinimized={true}
-                          mode="floating"
-                        />
-                      )}
                     </div>
                   </div>
                 ),
@@ -2475,35 +2731,15 @@ const WorkloadView: React.FC = () => {
                           resourceGroupFilter={resourceGroupFilter}
                           serviceFilter={serviceFilter}
                           validationSourceFilter={validationSourceFilter}
+                          highlightRecommendationId={selectedRecommendationFocus?.id}
+                          highlightRecommendationTitle={selectedRecommendationFocus?.title}
                           onOverrideSaved={handleOverrideSaved}
                           onOverrideDeleted={handleOverrideDeleted}
                           onShowInGraph={handleShowInGraph}
+                          onResourceSelect={handleOpenResourceDetails}
                         />
                       </div>
                     </div>
-                    {isChatAvailable && (
-                      <ChatPanel
-                        subscriptionId={singleSubscriptionId ?? ""}
-                        refreshToken={chatRefreshToken}
-                        getResourceLabel={getResourceLabel}
-                        context={{
-                          tab: "overview",
-                          selected_resource_id: selectedNode?.id,
-                          view_level: viewLevel,
-                        }}
-                        onResourceHighlight={(resourceIds) => {
-                          if (resourceIds.length > 0 && graphCanvasRef.current) {
-                            handleShowInGraph(resourceIds[0]);
-                          }
-                        }}
-                        onEdgeSuggest={(edges) => {
-                          console.log("Chat suggested edges:", edges);
-                        }}
-                        height={600}
-                        isMinimized={true}
-                        mode="floating"
-                      />
-                    )}
                   </>
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
@@ -2532,6 +2768,7 @@ const WorkloadView: React.FC = () => {
                     graphData={graph ?? undefined}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    onResourceSelect={handleOpenResourceDetails}
                   />
                 ) : (
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
@@ -2543,6 +2780,24 @@ const WorkloadView: React.FC = () => {
             defaultTab={0}
           />
         </div>
+
+        {isChatAvailable && hasSelection && (
+          <ChatPanel
+            subscriptionId={chatSubscriptionId}
+            refreshToken={chatRefreshToken}
+            getResourceLabel={getResourceLabel}
+            mentionableResources={mentionableResources}
+            onRecommendationSelect={handleRecommendationSelect}
+            context={chatContext}
+            onResourceHighlight={handleChatResourceHighlight}
+            onEdgeSuggest={(edges) => {
+              console.log("Chat suggested edges:", edges);
+            }}
+            height={800}
+            isMinimized={true}
+            mode="floating"
+          />
+        )}
       </div>
 
       {/* Right drawer */}
@@ -2562,6 +2817,8 @@ const WorkloadView: React.FC = () => {
           node={selectedNode}
           aiLayerEnabled={aiLayerEnabled}
           userLayerEnabled={userLayerEnabled}
+          showShowInGraph={activeTabIndex !== 0}
+          onShowInGraph={() => handleShowInGraph(selectedNode.id)}
           onClose={() => setSelectedNode(null)}
           onSave={handleSaveNode}
           onReset={() => handleResetNode(selectedNode.id)}

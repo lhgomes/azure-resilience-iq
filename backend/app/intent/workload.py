@@ -31,6 +31,7 @@ class Workload(BaseModel):
     view_state: WorkloadViewState
     created_at: str
     updated_at: str
+    conversation_id: Optional[str] = None
 
 
 class CreateWorkloadRequest(BaseModel):

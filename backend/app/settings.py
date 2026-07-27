@@ -92,14 +92,17 @@ class AppSettings:
                 "batch_threshold": 100,
                 "max_nodes_per_batch": 50,
             },
-            "azure_openai": {
-                "endpoint": None,
-                "deployment": None,
-                "api_version": "2024-05-01-preview",
-                "timeout_seconds": 60,
-                "max_attempts": 2,
-                "max_tokens": 6000,
-                "api_key": None,
+            "ai_agent": {
+                "chat_agent_reference": None,
+                "resilience_agent_reference": None,
+                "annotations_agent_reference": None,
+                "terraform_agent_reference": None,
+                "foundry_project_endpoint": None,
+                "openai_api_version": "2025-03-01-preview",
+                "embedding_model": "text-embedding-3-small",
+                "reasoning_model": "gpt-4.1",
+                "run_timeout_seconds": 120,
+                "poll_interval_seconds": 1.5,
             },
             "data": {
                 "dir": "./data",
@@ -172,23 +175,33 @@ class AppSettings:
         logging_config = self.config.get("logging", {})
         return logging_config.get("level", "INFO").upper()
 
-    def get_azure_openai_config(self) -> Dict[str, Any]:
-        """Get Azure OpenAI configuration values.
-        
-        Priority: Environment variables > YAML config > defaults
+    def get_llm_generation_config(self) -> Dict[str, Any]:
+        """Get provider-neutral generation settings for LLM calls.
+
+        Priority: `LLM_MODEL` override > agent reasoning model.
         """
-        aoai = self.config.get("azure_openai", {})
+        llm_cfg = self.get_llm_config()
+        ai_agent_cfg = self.get_ai_agent_config()
         return {
-            "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT") or aoai.get("endpoint"),
-            "deployment": os.getenv("AZURE_OPENAI_DEPLOYMENT") or aoai.get("deployment"),
-            "api_version": os.getenv("AZURE_OPENAI_API_VERSION") or aoai.get("api_version", "2024-05-01-preview"),
-            "timeout_seconds": int(aoai.get("timeout_seconds", 60)),
-            "max_attempts": int(aoai.get("max_attempts", 2)),
-            "max_tokens": int(aoai.get("max_tokens", 6000)),
-            "api_key": os.getenv("AZURE_OPENAI_API_KEY") or aoai.get("api_key"),
-            # Embedding model configuration (for semantic guardrails)
-            "embedding_deployment": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT") or aoai.get("embedding_deployment", "text-embedding-3-small"),
-            "embedding_api_version": os.getenv("AZURE_OPENAI_EMBEDDING_API_VERSION") or aoai.get("embedding_api_version", "2024-05-01-preview"),
+            "model": (
+                os.getenv("LLM_MODEL")
+                or ai_agent_cfg.get("reasoning_model")
+            ),
+            "max_attempts": int(
+                os.getenv("LLM_MAX_ATTEMPTS")
+                or llm_cfg.get("max_attempts")
+                or 2
+            ),
+            "max_tokens": int(
+                os.getenv("LLM_MAX_TOKENS")
+                or llm_cfg.get("max_tokens")
+                or 6000
+            ),
+            "timeout_seconds": int(
+                os.getenv("LLM_TIMEOUT_SECONDS")
+                or llm_cfg.get("timeout_seconds")
+                or 60
+            ),
         }
 
     def get_llm_batching_config(self) -> Dict[str, int]:
@@ -199,46 +212,131 @@ class AppSettings:
             "max_nodes_per_batch": int(llm_cfg.get("max_nodes_per_batch", 50)),
         }
 
-    def get_guardrail_config(self) -> Dict[str, Any]:
-        """Get chat guardrail configuration values.
-        
-        Used for semantic scope validation and content safety.
-        """
-        guardrail_cfg = self.config.get("guardrails", {})
+    def get_ai_agent_config(self) -> Dict[str, Any]:
+        """Get Azure AI Foundry agent configuration values (direct SDK mode)."""
+        agent_cfg = self.config.get("ai_agent", {})
         return {
-            "semantic_threshold": float(os.getenv("GUARDRAIL_SEMANTIC_THRESHOLD") or guardrail_cfg.get("semantic_threshold", 0.50)),
-            "enable_content_safety": os.getenv("GUARDRAIL_ENABLE_CONTENT_SAFETY", "false").lower() == "true",
-            "content_safety_endpoint": os.getenv("AZURE_CONTENT_SAFETY_ENDPOINT", ""),
-            "content_safety_key": os.getenv("AZURE_CONTENT_SAFETY_KEY", ""),
+            "foundry_project_endpoint": (
+                os.getenv("AI_FOUNDRY_PROJECT_ENDPOINT")
+                or agent_cfg.get("foundry_project_endpoint")
+            ),
+            "openai_api_version": (
+                os.getenv("AI_FOUNDRY_OPENAI_API_VERSION")
+                or agent_cfg.get("openai_api_version")
+                or "2025-03-01-preview"
+            ),
+            "embedding_model": (
+                os.getenv("AI_FOUNDRY_EMBEDDING_MODEL")
+                or agent_cfg.get("embedding_model", "text-embedding-3-small")
+            ),
+            "reasoning_model": (
+                os.getenv("AI_FOUNDRY_REASONING_MODEL")
+                or agent_cfg.get("reasoning_model", "gpt-4.1")
+            ),
+            "chat_agent_reference": (
+                os.getenv("AI_FOUNDRY_CHAT_AGENT_REFERENCE")
+                or agent_cfg.get("chat_agent_reference")
+            ),
+            "resilience_agent_reference": (
+                os.getenv("AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE")
+                or agent_cfg.get("resilience_agent_reference")
+            ),
+            "annotations_agent_reference": (
+                os.getenv("AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE")
+                or agent_cfg.get("annotations_agent_reference")
+            ),
+            "terraform_agent_reference": (
+                os.getenv("AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE")
+                or agent_cfg.get("terraform_agent_reference")
+            ),
+            "run_timeout_seconds": int(agent_cfg.get("run_timeout_seconds", 120)),
+            "poll_interval_seconds": float(agent_cfg.get("poll_interval_seconds", 1.5)),
         }
+
+    def get_agent_id_for_flow(self, flow: str) -> Optional[str]:
+        """Get configured agent reference for a chat orchestration flow.
+
+        Flow values:
+        - chat
+        - resilience
+        - annotations
+        - terraform
+        """
+        ai_agent_config = self.get_ai_agent_config()
+        flow_map = {
+            "chat": ai_agent_config.get("chat_agent_reference"),
+            "resilience": ai_agent_config.get("resilience_agent_reference"),
+            "annotations": ai_agent_config.get("annotations_agent_reference"),
+            "terraform": ai_agent_config.get("terraform_agent_reference"),
+        }
+        selected = flow_map.get((flow or "").strip().lower())
+        if selected and str(selected).strip():
+            return str(selected).strip()
+        return None
 
     def is_chat_available(self) -> bool:
         """
         Check if chat feature is available (all required config is present).
-        
-        Required configuration:
-        - AZURE_OPENAI_EMBEDDING_DEPLOYMENT
-        - AZURE_OPENAI_EMBEDDING_API_VERSION  
-        - GUARDRAIL_SEMANTIC_THRESHOLD
-        
+
+        Required configuration (direct Foundry SDK mode):
+        - llm.enabled=true
+        - ai_agent.foundry_project_endpoint
+                - flow-specific agent ids:
+                    AI_FOUNDRY_CHAT_AGENT_REFERENCE / AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE / AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE
+
         Returns:
             True if all required chat configuration is present
         """
-        aoai_config = self.get_azure_openai_config()
-        guardrail_config = self.get_guardrail_config()
-        
-        required_fields = [
-            aoai_config.get("embedding_deployment"),
-            aoai_config.get("embedding_api_version"),
-            guardrail_config.get("semantic_threshold"),
+        ai_agent_config = self.get_ai_agent_config()
+
+        required_flow_ids = [
+            ai_agent_config.get("chat_agent_reference"),
+            ai_agent_config.get("resilience_agent_reference"),
+            ai_agent_config.get("annotations_agent_reference"),
         ]
-        
-        return all(field is not None and str(field).strip() != "" for field in required_fields)
+
+        required_fields = [
+            ai_agent_config.get("foundry_project_endpoint"),
+            *required_flow_ids,
+        ]
+
+        return self.use_real_llm() and all(
+            field is not None and str(field).strip() != "" for field in required_fields
+        )
 
     def get_data_dir(self) -> str:
         """Get base data directory for filesystem artifacts."""
         data_cfg = self.config.get("data", {})
-        return data_cfg.get("dir", "./data")
+        return os.getenv("DATA_DIR") or data_cfg.get("dir", "./data")
+
+    def get_data_storage_config(self) -> Dict[str, Any]:
+        """Get data repository backend configuration.
+
+        Environment variables take precedence over YAML values.
+        """
+        data_cfg = self.config.get("data", {})
+        return {
+            "backend": (
+                os.getenv("DATA_STORAGE_BACKEND")
+                or data_cfg.get("storage_backend")
+                or "local"
+            ).strip().lower(),
+            "storage_account": (
+                os.getenv("DATA_STORAGE_ACCOUNT")
+                or data_cfg.get("storage_account")
+                or ""
+            ).strip(),
+            "container": (
+                os.getenv("DATA_STORAGE_CONTAINER")
+                or data_cfg.get("storage_container")
+                or ""
+            ).strip(),
+            "prefix": (
+                os.getenv("DATA_STORAGE_PREFIX")
+                or data_cfg.get("storage_prefix")
+                or ""
+            ).strip().strip("/"),
+        }
 
     def get_monitored_resource_types_path(self) -> str:
         """Path to monitored resource types allowlist."""

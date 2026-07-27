@@ -21,17 +21,40 @@ class CriticalityInsight(BaseModel):
     current_score: Optional[int] = None
 
 
+class ChatSource(BaseModel):
+    """Source citation from LLM response."""
+    title: Optional[str] = None
+    url: str
+    type: Optional[str] = None
+
+
+class ChatMetrics(BaseModel):
+    """LLM run metadata and performance metrics."""
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    status: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    total_ms: Optional[int] = None
+    queue_ms: Optional[int] = None
+    processing_ms: Optional[int] = None
+
+
 class ChatRequest(BaseModel):
     """Request for chat service."""
     message: str
     subscription_id: str
     context: Optional[Dict[str, Any]] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
+    referenced_resource_ids: Optional[List[str]] = None
 
 
 class ChatResponse(BaseModel):
     """Response from chat service."""
     message: str
+    sources: List[ChatSource] = Field(default_factory=list)
+    metrics: Optional[ChatMetrics] = None
     suggested_edges: List[SuggestedEdge] = Field(default_factory=list)
     resources_to_highlight: List[str] = Field(default_factory=list)
     criticality_insights: List[CriticalityInsight] = Field(default_factory=list)
@@ -39,7 +62,9 @@ class ChatResponse(BaseModel):
     remediation_guide: Optional[Dict[str, Any]] = None
     terraform_code: Optional[str] = None
     terraform_validation: Optional[str] = None
-    clarifying_questions: List[str] = Field(default_factory=list)
+    clarifying_questions: List[Dict[str, Any]] = Field(default_factory=list)
+    agent_flow: Optional[str] = None
+    rag_trace: Optional[Dict[str, Any]] = None
     raw_llm_output: Optional[Dict[str, Any]] = None
 
 

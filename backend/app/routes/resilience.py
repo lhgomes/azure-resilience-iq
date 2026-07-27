@@ -22,6 +22,7 @@ from app.storage.override_store import (
     generate_check_uuid,
     get_override_for_check
 )
+from app.storage._json_repo import path_exists
 
 LOGGER = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def get_subscription_evaluation(subscription_id: str):
     """
     # Check if evaluation results exist
     eval_path = get_resilience_evaluations_path(subscription_id)
-    if not eval_path.exists():
+    if not path_exists(eval_path):
         raise HTTPException(
             status_code=404, 
             detail=f"Resiliency evaluations not found for subscription {subscription_id}. "
@@ -186,7 +187,7 @@ def get_resource_evaluation(subscription_id: str, resource_id: str):
     """
     # Check if evaluation results exist
     eval_path = get_resilience_evaluations_path(subscription_id)
-    if not eval_path.exists():
+    if not path_exists(eval_path):
         raise HTTPException(
             status_code=404,
             detail=f"Resiliency evaluations not found for subscription {subscription_id}"
@@ -275,7 +276,7 @@ def get_subscription_resilience_summary(subscription_id: str):
         }
     """
     eval_path = get_resilience_evaluations_path(subscription_id)
-    if not eval_path.exists():
+    if not path_exists(eval_path):
         raise HTTPException(
             status_code=404,
             detail=f"Resiliency evaluations not found for subscription {subscription_id}. "

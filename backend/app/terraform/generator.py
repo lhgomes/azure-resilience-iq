@@ -1,5 +1,5 @@
 """
-Generator for converting Terraform resources to azure-workload-graph format.
+Generator for converting Terraform resources to azure-resilience-iq format.
 
 Converts parsed Terraform resources and relationships into:
 - resources.json: Standard Azure resource format compatible with collector
@@ -34,7 +34,7 @@ class GeneratedResource:
 
 class TerraformResourceGenerator:
     """
-    Convert Terraform resources to standard azure-workload-graph format.
+    Convert Terraform resources to standard azure-resilience-iq format.
     
     Maps Terraform resource types and attributes to Azure REST API format.
     Generates relationships and edges between resources.
@@ -313,7 +313,7 @@ class TerraformResourceGenerator:
             result = re.sub(r'\$\{([^}]+)\}', replace_interpolation, obj)
             
             # Resolve bare azurerm_*.*.id patterns (without ${})
-            result = re.sub(r'(azurerm_[a-z_]+\.[a-z_]+\.id)', 
+            result = re.sub(r'(azurerm_[a-z0-9_]+\.[a-zA-Z_][a-zA-Z0-9_-]*\.id)', 
                           lambda m: self.resource_id_map.get('.'.join(m.group(1).split('.')[:2]), m.group(0)) 
                                     if m.group(1).endswith('.id') else m.group(0), 
                           result)
@@ -414,22 +414,48 @@ class TerraformResourceGenerator:
         self, tf_resource: TerraformResource, attrs: Dict[str, Any]
     ) -> str:
         """Extract resource name from Terraform."""
-        # Priority: name attribute, Terraform name
-        return attrs.get("name", tf_resource.name)
+        candidate = self._sanitize_scalar_value(attrs.get("name"))
+        return candidate if isinstance(candidate, str) and candidate else tf_resource.name
     
     def _get_location(self, tf_type: str, attrs: Dict[str, Any]) -> Optional[str]:
         """Extract location from attributes."""
         # Priority: location, region, azure_location
-        return attrs.get("location") or attrs.get("region")
+        return self._sanitize_scalar_value(attrs.get("location") or attrs.get("region"))
     
     def _get_resource_group(self, attrs: Dict[str, Any]) -> Optional[str]:
         """Extract resource group from attributes."""
         # Priority: resource_group_name
-        return attrs.get("resource_group_name", "terraform-rg")
+        value = self._sanitize_scalar_value(attrs.get("resource_group_name"))
+        return value if isinstance(value, str) and value else "terraform-rg"
     
     def _get_tags(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         """Extract tags from attributes."""
-        return attrs.get("tags", {}) or {}
+        tags = attrs.get("tags", {}) or {}
+        return self._sanitize_collection_values(tags)
+
+    def _sanitize_scalar_value(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().strip('"').strip("'")
+        if "${" in normalized:
+            return None
+        return normalized
+
+    def _sanitize_collection_values(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: sanitized
+                for key, item in value.items()
+                if (sanitized := self._sanitize_collection_values(item)) is not None
+            }
+        if isinstance(value, list):
+            return [
+                sanitized
+                for item in value
+                if (sanitized := self._sanitize_collection_values(item)) is not None
+            ]
+        return self._sanitize_scalar_value(value)
     
     def _get_sku(self, tf_type: str, attrs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Extract SKU and configuration information from resource attributes."""
@@ -735,7 +761,7 @@ class TerraformResourceGenerator:
                     self._add_edge(res_id, subnet_id, "attached_to", "Terraform")
 
             elif resource.type.lower() == "microsoft.apimanagement/service":
-                # APIM Service -> APIs (parent contains child)
+                # API Management service -> APIs (parent contains child)
                 service_name = resource.name or props.get("name")
                 if service_name:
                     for child_id, child in self.generated_resources.items():

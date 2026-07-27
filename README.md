@@ -13,8 +13,76 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 ### Azure Requirements
 
 - Azure subscription with resources to analyze
-- Azure OpenAI service (optional, for LLM annotations)
+- Azure AI Foundry project with deployed agents
 - Appropriate Azure RBAC permissions to query resources
+
+## Automated Azure VM Deployment (Terraform + Foundry + Search)
+
+Production-style deployment is fully automated from `backend/deploy/scripts/deploy_vm_stack.sh`.
+
+### What the stack provisions
+
+- **Compute/Network**: Linux VM, VNet/subnets, NSG, public IP, private endpoints.
+- **Azure AI Foundry (new model)**:
+  - `azurerm_cognitive_account` (`AIServices`)
+  - `azurerm_cognitive_account_project`
+  - Reasoning deployment (`gpt-4.1` by default)
+  - Embedding deployment (`text-embedding-3-small`) required for hydration.
+- **Azure AI Search** with private networking.
+- **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
+
+### End-to-end deployment command
+
+```bash
+cd backend/deploy/scripts
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
+```
+
+Use `--agents-migrate` when you need to force agent/tool reconciliation:
+
+```bash
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
+```
+
+### Provisioning flow (automated)
+
+1. Terraform apply for infra + Foundry + model deployments.
+2. Create/verify Foundry project Azure AI Search connection (`azure-ai-search-default`).
+3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy.
+3. Ensure Search indexes:
+  - `learn-aprl-index`
+  - `learn-terraform-index`
+4. Ensure Foundry agents and attach tools:
+  - `chat-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
+  - `resilience-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
+  - `terraform-compiler-agent` → Search (`learn-terraform-index`)
+  - `annotations-agent` → no tools
+5. Refresh RAG data into `backend/agent/rag` (staged swap on success).
+6. Hydrate indexes (embeddings + upload):
+  - APRL corpus from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`).
+  - Terraform corpus from `backend/agent/rag` only.
+7. Build frontend, configure systemd + nginx.
+
+### Incremental updates (no Terraform re-provision)
+
+Use app-only deployment for backend/frontend code changes:
+
+```bash
+cd backend/deploy/scripts
+./deploy_app_only.sh ../vm-terraform/terraform.tfvars
+```
+
+What it does:
+- Computes local backend/frontend hashes.
+- Compares with VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`).
+- Syncs only changed app folders.
+- Restarts backend and rebuilds frontend only when needed.
+
+### Model capacity / quota
+
+- Embedding deployment capacity is Terraform-managed via `embedding_model_capacity`.
+- For this environment, `350` was validated as the usable max and should be set in `backend/deploy/vm-terraform/terraform.tfvars`.
+- Dynamic "use all available quota" is not always deterministically available from current account usage APIs.
 
 ## Installation
 
@@ -36,7 +104,7 @@ The submodule command initializes the Azure Proactive Resiliency Library (APRL) 
 cd backend
 python3.12 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -e .
+pip install -r requirements.txt
 ```
 
 Notes:
@@ -45,7 +113,7 @@ Notes:
 
 #### Configure Application Settings
 
-Edit `backend/config/app_config.yaml` to set Azure OpenAI and LLM settings:
+Edit `backend/config/app_config.yaml` to set LLM settings:
 
 ```yaml
 llm:
@@ -53,56 +121,50 @@ llm:
   batch_threshold: 50
   max_nodes_per_batch: 30
 
-azure_openai:
-  timeout_seconds: 60
-  max_attempts: 2
-  max_tokens: 6000
+ai_agent: {}
 ```
 
 Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
 
 #### Configure Chat Feature (Optional)
 
-The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload. The chat feature requires additional Azure OpenAI configuration beyond basic LLM annotations.
+The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload through direct Foundry Agents.
 
 **Create Environment File**:
 
-Create a `backend/.env` file (copy from `backend/.env.example` if available) and add:
+Create a `backend/.env` file (copy from `backend/.env.sample` if available) and add:
+
+For deployed VM runtime, these values are auto-generated into `/etc/azure-resilience-iq.env` by `backend/deploy/scripts/deploy_vm_stack.sh`; local `backend/.env` is for local/dev execution.
 
 ```env
-# Azure OpenAI Configuration
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini  # or your chat completion model
-AZURE_OPENAI_API_VERSION=2024-05-01-preview
+# Required Foundry endpoint
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
 
-# Chat Feature Configuration (Required for chat to be enabled)
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
-GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+# Required/expected Foundry + agent settings
+AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
+AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
+AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
+AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
+AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
+AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
+
+# Optional data storage mode (default local)
+DATA_STORAGE_BACKEND=local
+# DATA_STORAGE_ACCOUNT=<storage-account-name>
+# DATA_STORAGE_CONTAINER=deployment-state
+# DATA_STORAGE_PREFIX=<project/environment-prefix>
+# DATA_DIR=./data
 ```
 
-**Required Environment Variables**:
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | **Yes** | Embeddings model for semantic query validation (e.g., `text-embedding-3-small`) |
-| `AZURE_OPENAI_EMBEDDING_API_VERSION` | **Yes** | API version for embeddings endpoint |
-| `GUARDRAIL_SEMANTIC_THRESHOLD` | **Yes** | Relevance threshold for chat queries (0.0-1.0, recommended: 0.50) |
-
-**How It Works**:
-- The chat feature uses **semantic guardrails** to ensure queries are infrastructure-related
-- Queries are compared against reference workload questions using embeddings
-- If similarity score is below the threshold, the query is rejected
-- If **all three variables** are missing, the chat UI is automatically hidden
-
 **Features**:
-- 💬 Natural language infrastructure analysis
-- 🔍 Resource-specific recommendations
-- 🛠️ Remediation guidance with step-by-step instructions
-- 📊 Cost and performance impact analysis  
-- 🧩 Terraform code generation
-- 🔗 Dependency relationship suggestions
-- ⚡ Query-type-specific responses (findings, remediation, terraform, connections)
+- Natural language infrastructure analysis
+- Resource-specific recommendations
+- Remediation guidance with step-by-step instructions
+- Cost and performance impact analysis  
+- Terraform code generation
+- Dependency relationship suggestions
+- Query-type-specific responses (findings, remediation, terraform, connections)
 
 **Note**: The `.env` file is gitignored and should never be committed to the repository. Each developer needs their own local configuration.
 
@@ -161,7 +223,7 @@ python -m app.terraform.run --terraform-dir <path-to-terraform-files>
 **Or via Web UI**:
 1. Start the backend server (see Step 4)
 2. Open the frontend (see Step 5)
-3. Click "📦 Import Terraform Configuration"
+3. Click "Import Terraform Configuration"
 4. Upload your `.tf` or `.json` files
 
 Both options create:
@@ -190,7 +252,7 @@ Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
 
 ### Step 3: Run LLM Annotations (Optional)
 
-If you configured Azure OpenAI and have `llm.enabled: true`, run the LLM annotator:
+If Foundry is configured and `llm.enabled: true`, run the LLM annotator:
 
 ```bash
 python -m app.llm.run --subscription-id <your-subscription-id>
@@ -209,10 +271,16 @@ Results are saved to `data/{subscription-id}/llm_annotations.json`.
 Run the FastAPI backend:
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
 The backend API will be available at `http://localhost:8000`.
+
+> ⚠️ **Security note:** This backend has **no authentication** and queries Azure
+> using your local credentials. Run it locally only. Do **not** bind it to all
+> interfaces (`--host 0.0.0.0`) or expose it to untrusted networks. Browser
+> origins are restricted via the `CORS_ALLOWED_ORIGINS` environment variable
+> (defaults to `http://localhost:5173`); see `backend/.env.sample`.
 
 **API Health Check**:
 ```bash
@@ -323,50 +391,6 @@ The UI shows when your current view differs from the saved workload, prompting y
 
 **Storage**:
 Workloads are stored in `backend/data/workload/workloads.json` and persist across sessions.
-
-## Project Structure
-
-```
-azure-resilience-iq/
-├── backend/
-│   ├── app/
-│   │   ├── collector/        # Azure Resource Graph collector
-│   │   ├── graph/            # Graph building and modeling
-│   │   ├── llm/              # LLM annotation engine
-│   │   ├── resilience/       # Resiliency evaluation and APRL integration
-│   │   ├── relationships/    # Resource relationship extraction
-│   │   ├── routes/           # API route handlers (resilience, recommendations)
-│   │   ├── services/         # Business logic (workloads, subscriptions, recommendations)
-│   │   ├── storage/          # Data persistence layer
-│   │   ├── intent/           # User overrides and manual edges
-│   │   ├── config.py         # Configuration utilities
-│   │   ├── settings.py       # Settings and environment configuration
-│   │   └── main.py           # FastAPI application
-│   ├── data/
-│   │   └── {subscription-id}/
-│   │       ├── resources.json               # Collected Azure resources
-│   │       ├── edges.json                  # Multi-source dependency edges
-│   │       ├── llm_annotations.json        # LLM-generated annotations
-│   │       ├── resilience_evaluations.json # Resiliency scores and recommendations
-│   │       ├── node_overrides.json         # User node customizations
-│   │       ├── edge_overrides.json         # Edge accept/reject decisions
-│   │       ├── manual_edges.json           # User-created edges
-│   │       ├── resilience_overrides.json   # Resiliency evaluation overrides
-│   │       └── groups.json                 # Node groupings
-│   ├── pyproject.toml        # Python dependencies
-│   └── .env                  # Environment configuration
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # React components (nodes, edges, graph canvas)
-│   │   ├── pages/            # Page components
-│   │   ├── domain/           # Business logic (graph view builder)
-│   │   ├── api/              # API client functions
-│   │   └── utils/            # Utilities and icon resolver
-│   ├── public/               # Static assets (Azure icons)
-│   ├── package.json          # npm dependencies
-│   └── vite.config.ts        # Vite configuration
-└── README.md
-```
 
 ## Graph Composition
 
@@ -649,72 +673,6 @@ After modifying:
 2. Re-run resilience evaluations: `python -m app.resilience.run --subscription-id <id>`
 3. Scores will recalculate automatically in the frontend
 
-## API Endpoints
-
-The backend provides the following main endpoints:
-
-### Core Endpoints
-- `GET /health` - Health check
-- `GET /api/subscriptions` - List available subscriptions
-- `GET /api/subscriptions/{subscription_id}/graph` - Get workload graph
-- `GET /api/subscriptions/{subscription_id}/reviews` - Get review inbox
-
-### Node Management
-- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}` - Update node properties (name, color, icon, layer, criticality_score)
-- `PATCH /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Update node criticality score
-- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}` - Remove node override
-- `DELETE /api/subscriptions/{subscription_id}/nodes/{node_id}/criticality` - Delete criticality override
-
-### Edge Management
-- `POST /api/subscriptions/{subscription_id}/edges` - Create manual edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/accept` - Accept edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reject` - Reject edge
-- `POST /api/subscriptions/{subscription_id}/edges/{edge_id}/reverse` - Reverse edge direction
-- `DELETE /api/subscriptions/{subscription_id}/edges/{edge_id}` - Delete edge
-
-### Group Management
-- `GET /api/subscriptions/{subscription_id}/groups` - List groups
-- `POST /api/subscriptions/{subscription_id}/groups` - Create a new group
-- `PATCH /api/subscriptions/{subscription_id}/groups/{group_id}` - Update group name
-- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}` - Delete a group
-- `POST /api/subscriptions/{subscription_id}/groups/{group_id}/nodes` - Add node to group
-- `DELETE /api/subscriptions/{subscription_id}/groups/{group_id}/nodes/{node_id}` - Remove node from group
-
-### Resiliency & Recommendations Endpoints
-- `GET /api/resilience/health` - Resiliency module health check
-- `GET /api/resilience/rules` - Get all resilience rules (with optional filtering by resource_type and category)
-- `GET /api/resilience/evaluate/{subscription_id}` - Get resilience evaluations for subscription
-- `GET /api/resilience/evaluate/{subscription_id}/resource/{resource_id}` - Get resilience evaluation for specific resource
-- `POST /api/resilience/evaluate/{subscription_id}/refresh` - Refresh resilience evaluations
-- `GET /api/resilience/weights` - Get resilience category weights
-- `GET /api/resilience/categories` - Get available resilience categories
-- `GET /api/resilience/evaluate/{subscription_id}/summary` - Get resilience summary
-- `GET /api/resilience/evaluate/{subscription_id}/zonal-resilience` - Get zonal resilience analysis
-- `GET /api/resilience/{subscription_id}/overrides` - List resilience evaluation overrides
-- `POST /api/resilience/{subscription_id}/overrides` - Create resilience override
-- `DELETE /api/resilience/{subscription_id}/overrides` - Delete resilience override
-- `GET /api/resilience/{subscription_id}/overrides/check` - Check if resource has overrides
-- `GET /api/{subscription_id}/recommendations` - Get unified recommendations (WARA + resilience)
-- `GET /api/{subscription_id}/resources/{resource_id}/recommendations` - Get recommendations for specific resource
-- `GET /api/{subscription_id}/recommendations/by-category/{category}` - Get recommendations by category
-- `GET /api/{subscription_id}/recommendations/summary` - Get recommendations summary
-
-### Workload Management Endpoints
-- `GET /api/workloads` - List all saved workload views
-- `GET /api/workloads/{workload_id}` - Get a specific workload view
-- `POST /api/workloads` - Create a new workload view
-  - Body: `{"name": "string", "view_state": {...}}`
-- `PATCH /api/workloads/{workload_id}` - Update workload name or view state
-  - Body: `{"name": "string" (optional), "view_state": {...} (optional)}`
-- `DELETE /api/workloads/{workload_id}` - Delete a workload view
-
-### Subscription Refresh Endpoints
-- `POST /api/subscriptions/{subscription_id}/refresh` - Start async LLM annotation refresh
-- `GET /api/subscriptions/{subscription_id}/refresh/status` - Check refresh job status
-
-### Terraform Endpoints
-- `POST /api/terraform/upload` - Upload and process Terraform files (.tf or .json)
-- Form parameters: `files` (multi-file upload), `subscription_id` (optional), `subscription_name` (optional)
 
 ## Development Workflow
 
@@ -724,7 +682,7 @@ The backend provides the following main endpoints:
    ```bash
    cd backend
    source .venv/bin/activate
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --reload --port 8000
    ```
 
 2. **Terminal 2 - Frontend**:
@@ -764,13 +722,18 @@ Set these in `backend/config/app_config.yaml`.
 | `llm.enabled` | No | `false` | Toggle LLM end-to-end (compute and serve annotations) |
 | `llm.batch_threshold` | No | `50` | Node count threshold for batching annotations |
 | `llm.max_nodes_per_batch` | No | `30` | Max nodes per batch when batching |
-| `azure_openai.endpoint` | Yes (if LLM enabled) | - | Azure OpenAI service endpoint |
-| `azure_openai.deployment` | Yes (if LLM enabled) | - | Azure OpenAI deployment name |
-| `azure_openai.api_version` | No | `2024-05-01-preview` | Azure OpenAI API version |
-| `azure_openai.timeout_seconds` | No | `60` | Request timeout in seconds |
-| `azure_openai.max_attempts` | No | `2` | Maximum retry attempts |
-| `azure_openai.max_tokens` | No | `6000` | Maximum tokens for LLM response |
-| `azure_openai.api_key` | No | empty | API key; if empty, uses DefaultAzureCredential |
+| `llm.model` / `LLM_MODEL` | Yes (if LLM enabled) | - | Model/deployment name used by the agent |
+| `llm.max_attempts` / `LLM_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
+| `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
+| `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
+| `ai_agent.foundry_project_endpoint` / `AI_FOUNDRY_PROJECT_ENDPOINT` | Yes (if LLM enabled) | - | Foundry project endpoint for agent threads/runs/messages |
+| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-4.1` | Reasoning model used by Foundry agent execution |
+| `ai_agent.embedding_model` / `AI_FOUNDRY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
+| `ai_agent.chat_agent_reference` / `AI_FOUNDRY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
+| `ai_agent.resilience_agent_reference` / `AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
+| `ai_agent.annotations_agent_reference` / `AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
+| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for agent runs |
+| `ai_agent.poll_interval_seconds` | No | `1.5` | Poll interval while waiting for run completion |
 | `data.dir` | No | `./data` | Base directory for collected artifacts |
 | `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
 
@@ -847,12 +810,12 @@ python -m app.llm.run --subscription-id <generated-id>  # Optional
 
 ## AI-Powered Chat Assistant
 
-The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance using Azure OpenAI.
+The application includes an **intelligent chat assistant** that helps analyze infrastructure, answer questions, and provide remediation guidance through Azure AI Foundry Agents.
 
 ### Features
 
 - **Natural Language Queries**: Ask questions about your infrastructure in plain English
-- **Contextual Understanding**: Semantic guardrails ensure queries are workload-related
+- **Contextual Understanding**: Scope classification and strict ID validation keep responses workload-focused
 - **Query-Type-Specific Responses**: Different response formats for different types of questions:
   - **Findings**: Explains failures and impact
   - **Remediation**: Provides step-by-step fix instructions
@@ -878,35 +841,21 @@ The chat assistant can answer questions like:
 
 ### Configuration
 
-Chat requires three environment variables in `backend/.env`:
+Chat requires Foundry project configuration in `backend/.env`:
+
+For deployed VM runtime, this endpoint is injected automatically into `/etc/azure-resilience-iq.env` by the deployment script.
 
 ```env
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-AZURE_OPENAI_EMBEDDING_API_VERSION=2024-05-01-preview
-GUARDRAIL_SEMANTIC_THRESHOLD=0.50
+AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
 ```
 
-**If these variables are missing**, the chat feature is automatically disabled and hidden from the UI.
-
-### Semantic Guardrails
-
-The chat uses **embeddings-based semantic validation** to prevent off-topic queries:
-
-- User queries are compared against 22 reference infrastructure questions
-- Cosine similarity determines if the query is workload-related
-- Queries below the threshold (default: 0.50) are rejected
-- Reference queries cover: findings, remediation, cost, performance, terraform, dependencies
-
-**Adjusting Threshold**:
-- Lower (0.45): More permissive, allows broader questions
-- Higher (0.55): Stricter, infrastructure-only focus
-- Recommended: 0.50 for balanced validation
+If you do not have this endpoint, contact the repository maintainer.
 
 ### UI Integration
 
 The chat panel appears as a floating badge on both the **Graph** and **Overview** tabs:
 
-1. Click the chat sparkle icon (✨) to open
+1. Click the chat copilot icon to open
 2. Type your question in natural language
 3. View responses with:
    - Structured recommendations with priority and effort
@@ -942,35 +891,45 @@ All LLM outputs are validated before being returned:
 
 ### LLM Annotation Issues
 
-**Problem**: "Azure OpenAI endpoint not set"
-- **Solution**: Set `azure_openai.endpoint` and `azure_openai.deployment` in `backend/config/app_config.yaml`, and ensure `llm.enabled` is `true`.
+**Problem**: "LLM gateway unavailable" or agent calls fail
+- **Solution**: Ensure `llm.enabled: true`, `AI_FOUNDRY_PROJECT_ENDPOINT`, and all flow-specific agent references (`chat/resilience/annotations`) are correctly configured.
 
 **Problem**: No annotations generated
-- **Solution**: Confirm `llm.enabled` is `true`, Azure OpenAI settings are populated, and (if no `api_key`) you are logged in with `az login`.
+- **Solution**: Confirm `llm.enabled` is `true`, the Foundry project endpoint is valid, and the configured annotations agent exists.
 
 ### Chat Issues
 
 **Problem**: Chat feature not visible in UI
-- **Solution**: Check that all required environment variables are set in `backend/.env`:
-  - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`
-  - `AZURE_OPENAI_EMBEDDING_API_VERSION`
-  - `GUARDRAIL_SEMANTIC_THRESHOLD`
+- **Solution**: Check `llm.enabled`, `AI_FOUNDRY_PROJECT_ENDPOINT`, and flow-specific agent references (`chat/resilience/annotations`).
 - **Verification**: Check `/api/chat/availability` endpoint - it should return `{"available": true}`
 
 **Problem**: Queries rejected as out-of-scope
-- **Solution**: Semantic guardrail threshold may be too strict. Try lowering `GUARDRAIL_SEMANTIC_THRESHOLD` from `0.50` to `0.45` to allow more queries through.
+- **Solution**: Query scope classifier rejected the request; rephrase toward workload resources, dependencies, findings, or remediation.
 
 **Problem**: LLM suggesting invalid edges
 - **Solution**: This should not occur - edge suggestions are filtered by query type and logical validation. If you see invalid edges, report as a bug.
 
-**Problem**: Chat returns "Azure OpenAI not configured"
-- **Solution**: Ensure your chat-specific Azure OpenAI deployment is configured in `.env` and that the embedding model is deployed (text-embedding-3-small).
+**Problem**: Chat returns "LLM service is not available"
+- **Solution**: Verify `AI_FOUNDRY_PROJECT_ENDPOINT`, agent references, and managed identity/RBAC access.
 
 **Problem**: Slow chat responses
-- **Solution**: Embedding generation and similarity checks add latency. Consider:
-  - Using a closer Azure region for OpenAI deployment
-  - Reducing number of reference queries (advanced)
-  - Caching embeddings (future enhancement)
+- **Solution**: Foundry runs are asynchronous. Reduce prompt size, tune polling/timeouts, and check Foundry/backend latency.
+
+**Problem**: `conversation_not_found` errors in backend logs
+- **Solution**: Backend now auto-recovers by creating a new conversation, replaying context, and retrying once. If errors persist, run app-only deploy to ensure latest backend code is active.
+
+### Deployment/Provisioning Issues
+
+**Problem**: Foundry portal "Data + indexes" appears empty
+- **Cause**: This view may not show external Azure AI Search indexes attached via project connections/tools.
+- **Verification**: Rely on provisioning logs and VM-side diagnostics (`--agents-migrate` run output and agent/tool markers), not only portal index tab visibility.
+
+**Problem**: Agent tools seem stale after changes
+- **Solution**: Re-run with migration mode:
+  - `bash backend/deploy/scripts/deploy_vm_stack.sh backend/deploy/vm-terraform/terraform.tfvars --agents-migrate`
+
+**Problem**: App-only deployment rsync permission errors
+- **Solution**: Use latest `deploy_app_only.sh` (includes ownership + sudo-rsync handling). Re-run the same command.
 
 ### Backend Issues
 
@@ -990,17 +949,7 @@ All LLM outputs are validated before being returned:
 
 ## License
 
-This project is licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0). You are free to:
-
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material
-
-As long as you follow the license terms:
-
-- You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
-- If you remix, transform, or build upon the material, you must distribute your contributions under the same license as the original.
-
-For more details, visit [Creative Commons](https://creativecommons.org/licenses/by/4.0/).
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 

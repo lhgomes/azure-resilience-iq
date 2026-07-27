@@ -21,11 +21,12 @@ from app.config import get_subscription_dir, get_resources_path, get_edges_path
 from app.resource_filters import load_monitored_resource_types
 from app.terraform.parser import TerraformParser
 from app.terraform.generator import TerraformResourceGenerator
+from app.storage._json_repo import write_json
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Terraform input collector for azure-workload-graph",
+        description="Terraform input collector for azure-resilience-iq",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -197,12 +198,12 @@ Examples:
         
         # Save resources
         resources_path = get_resources_path(args.subscription_id)
-        resources_path.write_text(json.dumps(resources_output, indent=2))
+        write_json(resources_path, resources_output)
         print(f"✓ Saved {len(resources_output['resources'])} resources to {resources_path}")
         
         # Save edges (manual edges are kept separate and merged at read time)
         edges_path = get_edges_path(args.subscription_id)
-        edges_path.write_text(json.dumps(edges_output, indent=2))
+        write_json(edges_path, edges_output)
         print(f"✓ Saved {len(edges_output['edges'])} edges to {edges_path}")
         
         # Summary

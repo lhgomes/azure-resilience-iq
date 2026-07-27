@@ -2,10 +2,10 @@
 import json
 import logging
 import re
-from pathlib import Path
 from typing import TypedDict
 
 from app.config import DATA_DIR
+from app.storage._json_repo import list_data_dirs, path_exists, read_json
 
 LOGGER = logging.getLogger(__name__)
 
@@ -19,6 +19,8 @@ UUID_PATTERN = re.compile(
 class SubscriptionInfo(TypedDict):
     id: str
     name: str
+    resource_count: int
+    conversation_id: str | None
 
 
 def list_subscriptions() -> list[SubscriptionInfo]:
@@ -26,16 +28,9 @@ def list_subscriptions() -> list[SubscriptionInfo]:
     Scan the data directory for subscription folders and extract metadata.
     Returns a list of {id, name} dicts.
     """
-    if not DATA_DIR.exists():
-        LOGGER.warning(f"Data directory does not exist: {DATA_DIR}")
-        return []
-
     subscriptions: list[SubscriptionInfo] = []
 
-    for item in DATA_DIR.iterdir():
-        if not item.is_dir():
-            continue
-        
+    for item in list_data_dirs(DATA_DIR):
         # Only process directories with valid UUID names (subscription IDs)
         if not UUID_PATTERN.match(item.name):
             continue
@@ -43,19 +38,31 @@ def list_subscriptions() -> list[SubscriptionInfo]:
         subscription_id = item.name
         resources_file = item / "resources.json"
 
-        if not resources_file.exists():
+        if not path_exists(resources_file):
             LOGGER.debug(f"Skipping {subscription_id}: no resources.json found")
             continue
 
         try:
-            with resources_file.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                subscription_name = data.get("subscription_name") or subscription_id
+            data = read_json(resources_file, default={})
+            if not isinstance(data, dict):
+                data = {}
+            subscription_name = data.get("subscription_name") or subscription_id
+            resource_count = len(data.get("resources", [])) if isinstance(data.get("resources"), list) else 0
+            conversation_id = data.get("conversation_id")
         except Exception as e:
             LOGGER.warning(f"Failed to read resources.json for {subscription_id}: {e}")
             subscription_name = subscription_id
+            resource_count = 0
+            conversation_id = None
 
-        subscriptions.append({"id": subscription_id, "name": subscription_name})
+        subscriptions.append(
+            {
+                "id": subscription_id,
+                "name": subscription_name,
+                "resource_count": int(resource_count),
+                "conversation_id": str(conversation_id).strip() if conversation_id else None,
+            }
+        )
 
     # Sort by name for consistent ordering
     subscriptions.sort(key=lambda s: s["name"])

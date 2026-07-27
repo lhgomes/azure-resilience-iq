@@ -15,31 +15,6 @@ llm:
   batch_threshold: 50
   max_nodes_per_batch: 30
 
-# Azure OpenAI Configuration
-# Uses DefaultAzureCredential (Managed Identity) for authentication
-#
-# IMPORTANT: Endpoint and deployment MUST be set via environment variables
-# in your .env file (which is gitignored - NOT in the repository)
-#
-# Environment variables to set in .env file:
-#   AZURE_OPENAI_ENDPOINT      - Your Azure OpenAI resource URL
-#   AZURE_OPENAI_DEPLOYMENT    - Your deployment name (e.g., gpt-4-turbo)
-#   AZURE_OPENAI_API_VERSION   - OpenAI API version (optional, has default)
-#
-# Example .env file:
-#   AZURE_OPENAI_ENDPOINT=https://my-resource.openai.azure.com/
-#   AZURE_OPENAI_DEPLOYMENT=gpt-4-turbo
-#
-# Authentication: Automatically uses managed identity (DefaultAzureCredential)
-# No API key required. The app will authenticate using:
-#   1. Environment variables from .env file
-#   2. Managed identity (if running in Azure)
-#   3. Azure CLI credentials (if running locally with az login)
-azure_openai:
-  timeout_seconds: 60
-  max_attempts: 2
-  max_tokens: 6000
-
 # Data Paths
 data:
   dir: "./data"

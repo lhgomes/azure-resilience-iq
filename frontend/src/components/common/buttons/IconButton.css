@@ -1,0 +1,49 @@
+.shared-icon-button {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+  color: #605E5C;
+  transition: all 0.2s;
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shared-icon-button:hover:not(:disabled) {
+  background: #F3F2F1;
+  color: #242424;
+}
+
+.shared-icon-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.shared-icon-button--primary {
+  color: #0078d4;
+}
+
+.shared-icon-button--primary:hover:not(:disabled) {
+  color: #005a9e;
+}
+
+.shared-icon-button--danger {
+  color: #a4262c;
+}
+
+.shared-icon-button--danger:hover:not(:disabled) {
+  color: #750b1c;
+}
+
+.shared-icon-button--success {
+  color: rgb(1 160 0);
+}
+
+.shared-icon-button--success:hover:not(:disabled) {
+  color: rgb(62, 144, 62);
+}

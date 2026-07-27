@@ -1,3 +1,4 @@
+import uuid
 from typing import Any, Dict, List, Set
 
 
@@ -24,13 +25,28 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
     safe_nodes: List[Dict[str, Any]] = []
     id_to_short: Dict[str, str] = {}
 
+    def ensure_short_id(node_id: str, candidate: Any) -> str:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if not isinstance(node_id, str) or not node_id.strip():
+            return "unknown"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, node_id.strip()))
+
     for n in nodes_raw:
         nd = as_dict(n)
         node_id = nd.get("id") or ""
         meta = nd.get("metadata") or {}
         short_id = nd.get("short_id") or meta.get("short_id")
-        short_id = short_id or node_id  # fallback only if missing
+        short_id = ensure_short_id(node_id, short_id)
         id_to_short[node_id] = short_id
+
+        zones_meta = meta.get("zones")
+        if isinstance(zones_meta, (list, tuple, set)):
+            zones_meta = [str(z).strip() for z in zones_meta if str(z).strip()]
+        elif zones_meta is not None and str(zones_meta).strip():
+            zones_meta = [str(zones_meta).strip()]
+        else:
+            zones_meta = None
 
         safe_nodes.append(
             {
@@ -38,6 +54,8 @@ def summarize_graph_for_llm(graph: Dict[str, Any]) -> Dict[str, Any]:
                 "short_id": short_id,
                 "type": nd.get("type") or "unknown",
                 "name": nd.get("name") or node_id.split("/")[-1] or "unknown",
+                "region": meta.get("location"),
+                "zones": zones_meta,
                 "importance": meta.get("importance"),
                 "criticality_override": meta.get("criticality_override"),
                 "connections": [],

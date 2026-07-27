@@ -3,7 +3,7 @@ from .model import Edge, EdgeStatus, Node
 from app.intent.overrides import EdgeDecision
 from app.storage.edge_overrides_store import load_overrides
 
-# Namespace UUID for azure-workload-graph edges
+# Namespace UUID for azure-resilience-iq edges
 EDGE_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # DNS namespace
 
 
