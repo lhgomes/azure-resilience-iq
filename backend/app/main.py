@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -58,10 +59,19 @@ app_settings = load_settings()
 LOGGER = logging.getLogger(__name__)
 LOGGER.info("Application settings loaded successfully")
 
+# CORS origins are env-driven (comma-separated) and default to local dev origins.
+# Set CORS_ALLOWED_ORIGINS explicitly for any non-local deployment.
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", _DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
+
 app = FastAPI(title="Azure Resiliency IQ")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -271,10 +271,16 @@ Results are saved to `data/{subscription-id}/llm_annotations.json`.
 Run the FastAPI backend:
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
 The backend API will be available at `http://localhost:8000`.
+
+> ⚠️ **Security note:** This backend has **no authentication** and queries Azure
+> using your local credentials. Run it locally only. Do **not** bind it to all
+> interfaces (`--host 0.0.0.0`) or expose it to untrusted networks. Browser
+> origins are restricted via the `CORS_ALLOWED_ORIGINS` environment variable
+> (defaults to `http://localhost:5173`); see `backend/.env.sample`.
 
 **API Health Check**:
 ```bash
@@ -676,7 +682,7 @@ After modifying:
    ```bash
    cd backend
    source .venv/bin/activate
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --reload --port 8000
    ```
 
 2. **Terminal 2 - Frontend**:
@@ -943,17 +949,7 @@ All LLM outputs are validated before being returned:
 
 ## License
 
-This project is licensed under the Creative Commons Attribution 4.0 International License (CC BY 4.0). You are free to:
-
-- Share — copy and redistribute the material in any medium or format
-- Adapt — remix, transform, and build upon the material
-
-As long as you follow the license terms:
-
-- You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
-- If you remix, transform, or build upon the material, you must distribute your contributions under the same license as the original.
-
-For more details, visit [Creative Commons](https://creativecommons.org/licenses/by/4.0/).
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
