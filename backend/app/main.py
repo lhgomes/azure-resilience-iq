@@ -51,6 +51,20 @@ from app.storage.workload_store import (
     update_workload as update_saved_workload,
     delete_workload as delete_saved_workload,
 )
+from app.servicegroups.models import (
+    ServiceGroupApplyRequest,
+    ServiceGroupExportRequest,
+    ServiceGroupWorkloadApplyRequest,
+)
+from app.servicegroups.service import (
+    GroupNotFoundError,
+    apply_service_group_for_group,
+    apply_service_group_for_workload,
+    delete_service_group,
+    export_service_group,
+    get_service_group_member_ids,
+    list_available_service_groups,
+)
 from app.storage._json_repo import read_json, write_json, path_exists
 from app.relationships.utils import norm_id
 
@@ -552,6 +566,101 @@ def remove_node_endpoint(subscription_id: str, group_id: str, node_id: str):
         return updated_group.model_dump()
     else:
         return {"status": "deleted", "group_id": group_id}
+
+
+# Service Group (Azure) integration endpoints
+@app.post("/api/subscriptions/{subscription_id}/groups/{group_id}/servicegroup/export")
+def export_service_group_endpoint(
+    subscription_id: str, group_id: str, payload: ServiceGroupExportRequest
+):
+    """Generate a downloadable IaC artifact (Terraform/ARM) for the group's Service Group."""
+    try:
+        artifact = export_service_group(subscription_id, group_id, payload.format)
+    except GroupNotFoundError:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return artifact.model_dump()
+
+
+@app.post("/api/subscriptions/{subscription_id}/groups/{group_id}/servicegroup/apply")
+def apply_service_group_endpoint(
+    subscription_id: str, group_id: str, payload: ServiceGroupApplyRequest
+):
+    """
+    Apply the group to Azure as a Service Group using the backend identity.
+
+    On insufficient permissions the response carries a fallback artifact for
+    download instead of failing.
+    """
+    try:
+        result = apply_service_group_for_group(
+            subscription_id, group_id, payload.fallback_format
+        )
+    except GroupNotFoundError:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return result.model_dump()
+
+
+@app.post("/api/servicegroups/apply")
+def apply_service_group_from_workload_endpoint(payload: ServiceGroupWorkloadApplyRequest):
+    """
+    Create or update a Service Group from a workload's current resources using
+    the backend identity. Adds new members and detaches ones dropped from the
+    workload. On insufficient permissions the response carries a fallback
+    artifact for download instead of failing.
+    """
+    result = apply_service_group_for_workload(
+        workload_id=payload.workload_id,
+        display_name=payload.display_name,
+        member_resource_ids=payload.member_resource_ids,
+        previous_member_resource_ids=payload.previous_member_resource_ids,
+        existing_service_group_name=payload.service_group_name,
+        fallback_format=payload.fallback_format,
+        parent_service_group_id=payload.parent_service_group_id,
+    )
+    return result.model_dump()
+
+
+# Service Group (Azure) read endpoints — power the "Import SG as Workload" flow
+_AZURE_AUTH_ERROR = {
+    "code": "AZURE_AUTH_REQUIRED",
+    "message": "Unable to reach Azure Resource Graph. Run 'az login' and ensure "
+    "the identity can read Service Groups at tenant scope.",
+}
+
+
+@app.get("/api/servicegroups")
+def list_service_groups_endpoint():
+    """List Service Groups discoverable in the caller's tenant."""
+    try:
+        return [sg.model_dump() for sg in list_available_service_groups()]
+    except Exception:
+        raise HTTPException(status_code=503, detail=_AZURE_AUTH_ERROR)
+
+
+@app.get("/api/servicegroups/{service_group_name}/members")
+def list_service_group_members_endpoint(service_group_name: str):
+    """List the normalized Azure resource IDs that belong to a Service Group."""
+    try:
+        return get_service_group_member_ids(service_group_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(status_code=503, detail=_AZURE_AUTH_ERROR)
+
+
+@app.delete("/api/servicegroups/{service_group_name}")
+def delete_service_group_endpoint(service_group_name: str):
+    """Delete a Service Group and its member relationships from Azure.
+
+    Backs the "also delete the Service Group" option when a bound workload is
+    removed. The result status ('deleted', 'permission_denied', 'error') lets
+    the caller decide whether to proceed with removing the local workload.
+    """
+    try:
+        result = delete_service_group(service_group_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return result.model_dump()
 
 
 @app.get("/api/subscriptions/{subscription_id}/graph")

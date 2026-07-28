@@ -1,0 +1,9 @@
+@keyframes wl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.wl-spin {
+  animation: wl-spin 0.9s linear infinite;
+}

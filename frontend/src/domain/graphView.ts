@@ -82,7 +82,26 @@ export function canonicalTypeForNode(node: GraphNode): string {
   return "resource";
 }
 
-export function extractResourceGroup(node: GraphNode): { key: string; label: string } | null {
+export function canonicalTypeForResourceId(resourceId: string): string {
+  const id = (resourceId || "").toLowerCase();
+  const idx = id.indexOf("/providers/");
+  if (idx === -1) return "resource";
+
+  const segments = id.slice(idx + "/providers/".length).split("/").filter(Boolean);
+  if (segments.length < 2) return "resource";
+
+  // After the namespace, an ARM id alternates type/name segments. The leaf
+  // resource type (last type token) determines the canonical key, mirroring
+  // how canonicalTypeForNode treats a node's own type.
+  const typeTokens: string[] = [];
+  for (let i = 1; i < segments.length; i += 2) {
+    typeTokens.push(segments[i]);
+  }
+  const leafType = typeTokens[typeTokens.length - 1] || segments[1];
+  return normalizeTypeString(`${segments[0]}/${leafType}`);
+}
+
+function extractResourceGroup(node: GraphNode): { key: string; label: string } | null {
   const meta = (node as any)?.metadata ?? {};
   const raw =
     meta.resource_group ??

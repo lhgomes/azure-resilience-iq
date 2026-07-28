@@ -127,6 +127,13 @@ export interface RawGraphSnapshot {
 
 export type WorkloadViewLevel = "overview" | "network" | "full";
 
+export interface ServiceGroupBinding {
+  service_group_id?: string;
+  service_group_name?: string;
+  display_name?: string;
+  member_resource_ids: string[];
+}
+
 export interface WorkloadViewState {
   selected_subscriptions: string[];
   view_level: WorkloadViewLevel;
@@ -140,6 +147,21 @@ export interface WorkloadViewState {
     viewport?: { x: number; y: number; zoom: number };
     node_positions?: Record<string, { x: number; y: number }>;
   };
+  service_group_filter?: ServiceGroupBinding;
+}
+
+export interface ServiceGroupSummary {
+  id: string;
+  name: string;
+  display_name: string;
+}
+
+export interface ServiceGroupImportProgress {
+  active: boolean;
+  phase: "reading" | "creating" | "mapping" | "completed" | "error";
+  message: string;
+  current: number;
+  total: number;
 }
 
 export interface WorkloadSummary {
@@ -445,6 +467,113 @@ export async function removeNodeFromGroup(
   }
   
   return result as NodeGroup;
+}
+
+export type ServiceGroupFormat = "terraform" | "arm";
+
+export interface ServiceGroupArtifact {
+  format: ServiceGroupFormat;
+  filename: string;
+  content: string;
+  service_group_name: string;
+  display_name: string;
+  member_count: number;
+}
+
+export type ServiceGroupApplyStatus =
+  | "applied"
+  | "deleted"
+  | "permission_denied"
+  | "error"
+  | "empty";
+
+export interface ServiceGroupApplyResult {
+  status: ServiceGroupApplyStatus;
+  service_group_name?: string;
+  service_group_id?: string;
+  display_name?: string;
+  applied_members: string[];
+  detached_members?: string[];
+  failed_members: string[];
+  artifact?: ServiceGroupArtifact | null;
+  message?: string | null;
+}
+
+export async function exportServiceGroup(
+  subscriptionId: SubscriptionId,
+  groupId: string,
+  format: ServiceGroupFormat
+): Promise<ServiceGroupArtifact> {
+  return await apiJson<ServiceGroupArtifact>(
+    `/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/servicegroup/export`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format }),
+    }
+  );
+}
+
+export async function applyServiceGroup(
+  subscriptionId: SubscriptionId,
+  groupId: string,
+  fallbackFormat: ServiceGroupFormat = "terraform"
+): Promise<ServiceGroupApplyResult> {
+  return await apiJson<ServiceGroupApplyResult>(
+    `/api/subscriptions/${encodeURIComponent(subscriptionId)}/groups/${encodeURIComponent(groupId)}/servicegroup/apply`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fallback_format: fallbackFormat }),
+    }
+  );
+}
+
+export interface ApplyServiceGroupFromWorkloadPayload {
+  workload_id: string;
+  display_name: string;
+  member_resource_ids: string[];
+  previous_member_resource_ids: string[];
+  service_group_name?: string;
+  parent_service_group_id?: string | null;
+  fallback_format?: ServiceGroupFormat;
+}
+
+export async function applyServiceGroupFromWorkload(
+  payload: ApplyServiceGroupFromWorkloadPayload
+): Promise<ServiceGroupApplyResult> {
+  return await apiJson<ServiceGroupApplyResult>("/api/servicegroups/apply", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      workload_id: payload.workload_id,
+      display_name: payload.display_name,
+      member_resource_ids: payload.member_resource_ids,
+      previous_member_resource_ids: payload.previous_member_resource_ids,
+      service_group_name: payload.service_group_name,
+      parent_service_group_id: payload.parent_service_group_id ?? null,
+      fallback_format: payload.fallback_format ?? "terraform",
+    }),
+  });
+}
+
+export async function deleteServiceGroup(
+  serviceGroupName: string
+): Promise<ServiceGroupApplyResult> {
+  return await apiJson<ServiceGroupApplyResult>(
+    `/api/servicegroups/${encodeURIComponent(serviceGroupName)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function listAzureServiceGroups(): Promise<ServiceGroupSummary[]> {
+  return await apiJson<ServiceGroupSummary[]>("/api/servicegroups");
+}
+
+export async function fetchServiceGroupMembers(serviceGroupName: string): Promise<string[]> {
+  return await apiJson<string[]>(
+    `/api/servicegroups/${encodeURIComponent(serviceGroupName)}/members`
+  );
 }
 
 export interface ResiliencyCheckMetrics {
