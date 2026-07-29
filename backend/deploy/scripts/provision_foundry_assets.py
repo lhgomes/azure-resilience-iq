@@ -77,7 +77,7 @@ def _resolve_default_search_connection_id(project_client: AIProjectClient) -> st
     except (ClientAuthenticationError, HttpResponseError) as exc:
         if _is_connections_read_permission_error(exc):
             print(
-                "⚠ Missing permission for Microsoft.CognitiveServices/accounts/AIServices/connections/read. "
+                "Missing permission for Microsoft.CognitiveServices/accounts/AIServices/connections/read. "
                 "Grant 'Azure AI User' on project scope and 'Reader' on Foundry hub/account scope, "
                 "then retry after RBAC propagation. Continuing without Azure AI Search tool attachment for now."
             )
@@ -100,19 +100,19 @@ def _resolve_default_search_connection_id(project_client: AIProjectClient) -> st
                 or "search.windows.net" in target
                 or "search.windows.net" in endpoint
             ):
-                print(f"⚠ No default Azure AI Search connection set; using available connection: {connection_id}")
+                print(f"No default Azure AI Search connection set; using available connection: {connection_id}")
                 return connection_id
     except (ClientAuthenticationError, HttpResponseError) as exc:
         if _is_connections_read_permission_error(exc):
             print(
-                "⚠ Missing permission for Microsoft.CognitiveServices/accounts/AIServices/connections/read. "
+                "Missing permission for Microsoft.CognitiveServices/accounts/AIServices/connections/read. "
                 "Grant 'Azure AI User' on project scope and 'Reader' on Foundry hub/account scope, "
                 "then retry after RBAC propagation. Continuing without Azure AI Search tool attachment for now."
             )
             return None
         raise
 
-    print("⚠ No Azure AI Search project connection found; continuing without Azure AI Search tool attachment.")
+    print("No Azure AI Search project connection found; continuing without Azure AI Search tool attachment.")
     return None
 
 
@@ -165,11 +165,11 @@ def ensure_search_indexes(
         definition = _build_index_definition(index_name, embedding_dimensions)
         try:
             client.create_or_update_index(definition)
-            print(f"✓ Search index ensured: {index_name}")
+            print(f"Search index ensured: {index_name}")
         except HttpResponseError as exc:
             err = str(exc)
             if "CannotChangeExistingField" in err or "Existing field" in err:
-                print(f"⚠ Search index exists with immutable schema differences; keeping current index: {index_name}")
+                print(f"Search index exists with immutable schema differences; keeping current index: {index_name}")
                 continue
             raise
 
@@ -241,7 +241,7 @@ def _build_agent_tools(
 
     if profile["search"]:
         if not search_connection_id:
-            print(f"⚠ Skipping Azure AI Search tool for {agent_name}: no readable project search connection.")
+            print(f"Skipping Azure AI Search tool for {agent_name}: no readable project search connection.")
         else:
             if agent_name == "terraform-compiler-agent":
                 index_name = terraform_index_name
@@ -274,7 +274,7 @@ def _build_agent_tools(
                 )
             )
         except Exception as exc:
-            print(f"⚠ MCP tool attachment skipped: {exc}")
+            print(f"MCP tool attachment skipped: {exc}")
 
     return tools
 
@@ -297,7 +297,7 @@ def ensure_foundry_agents(
         existing = {str(_value(agent, "name")): agent for agent in agents_client.list(limit=200)}
     except ResourceNotFoundError:
         print(
-            "⚠ Agents management API returned Not Found for this project endpoint. "
+            "Agents management API returned Not Found for this project endpoint. "
             "Proceeding with stable agent name references without create/list operations."
         )
         return {
@@ -309,12 +309,12 @@ def ensure_foundry_agents(
     except HttpResponseError as exc:
         if _is_agents_read_permission_error(exc):
             print(
-                "⚠ Missing permission for Microsoft.MachineLearningServices/workspaces/agents/read. "
+                "Missing permission for Microsoft.MachineLearningServices/workspaces/agents/read. "
                 "Proceeding without list/reconcile and attempting direct agent version create operations."
             )
             if recreate_existing:
                 print(
-                    "⚠ --recreate-existing requested, but existing agents cannot be listed with current permissions; "
+                    "--recreate-existing requested, but existing agents cannot be listed with current permissions; "
                     "skipping delete/recreate and using create-version behavior."
                 )
             existing = {}
@@ -322,12 +322,12 @@ def ensure_foundry_agents(
             raise
     microsoft_learn_connection_id = _resolve_microsoft_learn_connection_id(project_client)
     if microsoft_learn_connection_id:
-        print(f"✓ Resolved Microsoft Learn project connection: {microsoft_learn_connection_id}")
+        print(f"Resolved Microsoft Learn project connection: {microsoft_learn_connection_id}")
     else:
-        print("⚠ Microsoft Learn project connection not found; using official MCP endpoint directly.")
+        print("Microsoft Learn project connection not found; using official MCP endpoint directly.")
     search_connection_id = _resolve_default_search_connection_id(project_client)
     if search_connection_id:
-        print(f"✓ Resolved default Azure AI Search project connection: {search_connection_id}")
+        print(f"Resolved default Azure AI Search project connection: {search_connection_id}")
 
     result: Dict[str, str] = {}
     for agent_name, agent_instructions in instructions.items():
@@ -338,7 +338,7 @@ def ensure_foundry_agents(
 
         if current:
             agent_id = str(_value(current, "id"))
-            print(f"✓ Found existing agent: {agent_name} ({agent_id})")
+            print(f"Found existing agent: {agent_name} ({agent_id})")
             result[agent_name] = agent_id
             continue
 
@@ -366,18 +366,18 @@ def ensure_foundry_agents(
         except HttpResponseError as exc:
             if _is_agents_write_permission_error(exc):
                 print(
-                    "✗ Missing permission for Microsoft.MachineLearningServices/workspaces/agents/write. "
+                    "Missing permission for Microsoft.MachineLearningServices/workspaces/agents/write. "
                     "Grant 'Azure AI User' on project scope (and 'Reader' on hub/account scope) to the deployment identity."
                 )
             raise
         created_id = str(_value(created, "id") or "")
         created_version = str(_value(created, "version") or "")
         if created_version:
-            print(f"✓ Created/updated agent version: {agent_name} (version: {created_version})")
+            print(f"Created/updated agent version: {agent_name} (version: {created_version})")
         elif created_id:
-            print(f"✓ Created/updated agent: {agent_name} ({created_id})")
+            print(f"Created/updated agent: {agent_name} ({created_id})")
         else:
-            print(f"✓ Created/updated agent: {agent_name}")
+            print(f"Created/updated agent: {agent_name}")
         print(
             "  tools="
             f"search:{_agent_tool_profile(agent_name)['search']} "
@@ -391,7 +391,7 @@ def ensure_foundry_agents(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Provision Foundry agents and Azure Search indexes")
     parser.add_argument("--foundry-project-endpoint", required=True)
-    parser.add_argument("--reasoning-model", default="gpt-4.1")
+    parser.add_argument("--reasoning-model", default="gpt-5.4-mini")
     parser.add_argument("--search-endpoint", required=True)
     parser.add_argument("--aprl-index-name", default="learn-aprl-index")
     parser.add_argument("--terraform-index-name", default="learn-terraform-index")

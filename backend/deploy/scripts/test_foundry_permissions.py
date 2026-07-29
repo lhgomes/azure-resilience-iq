@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         description="Validate Foundry project managed-identity permissions for connections and agents"
     )
     parser.add_argument("--foundry-project-endpoint", required=True)
-    parser.add_argument("--reasoning-model", default="gpt-4.1")
+    parser.add_argument("--reasoning-model", default="gpt-5.4-mini")
     parser.add_argument(
         "--check-write",
         action="store_true",

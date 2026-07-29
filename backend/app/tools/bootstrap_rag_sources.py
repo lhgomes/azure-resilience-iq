@@ -168,7 +168,7 @@ def main() -> int:
 
     if not args.skip_urls:
         _write_urls(terraform_root / "terraform_urls.txt", TERRAFORM_MODULE_URLS)
-        print(f"✓ Wrote URL list: {terraform_root / 'terraform_urls.txt'}")
+        print(f"Wrote URL list: {terraform_root / 'terraform_urls.txt'}")
 
     for repo in OFFICIAL_REPOS:
         source_root = terraform_root / "source-repos"
@@ -181,13 +181,13 @@ def main() -> int:
                 continue
         else:
             clone_path = _clone_repo(repo, source_root, refresh_clone=args.refresh_clone)
-            print(f"✓ Synced repo: {repo.name} -> {clone_path}")
+            print(f"Synced repo: {repo.name} -> {clone_path}")
 
         if not args.skip_export:
             count = _export_markdown(clone_path, docs_root)
-            print(f"✓ Exported {count} markdown files to {docs_root}")
+            print(f"Exported {count} markdown files to {docs_root}")
 
-    print("✓ Terraform modules RAG bootstrap complete")
+    print("Terraform modules RAG bootstrap complete")
     print(f"  Base dir: {base_rag_dir}")
     print("  Use with ingest script:")
     print(

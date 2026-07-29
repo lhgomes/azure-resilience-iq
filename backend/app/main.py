@@ -2,6 +2,7 @@ import logging
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -827,3 +828,13 @@ def refresh_status(subscription_id: str):
         return JSONResponse(status_code=200, content=payload)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+FRONTEND_DIST_DIR = os.getenv("FRONTEND_DIST_DIR", "").strip()
+if FRONTEND_DIST_DIR:
+    frontend_dist_path = Path(FRONTEND_DIST_DIR).resolve()
+    if not frontend_dist_path.is_dir():
+        raise RuntimeError(
+            f"FRONTEND_DIST_DIR does not exist or is not a directory: {frontend_dist_path}"
+        )
+    app.mount("/", StaticFiles(directory=frontend_dist_path, html=True), name="frontend")

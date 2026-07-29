@@ -4,25 +4,24 @@ location            = "eastus"
 resource_group_name = "resilience-iq"
 
 search_sku = "basic"
-vm_size = "Standard_B2als_v2"
+vm_size   = "Standard_D4s_v5"
 # Optional: target a specific availability zone when SKU capacity is constrained
 # vm_zone = "1"
 
-# Access mode controls
-# private_only = true disables VM public IP and internet-facing NSG ingress rules.
-private_only = false
+# Azure Bastion Standard is enabled by default for automatic package transfer
+# and RDP access. Use --disable-bastion to opt out when running the deploy script.
+# A direct Terraform invocation can set enable_bastion = false instead.
 
-# Optional explicit CIDR allowlists (used only when private_only = false).
-# If omitted, both are auto-discovered from the deploy operator public IP as /32.
-# admin_allowed_cidrs = ["203.0.113.10/32"]
-# app_allowed_cidrs   = ["203.0.113.10/32"]
+# The Windows VM has no public IP. Without Bastion, interactive access requires
+# an existing private network path to the VNet. Storage remains private in both
+# modes. Bastion and its public IP incur charges while deployed.
 
 # Optional: override Foundry model deployments used by backend and ingestion
-# reasoning_model_deployment_name = "gpt-4.1"
-# reasoning_model_name            = "gpt-4.1"
-# reasoning_model_version         = "2025-04-14"
+# reasoning_model_deployment_name = "gpt-5.4-mini"
+# reasoning_model_name            = "gpt-5.4-mini"
+# reasoning_model_version         = "2026-03-17"
 # reasoning_model_sku             = "GlobalStandard"
-# reasoning_model_capacity        = 200
+# reasoning_model_capacity        = 100
 # embedding_model_deployment_name = "text-embedding-3-small"
 # embedding_model_name            = "text-embedding-3-small"
 # embedding_model_version         = "1"

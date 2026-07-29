@@ -100,7 +100,7 @@ class AppSettings:
                 "foundry_project_endpoint": None,
                 "openai_api_version": "2025-03-01-preview",
                 "embedding_model": "text-embedding-3-small",
-                "reasoning_model": "gpt-4.1",
+                "reasoning_model": "gpt-5.4-mini",
                 "run_timeout_seconds": 120,
                 "poll_interval_seconds": 1.5,
             },
@@ -231,7 +231,7 @@ class AppSettings:
             ),
             "reasoning_model": (
                 os.getenv("AI_FOUNDRY_REASONING_MODEL")
-                or agent_cfg.get("reasoning_model", "gpt-4.1")
+                or agent_cfg.get("reasoning_model", "gpt-5.4-mini")
             ),
             "chat_agent_reference": (
                 os.getenv("AI_FOUNDRY_CHAT_AGENT_REFERENCE")
