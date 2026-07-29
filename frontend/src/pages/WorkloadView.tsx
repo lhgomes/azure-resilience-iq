@@ -65,19 +65,39 @@ import {
 } from "../api/workloads";
 import {
   buildViewGraph,
+  canonicalTypeForNode,
   canonicalTypeForResourceId,
   computeResourceGroupOptions,
   computeServiceOptions,
   computeValidationSourceOptions,
   LEVEL_TO_MAX_IMPORTANCE,
   normalizeGraph,
+  normalizeTypeString,
   type GraphSnapshot,
   type ViewLevel,
 } from "../domain/graphView";
 import { calculateResiliencyScore, getElementWeight, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 import { getZonalResiliency, type ZonalResiliencyResponse } from "../api/resilience";
 import { mergeGraphSnapshots, mergeResiliencyEvaluations, mergeZonalResiliencyData } from "../utils/multiSubscriptionMerge";
-import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular, ArrowSync16Regular, Dismiss12Regular } from "@fluentui/react-icons";
+import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular, ArrowSync16Regular, Dismiss12Regular, DocumentPdf20Regular } from "@fluentui/react-icons";
+
+interface ResiliencyPdfReport {
+  score: number;
+  totalChecks: number;
+  passedChecks: number;
+  failedChecks: number;
+  categories: Array<{ name: string; score: number; passed: number; failed: number }>;
+  impacts: Array<{ name: string; score: number; passed: number; failed: number }>;
+  services: Array<{ name: string; score: number; passed: number; failed: number }>;
+  recommendations: Array<{
+    title: string;
+    benefit: string;
+    category: string;
+    impact: string;
+    resources: string[];
+    contributionPercent: number;
+  }>;
+}
 
 // Subscription-aware view: user selects one or more subscriptions
 
@@ -263,12 +283,14 @@ const WorkloadView: React.FC = () => {
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const graphCaptureRef = useRef<HTMLDivElement>(null);
   const skipFilterResetRef = useRef(false);
   const pendingWorkloadApplyRef = useRef(false);
   const suppressNextNodeDrawerOpenRef = useRef(false);
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [selectedRecommendationFocus, setSelectedRecommendationFocus] = useState<{ id?: string; title?: string } | null>(null);
 
   useEffect(() => {
@@ -290,6 +312,236 @@ const WorkloadView: React.FC = () => {
     });
     setActiveTabIndex(1);
   }, []);
+
+  const handleExportPdf = useCallback(async (report: ResiliencyPdfReport) => {
+    const previousTab = activeTabIndex;
+    setActiveTabIndex(0);
+
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await graphCanvasRef.current?.fitView();
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+
+    const graphElement = graphCaptureRef.current;
+    if (!graphElement) {
+      setActiveTabIndex(previousTab);
+      throw new Error("The workload diagram is not available for capture.");
+    }
+
+    try {
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import("html2canvas"),
+        import("jspdf"),
+      ]);
+      const diagramCanvas = await html2canvas(graphElement, {
+        backgroundColor: "#ffffff",
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+      });
+
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const margin = 14;
+      const contentWidth = pageWidth - margin * 2;
+      const scorePercent = Math.round(report.score * 100);
+      const scoreColor: [number, number, number] = scorePercent >= 80
+        ? [16, 185, 129]
+        : scorePercent >= 60
+          ? [245, 158, 11]
+          : [220, 38, 38];
+
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(20);
+      pdf.setTextColor(17, 24, 39);
+      pdf.text("Azure Resiliency IQ", margin, 18);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text(`Evaluation report | ${new Date().toLocaleString()}`, margin, 25);
+
+      const summaryCards = [
+        { label: "Overall score", value: `${scorePercent}%`, color: scoreColor },
+        { label: "Total resiliency items", value: String(report.totalChecks), color: [59, 130, 246] as [number, number, number] },
+        { label: "Passed", value: String(report.passedChecks), color: [16, 185, 129] as [number, number, number] },
+        { label: "Failed", value: String(report.failedChecks), color: [239, 68, 68] as [number, number, number] },
+      ];
+      const summaryGap = 3;
+      const summaryWidth = (contentWidth - summaryGap * 3) / 4;
+      summaryCards.forEach((card, index) => {
+        const x = margin + index * (summaryWidth + summaryGap);
+        pdf.setFillColor(249, 250, 251);
+        pdf.roundedRect(x, 32, summaryWidth, 25, 2, 2, "F");
+        pdf.setDrawColor(...card.color);
+        pdf.setLineWidth(1);
+        pdf.line(x, 34, x, 55);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(75, 85, 99);
+        pdf.text(card.label, x + 4, 40);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(14);
+        pdf.setTextColor(...card.color);
+        pdf.text(card.value, x + 4, 51);
+      });
+
+      const drawBreakdown = (
+        title: string,
+        items: Array<{ name: string; score: number; passed: number; failed: number }>,
+        startY: number,
+      ): number => {
+        pdf.setTextColor(31, 41, 55);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11);
+        pdf.text(title, margin, startY);
+        const gap = 3;
+        const columns = 4;
+        const cardWidth = (contentWidth - gap * (columns - 1)) / columns;
+        const cardHeight = 18;
+        items.forEach((item, index) => {
+          const row = Math.floor(index / columns);
+          const column = index % columns;
+          const x = margin + column * (cardWidth + gap);
+          const y = startY + 4 + row * (cardHeight + gap);
+          pdf.setFillColor(249, 250, 251);
+          pdf.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "F");
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(7);
+          pdf.setTextColor(31, 41, 55);
+          const name = pdf.splitTextToSize(item.name, cardWidth - 17)[0] || item.name;
+          pdf.text(name, x + 3, y + 5);
+          pdf.setFontSize(10);
+          pdf.setTextColor(item.score >= 0.8 ? 16 : item.score >= 0.6 ? 245 : 220, item.score >= 0.8 ? 185 : item.score >= 0.6 ? 158 : 38, item.score >= 0.8 ? 129 : item.score >= 0.6 ? 11 : 38);
+          pdf.text(`${Math.round(item.score * 100)}%`, x + cardWidth - 3, y + 6, { align: "right" });
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(6);
+          pdf.setTextColor(107, 114, 128);
+          pdf.text("(weighted score)", x + 3, y + 8.5);
+          pdf.setFontSize(6.5);
+          pdf.text(`Checks: ${item.passed} passed | ${item.failed} failed`, x + 3, y + 14);
+        });
+        return startY + 7 + Math.ceil(items.length / columns) * (cardHeight + gap);
+      };
+
+      let overviewY = drawBreakdown("By resiliency category", report.categories, 67);
+      overviewY = drawBreakdown("By impact level", report.impacts, overviewY);
+      drawBreakdown("By Azure service", report.services, overviewY);
+
+      pdf.addPage();
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(17);
+      pdf.text("Workload diagram", margin, 20);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text("Resources and dependencies included in this evaluation", margin, 27);
+      const imageData = diagramCanvas.toDataURL("image/png");
+      const diagramY = 34;
+      const availableDiagramHeight = pdf.internal.pageSize.getHeight() - diagramY - 12;
+      const imageHeight = Math.min(availableDiagramHeight, (diagramCanvas.height * contentWidth) / diagramCanvas.width);
+      const imageWidth = Math.min(contentWidth, (diagramCanvas.width * imageHeight) / diagramCanvas.height);
+      pdf.addImage(imageData, "PNG", margin + (contentWidth - imageWidth) / 2, diagramY, imageWidth, imageHeight, undefined, "FAST");
+
+      pdf.addPage();
+      pdf.setTextColor(17, 24, 39);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(17);
+      pdf.text("Top recommendations", margin, 20);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text("Prioritized by contribution to workload risk", margin, 27);
+
+      const recommendationColumns = {
+        recommendation: { x: margin, width: 66 },
+        benefit: { x: margin + 68, width: 42 },
+        category: { x: margin + 112, width: 34 },
+        impact: { x: margin + 148, width: 16 },
+        weight: { x: margin + 166, width: 12 },
+      };
+      const drawRecommendationHeader = (headerY: number) => {
+        pdf.setFillColor(243, 244, 246);
+        pdf.rect(margin, headerY, contentWidth, 10, "F");
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text("Recommendation / resources", recommendationColumns.recommendation.x + 2, headerY + 6);
+        pdf.text("Benefit", recommendationColumns.benefit.x + 2, headerY + 6);
+        pdf.text("Category", recommendationColumns.category.x + 2, headerY + 6);
+        pdf.text("Impact", recommendationColumns.impact.x + 2, headerY + 6);
+        pdf.text("Weight", recommendationColumns.weight.x + 2, headerY + 6);
+      };
+
+      let y = 38;
+      drawRecommendationHeader(y);
+      y += 12;
+      if (report.recommendations.length === 0) {
+        pdf.setTextColor(75, 85, 99);
+        pdf.text("No failing recommendations were found.", margin, y);
+      } else {
+        report.recommendations.forEach((recommendation, index) => {
+          const titleLines = pdf.splitTextToSize(recommendation.title, recommendationColumns.recommendation.width - 6) as string[];
+          const resourceText = recommendation.resources.length > 0 ? recommendation.resources.join(", ") : "No resource name available";
+          const resourceLines = pdf.splitTextToSize(resourceText, recommendationColumns.recommendation.width - 6) as string[];
+          const benefitLines = pdf.splitTextToSize(recommendation.benefit, recommendationColumns.benefit.width - 6) as string[];
+          const categoryLines = pdf.splitTextToSize(recommendation.category, recommendationColumns.category.width - 6) as string[];
+          const blockHeight = Math.max(20, 8 + (titleLines.length + resourceLines.length) * 4, 8 + benefitLines.length * 4, 8 + categoryLines.length * 4);
+          if (y + blockHeight > pdf.internal.pageSize.getHeight() - 12) {
+            pdf.addPage();
+            y = 16;
+            drawRecommendationHeader(y);
+            y += 12;
+          }
+          if (index % 2 === 0) {
+            pdf.setFillColor(249, 250, 251);
+            pdf.rect(margin, y, contentWidth, blockHeight, "F");
+          }
+          const drawInCell = (column: { x: number; width: number }, draw: () => void) => {
+            pdf.saveGraphicsState();
+            pdf.rect(column.x, y, column.width, blockHeight, null);
+            pdf.clip();
+            pdf.discardPath();
+            draw();
+            pdf.restoreGraphicsState();
+          };
+          pdf.setTextColor(31, 41, 55);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(8);
+          drawInCell(recommendationColumns.recommendation, () => {
+            pdf.text(titleLines, recommendationColumns.recommendation.x + 2, y + 5);
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(7);
+            pdf.setTextColor(185, 28, 28);
+            pdf.text(resourceLines, recommendationColumns.recommendation.x + 2, y + 7 + titleLines.length * 4);
+          });
+          drawInCell(recommendationColumns.benefit, () => {
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(7);
+            pdf.setTextColor(37, 99, 235);
+            pdf.text(benefitLines, recommendationColumns.benefit.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.category, () => {
+            pdf.setTextColor(75, 85, 99);
+            pdf.text(categoryLines, recommendationColumns.category.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.impact, () => {
+            pdf.setTextColor(recommendation.impact === "High" ? 220 : 75, recommendation.impact === "High" ? 38 : 85, recommendation.impact === "High" ? 38 : 99);
+            pdf.text(recommendation.impact, recommendationColumns.impact.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.weight, () => {
+            pdf.setTextColor(75, 85, 99);
+            pdf.text(`${recommendation.contributionPercent.toFixed(1)}%`, recommendationColumns.weight.x + 2, y + 5);
+          });
+          y += blockHeight;
+        });
+      }
+
+      const filenameDate = new Date().toISOString().slice(0, 10);
+      pdf.save(`resiliency-evaluation-${filenameDate}.pdf`);
+    } finally {
+      setActiveTabIndex(previousTab);
+    }
+  }, [activeTabIndex]);
 
   const markSubscriptionDirty = useCallback((subscriptionId: string | null) => {
     if (!subscriptionId) return;
@@ -1022,6 +1274,159 @@ const WorkloadView: React.FC = () => {
   const nodesForView = viewGraph?.nodes ?? graph?.nodes ?? [];
   const edgesForView = viewGraph?.edges ?? graph?.edges ?? [];
   const hasSelection = selectedSubscriptionIds.length > 0;
+
+  const pdfReport = useMemo<ResiliencyPdfReport | null>(() => {
+    if (!graph || !mergedEvaluations || nodesForView.length === 0) return null;
+
+    const graphNodeMap = new Map(graph.nodes.map(node => [node.id.toLowerCase(), node]));
+    const categories = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const impacts = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const services = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const recommendations = new Map<string, {
+      title: string;
+      benefit: string;
+      category: string;
+      impact: string;
+      resources: Set<string>;
+      failedWeight: number;
+    }>();
+    let totalWeight = 0;
+    let passedWeight = 0;
+    let totalChecks = 0;
+    let passedChecks = 0;
+    let failedChecks = 0;
+
+    const resourceMatchesReportFilters = (resourceId: string, evaluation: any): boolean => {
+      const graphNode = graphNodeMap.get(resourceId.toLowerCase());
+      if (graphNode) {
+        const annotation = annotationMap.get(resourceId.toLowerCase());
+        const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
+        const importance = annotation?.layer ?? (graphNode.metadata as any)?.importance ?? 3;
+        if (importance > maxImportance) return false;
+      }
+
+      if (resourceGroupFilter.size === 0 || serviceFilter.size === 0) return false;
+
+      const evaluationResourceGroup = (evaluation?.resource_group || evaluation?.resource_group_name || evaluation?.resourceGroup || "")
+        .toString()
+        .toLowerCase();
+      const resourceIdParts = resourceId.split("/").filter(Boolean);
+      const resourceIdPartsLower = resourceIdParts.map(part => part.toLowerCase());
+      const resourceGroupIndex = resourceIdPartsLower.indexOf("resourcegroups");
+      const resourceGroup = evaluationResourceGroup || (
+        resourceGroupIndex >= 0 && resourceGroupIndex + 1 < resourceIdParts.length
+          ? resourceIdParts[resourceGroupIndex + 1].toLowerCase()
+          : ""
+      );
+      if (resourceGroup && !resourceGroupFilter.has(resourceGroup)) return false;
+
+      const serviceKey = graphNode
+        ? canonicalTypeForNode(graphNode as any)
+        : normalizeTypeString(evaluation?.resource_type);
+      const normalizedServiceKey = String(serviceKey || "").toLowerCase();
+      if (normalizedServiceKey && !serviceFilter.has(normalizedServiceKey)) return false;
+
+      return true;
+    };
+
+    Object.entries(mergedEvaluations).forEach(([resourceId, evaluation]: [string, any]) => {
+      if (!resourceMatchesReportFilters(resourceId, evaluation)) return;
+      const checks = (evaluation.findings || evaluation.checks || []).filter((check: any) => {
+        if (validationSourceFilter.size === 0) return true;
+        return validationSourceFilter.has(check.validation_source || "");
+      });
+      const elementWeight = getElementWeight(resourceId, annotationMap);
+      const annotation = annotationMap.get(resourceId.toLowerCase());
+      const graphNode = graphNodeMap.get(resourceId.toLowerCase());
+      const resourceName = annotation?.display_name || evaluation.resource_name || graphNode?.name || resourceId.split("/").filter(Boolean).pop() || resourceId;
+      const serviceName = annotation?.azure_service_category || "Other";
+
+      checks.forEach((check: any) => {
+        const category = check.category || "Other";
+        const rawWeight = elementWeight
+          * (resilienceWeights.categoryWeights[category] ?? 0.05)
+          * (resilienceWeights.impactWeights[check.impact] ?? 0.1);
+        totalChecks += 1;
+        totalWeight += rawWeight;
+
+        const categoryStats = categories.get(category) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        const impactName = check.impact || "Unknown";
+        const impactStats = impacts.get(impactName) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        const serviceStats = services.get(serviceName) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        categoryStats.totalWeight += rawWeight;
+        impactStats.totalWeight += rawWeight;
+        serviceStats.totalWeight += rawWeight;
+        if (check.status === "pass") {
+          passedChecks += 1;
+          passedWeight += rawWeight;
+          categoryStats.passed += 1;
+          categoryStats.passedWeight += rawWeight;
+          impactStats.passed += 1;
+          impactStats.passedWeight += rawWeight;
+          serviceStats.passed += 1;
+          serviceStats.passedWeight += rawWeight;
+        } else {
+          categoryStats.failed += 1;
+          impactStats.failed += 1;
+          serviceStats.failed += 1;
+          if (check.status !== "fail") {
+            categories.set(category, categoryStats);
+            impacts.set(impactName, impactStats);
+            services.set(serviceName, serviceStats);
+            return;
+          }
+          failedChecks += 1;
+          const recommendationId = check.recommendation_id || check.description;
+          const recommendation = recommendations.get(recommendationId) || {
+            title: check.description || recommendationId,
+            benefit: check.potential_benefits || "Not specified",
+            category,
+            impact: check.impact || "Unknown",
+            resources: new Set<string>(),
+            failedWeight: 0,
+          };
+          recommendation.resources.add(resourceName);
+          recommendation.failedWeight += rawWeight;
+          recommendations.set(recommendationId, recommendation);
+        }
+        categories.set(category, categoryStats);
+        impacts.set(impactName, impactStats);
+        services.set(serviceName, serviceStats);
+      });
+    });
+
+    const toBreakdown = (entries: typeof categories) => Array.from(entries.entries())
+      .map(([name, item]) => ({
+        name,
+        score: item.totalWeight > 0 ? item.passedWeight / item.totalWeight : 0,
+        passed: item.passed,
+        failed: item.failed,
+        totalWeight: item.totalWeight,
+      }))
+      .sort((a, b) => b.totalWeight - a.totalWeight)
+      .map(({ totalWeight: _totalWeight, ...item }) => item);
+
+    return {
+      score: totalWeight > 0 ? passedWeight / totalWeight : 0,
+      totalChecks,
+      passedChecks,
+      failedChecks,
+      categories: toBreakdown(categories),
+      impacts: toBreakdown(impacts),
+      services: toBreakdown(services),
+      recommendations: Array.from(recommendations.values())
+        .sort((a, b) => b.failedWeight - a.failedWeight)
+        .slice(0, 10)
+        .map(recommendation => ({
+          title: recommendation.title,
+          benefit: recommendation.benefit,
+          category: recommendation.category,
+          impact: recommendation.impact,
+          resources: Array.from(recommendation.resources),
+          contributionPercent: totalWeight > 0 ? (recommendation.failedWeight / totalWeight) * 100 : 0,
+        })),
+    };
+  }, [graph, mergedEvaluations, nodesForView, validationSourceFilter, annotationMap, resilienceWeights, viewLevel, resourceGroupFilter, serviceFilter]);
 
   // Auto layout once when the view graph is recomputed
   const layoutResetKeyRef = useRef<string>("");
@@ -3366,6 +3771,42 @@ const WorkloadView: React.FC = () => {
           </button>
           <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: "1 1 220px", minWidth: 180 }}>Azure Resiliency IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {pdfReport && (
+              <button
+                onClick={async () => {
+                  setIsExportingPdf(true);
+                  try {
+                    await handleExportPdf(pdfReport);
+                  } catch (exportError) {
+                    console.error("Failed to export resilience PDF:", exportError);
+                    alert("Failed to export the PDF report. Please try again.");
+                  } finally {
+                    setIsExportingPdf(false);
+                  }
+                }}
+                disabled={isExportingPdf}
+                title="Download evaluation report as PDF"
+                style={{
+                  width: 132,
+                  height: 34,
+                  padding: "6px 12px",
+                  background: "#0078d4",
+                  color: "#fff",
+                  border: "1px solid #0078d4",
+                  borderRadius: 4,
+                  cursor: isExportingPdf ? "wait" : "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  opacity: isExportingPdf ? 0.7 : 1,
+                }}
+              >
+                <DocumentPdf20Regular />
+                {isExportingPdf ? "Creating PDF..." : "Export PDF"}
+              </button>
+            )}
             <button
               onClick={() => {
                 fetchGraph();
@@ -3373,6 +3814,8 @@ const WorkloadView: React.FC = () => {
               }}
               disabled={selectedSubscriptionIds.length === 0}
               style={{
+                width: 132,
+                height: 34,
                 padding: "6px 12px",
                 background: selectedSubscriptionIds.length > 0 ? "#fff" : "#f3f2f1",
                 color: selectedSubscriptionIds.length > 0 ? "#0078d4" : "#a0a09f",
@@ -3380,6 +3823,11 @@ const WorkloadView: React.FC = () => {
                 borderRadius: 4,
                 cursor: selectedSubscriptionIds.length > 0 ? "pointer" : "not-allowed",
                 fontSize: 12,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
                 transition: "all 0.1s ease-in-out",
               }}
               title="Reload graph and zonal resilience data from server"
@@ -3396,6 +3844,7 @@ const WorkloadView: React.FC = () => {
                 }
               }}
             >
+              <ArrowSync16Regular />
               Reload
             </button>
             
@@ -3466,7 +3915,7 @@ const WorkloadView: React.FC = () => {
                   </div>
                 ) : (
                   <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
-                    <div style={{ flex: 1, position: "relative" }}>
+                    <div ref={graphCaptureRef} style={{ flex: 1, position: "relative" }}>
                       <ReactFlowProvider>
                         <GraphCanvas
                           ref={graphCanvasRef}

@@ -138,7 +138,7 @@ const ScoreDonut: React.FC<{
         >
           {percentage.toFixed(0)}%
         </span>
-        <span style={{ fontSize: "10px", color: "#6b7280" }}>Resiliency</span>
+        <span style={{ fontSize: "9px", color: "#6b7280" }}>Weighted score</span>
       </div>
     </div>
   );
@@ -1873,7 +1873,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                   <ScoreDonut score={item.resilienceScore} size={80} />
                 </div>
 
-                <div style={{ marginTop: "8px" }}>
+                <div style={{ marginTop: "20px" }}>
                   <div
                     style={{
                       display: "flex",
@@ -1897,8 +1897,11 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                     />
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
-                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Passed: {item.passed}</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>Failed: {item.failed}</span>
+                  </div>                  
+                  <div style={{ fontSize: "9px", color: "#6b7280", textAlign: "center" }}>
+                    Check results (unweighted)
                   </div>
                 </div>
               </div>
@@ -1931,6 +1934,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                 </div>
 
                 <div style={{ marginTop: "8px" }}>
+                  <div style={{ fontSize: "9px", color: "#6b7280", marginBottom: "5px", textAlign: "center" }}>
+                    Check results (unweighted)
+                  </div>
                   <div
                     style={{
                       display: "flex",
@@ -1954,8 +1960,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                     />
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
-                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Passed: {item.passed}</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>Failed: {item.failed}</span>
                   </div>
                 </div>
               </div>
@@ -1988,6 +1994,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                 </div>
 
                 <div style={{ marginTop: "8px" }}>
+                  <div style={{ fontSize: "9px", color: "#6b7280", marginBottom: "5px", textAlign: "center" }}>
+                    Check results (unweighted)
+                  </div>
                   <div
                     style={{
                       display: "flex",
@@ -2011,8 +2020,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                     />
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
-                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Passed: {item.passed}</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>Failed: {item.failed}</span>
                   </div>
                 </div>
               </div>
@@ -2053,6 +2062,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                 </div>
 
                 <div style={{ marginTop: "8px" }}>
+                  <div style={{ fontSize: "9px", color: "#6b7280", marginBottom: "5px", textAlign: "center" }}>
+                    Check results (unweighted)
+                  </div>
                   <div
                     style={{
                       display: "flex",
@@ -2076,8 +2088,8 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
                     />
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", marginTop: "4px" }}>
-                    <span style={{ color: "#10b981", fontWeight: 600 }}>{item.passed}</span>
-                    <span style={{ color: "#ef4444", fontWeight: 600 }}>{item.failed}</span>
+                    <span style={{ color: "#10b981", fontWeight: 600 }}>Passed: {item.passed}</span>
+                    <span style={{ color: "#ef4444", fontWeight: 600 }}>Failed: {item.failed}</span>
                   </div>
                 </div>
               </div>
@@ -2274,7 +2286,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
           </label>
           </div>
           
-          {/* Export Button */}
           <button
             onClick={exportToExcel}
             style={{
@@ -2289,19 +2300,9 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
               display: "flex",
               alignItems: "center",
               gap: "6px",
-              transition: "all 0.2s",
               height: "fit-content",
             }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "#e0f2fe";
-              e.currentTarget.style.borderColor = "#0078d4";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "#fff";
-              e.currentTarget.style.borderColor = "#d1d5db";
-            }}
           >
-            <span>📥</span>
             Export to Excel
           </button>
         </div>
