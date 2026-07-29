@@ -214,6 +214,7 @@ def apply_service_group_for_workload(
     sg_name = existing_service_group_name or service_group_name(workload_id)
     disp = display_name or sg_name
     sg_id = f"/providers/Microsoft.Management/serviceGroups/{sg_name}"
+    resolved_parent = parent_service_group_id
 
     if not desired_ids and not detach_ids:
         return ApplyServiceGroupResult(
@@ -221,6 +222,7 @@ def apply_service_group_for_workload(
             service_group_name=sg_name,
             service_group_id=sg_id,
             display_name=disp,
+            parent_service_group_id=resolved_parent,
             message="This workload has no Azure resources to include in a Service Group.",
         )
 
@@ -238,12 +240,15 @@ def apply_service_group_for_workload(
         prune_to_members=True,
     )
 
+    resolved_parent = outcome.resolved_parent_service_group_id or resolved_parent
+
     if outcome.permission_denied:
         return ApplyServiceGroupResult(
             status="permission_denied",
             service_group_name=sg_name,
             service_group_id=sg_id,
             display_name=disp,
+            parent_service_group_id=resolved_parent,
             applied_members=outcome.applied,
             detached_members=outcome.detached,
             failed_members=outcome.failed,
@@ -262,6 +267,7 @@ def apply_service_group_for_workload(
             service_group_name=sg_name,
             service_group_id=sg_id,
             display_name=disp,
+            parent_service_group_id=resolved_parent,
             applied_members=outcome.applied,
             detached_members=outcome.detached,
             failed_members=outcome.failed,
@@ -274,6 +280,7 @@ def apply_service_group_for_workload(
         service_group_name=sg_name,
         service_group_id=sg_id,
         display_name=disp,
+        parent_service_group_id=resolved_parent,
         applied_members=outcome.applied,
         detached_members=outcome.detached,
         message=(

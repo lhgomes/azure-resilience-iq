@@ -24,6 +24,7 @@ class ServiceGroupFilter(BaseModel):
     service_group_id: Optional[str] = None
     service_group_name: Optional[str] = None
     display_name: Optional[str] = None
+    parent_service_group_id: Optional[str] = None
     member_resource_ids: List[str] = Field(default_factory=list)
 
 

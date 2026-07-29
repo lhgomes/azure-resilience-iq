@@ -822,21 +822,31 @@ const WorkloadSidebar: React.FC<Props> = props => {
           </button>
           <button
             onClick={props.onWorkloadSave}
-            disabled={!props.activeWorkloadId || props.serviceGroupBusy}
-            title={props.serviceGroupBusy ? "Syncing Service Group in Azure…" : "Save workload"}
+            disabled={!props.activeWorkloadId || props.serviceGroupBusy || !props.workloadDirty}
+            title={
+              props.serviceGroupBusy
+                ? "Syncing Service Group in Azure…"
+                : props.activeWorkloadId && !props.workloadDirty
+                  ? "No changes to save"
+                  : "Save workload"
+            }
             style={{
               ...iconButton,
               color: props.activeWorkloadId ? (props.workloadDirty ? "#fff" : "#0078d4") : "#c8c6c4",
               background: props.activeWorkloadId && props.workloadDirty ? "#107c10" : "transparent",
-              cursor: props.serviceGroupBusy ? "wait" : props.activeWorkloadId ? "pointer" : "not-allowed",
+              cursor: props.serviceGroupBusy
+                ? "wait"
+                : props.activeWorkloadId && props.workloadDirty
+                  ? "pointer"
+                  : "not-allowed",
             }}
             onMouseEnter={e => {
-              if (props.activeWorkloadId && !props.serviceGroupBusy) {
+              if (props.activeWorkloadId && props.workloadDirty && !props.serviceGroupBusy) {
                 e.currentTarget.style.background = props.workloadDirty ? "#0e6b0e" : "#f3f2f1";
               }
             }}
             onMouseLeave={e => {
-              if (props.activeWorkloadId && !props.serviceGroupBusy) {
+              if (props.activeWorkloadId && props.workloadDirty && !props.serviceGroupBusy) {
                 e.currentTarget.style.background = props.workloadDirty ? "#107c10" : "transparent";
               }
             }}

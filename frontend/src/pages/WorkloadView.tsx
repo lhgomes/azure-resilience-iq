@@ -169,6 +169,7 @@ const WorkloadView: React.FC = () => {
     selectedGroupMemberIds?: string[];
   }>({ selectedNodeIds: [], selectedGroupId: null });
   const [groupToolbarName, setGroupToolbarName] = useState<string>("");
+  const [graphViewRevision, setGraphViewRevision] = useState(0);
 
   // Azure Service Group apply/export state (scoped to the selected group)
   const [serviceGroupFormat, setServiceGroupFormat] = useState<ServiceGroupFormat>("terraform");
@@ -178,7 +179,7 @@ const WorkloadView: React.FC = () => {
   // button (which reflects save/sync, not delete).
   const [serviceGroupDeleting, setServiceGroupDeleting] = useState<boolean>(false);
   const [serviceGroupMessage, setServiceGroupMessage] = useState<
-    { tone: "info" | "success" | "error"; text: string } | null
+    { tone: "info" | "success" | "error" | "warn"; text: string } | null
   >(null);
 
   // Auto-dismiss the Service Group status toast 10s after an outcome is shown.
@@ -348,6 +349,7 @@ const WorkloadView: React.FC = () => {
             service_group_id: state.service_group_filter.service_group_id,
             service_group_name: state.service_group_filter.service_group_name,
             display_name: state.service_group_filter.display_name,
+            parent_service_group_id: state.service_group_filter.parent_service_group_id ?? undefined,
             member_resource_ids: sort(state.service_group_filter.member_resource_ids || []),
           }
         : undefined,
@@ -359,7 +361,7 @@ const WorkloadView: React.FC = () => {
     const current = normalizeWorkloadViewState(buildWorkloadViewState());
     const saved = normalizeWorkloadViewState(activeWorkloadState);
     return JSON.stringify(current) !== JSON.stringify(saved);
-  }, [activeWorkloadId, activeWorkloadState, buildWorkloadViewState, normalizeWorkloadViewState]);
+  }, [activeWorkloadId, activeWorkloadState, buildWorkloadViewState, normalizeWorkloadViewState, graphViewRevision]);
 
   const isNewWorkloadDirty = useMemo(() => {
     if (activeWorkloadId) return false;
@@ -375,7 +377,7 @@ const WorkloadView: React.FC = () => {
       show_legend: false,
     });
     return JSON.stringify(current) !== JSON.stringify(defaultState);
-  }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState]);
+  }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState, graphViewRevision]);
 
   const applyWorkloadViewState = useCallback((state: WorkloadViewState) => {
     skipFilterResetRef.current = true;
@@ -393,6 +395,18 @@ const WorkloadView: React.FC = () => {
     setExpandedCategories(new Set(state.expanded_categories || []));
     setShowLegend(!!state.show_legend);
     setServiceGroupBinding(state.service_group_filter ?? null);
+  }, []);
+
+  const hydrateServiceGroupBinding = useCallback(async (binding: ServiceGroupBinding | null): Promise<ServiceGroupBinding | null> => {
+    if (!binding || binding.parent_service_group_id || !binding.service_group_id) return binding;
+    try {
+      const groups = await listAzureServiceGroups();
+      const match = groups.find(group => group.id === binding.service_group_id || group.name === binding.service_group_name);
+      if (!match?.parent_service_group_id) return binding;
+      return { ...binding, parent_service_group_id: match.parent_service_group_id };
+    } catch {
+      return binding;
+    }
   }, []);
 
   const loadWorkloads = useCallback(async () => {
@@ -1427,6 +1441,12 @@ const WorkloadView: React.FC = () => {
         return { ...prev, nodes: remainingNodes, edges: newEdges, groups: remainingGroups, node_overrides: updatedOverrides };
       });
 
+      if ((graph?.nodes?.length ?? 0) > 1) {
+        window.setTimeout(() => {
+          graphCanvasRef.current?.fitView();
+        }, 0);
+      }
+
       setResiliencyEvaluations(prev => {
         if (!prev) return prev;
         const next = { ...prev } as Record<string, any>;
@@ -2185,14 +2205,21 @@ const WorkloadView: React.FC = () => {
     }
     try {
       const workload = await getWorkload(workloadId);
+      const hydratedBinding = await hydrateServiceGroupBinding(workload.view_state.service_group_filter ?? null);
+      const nextViewState = hydratedBinding === (workload.view_state.service_group_filter ?? null)
+        ? workload.view_state
+        : {
+            ...workload.view_state,
+            service_group_filter: hydratedBinding ?? undefined,
+          };
       setActiveWorkloadId(workload.workload_id);
       setWorkloadName(workload.name);
-      setActiveWorkloadState(workload.view_state);
-      applyWorkloadViewState(workload.view_state);
+      setActiveWorkloadState(nextViewState);
+      applyWorkloadViewState(nextViewState);
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to load workload");
     }
-  }, [applyWorkloadViewState]);
+  }, [applyWorkloadViewState, hydrateServiceGroupBinding]);
 
   const currentWorkloadAzureResourceIds = useCallback((): string[] => {
     const seen = new Set<string>();
@@ -2206,6 +2233,42 @@ const WorkloadView: React.FC = () => {
     }
     return ids;
   }, [nodesForView]);
+
+  // A Service Group can only contain live Azure resources in the caller's tenant.
+  // Virtual resources (imported from Terraform, or otherwise not backed by a real
+  // Azure subscription in this tenant) cannot be attached, so their presence
+  // disables Service Group sync for the whole workload.
+  const serviceGroupIneligibleMembers = useMemo(() => {
+    const seen = new Set<string>();
+    const items: Array<{ id: string; name: string }> = [];
+    for (const node of nodesForView) {
+      const id = node.id;
+      if (!id || !id.toLowerCase().startsWith("/subscriptions/")) continue;
+      const meta = (node.metadata ?? {}) as Record<string, unknown>;
+      if (!meta.virtual) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      items.push({ id, name: (meta.display_name as string) || node.name || id });
+    }
+    return items;
+  }, [nodesForView]);
+
+  const serviceGroupSyncBlocked = serviceGroupIneligibleMembers.length > 0;
+
+  const warnServiceGroupBlocked = useCallback(() => {
+    const count = serviceGroupIneligibleMembers.length;
+    setServiceGroupMessage({
+      tone: "warn",
+      text: `Service Group sync is disabled: this workload includes ${count} virtual resource${count === 1 ? "" : "s"} (imported from Terraform or not backed by a live Azure subscription in this tenant) that cannot be added to an Azure Service Group.`,
+    });
+  }, [serviceGroupIneligibleMembers]);
+
+  const haveSameWorkloadResourceIds = useCallback((left: string[], right: string[]): boolean => {
+    if (left.length !== right.length) return false;
+    const normalizedLeft = [...left].map(String).sort();
+    const normalizedRight = [...right].map(String).sort();
+    return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+  }, []);
 
   const handleWorkloadCreate = useCallback(async () => {
     const name = workloadName.trim();
@@ -2227,13 +2290,15 @@ const WorkloadView: React.FC = () => {
       // "Save as new workload" always offers to create a matching Service Group
       // from the new workload's Azure resources.
       const memberIds = currentWorkloadAzureResourceIds();
-      if (memberIds.length > 0) {
+      if (serviceGroupSyncBlocked) {
+        warnServiceGroupBlocked();
+      } else if (memberIds.length > 0) {
         setPendingServiceGroupCreate({ memberIds });
       }
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to save workload");
     }
-  }, [workloadName, buildWorkloadViewState, loadWorkloads, currentWorkloadAzureResourceIds]);
+  }, [workloadName, buildWorkloadViewState, loadWorkloads, currentWorkloadAzureResourceIds, serviceGroupSyncBlocked, warnServiceGroupBlocked]);
 
   const importServiceGroupAsWorkload = useCallback(async (sg: ServiceGroupSummary) => {
     setWorkloadError(null);
@@ -2271,6 +2336,7 @@ const WorkloadView: React.FC = () => {
         service_group_id: sg.id,
         service_group_name: sg.name,
         display_name: sg.display_name,
+        parent_service_group_id: sg.parent_service_group_id ?? undefined,
         member_resource_ids: memberIds,
       };
 
@@ -2360,6 +2426,10 @@ const WorkloadView: React.FC = () => {
       parentServiceGroupId?: string | null;
     }): Promise<void> => {
       const { workloadId, displayName, memberIds, binding, parentServiceGroupId } = opts;
+      if (serviceGroupSyncBlocked) {
+        warnServiceGroupBlocked();
+        return;
+      }
       setServiceGroupBusy(true);
       setServiceGroupMessage(null);
       try {
@@ -2369,7 +2439,7 @@ const WorkloadView: React.FC = () => {
           member_resource_ids: memberIds,
           previous_member_resource_ids: binding?.member_resource_ids ?? [],
           service_group_name: binding?.service_group_name,
-          parent_service_group_id: parentServiceGroupId ?? null,
+          parent_service_group_id: parentServiceGroupId ?? binding?.parent_service_group_id ?? null,
           fallback_format: serviceGroupFormat,
         });
 
@@ -2378,12 +2448,14 @@ const WorkloadView: React.FC = () => {
         // workload's view_state) is what lets a later Save UPDATE the existing
         // Service Group instead of re-offering to create a duplicate — this is
         // essential for partial results, where some members failed transiently.
-        const bindAndPersist = async (): Promise<ServiceGroupBinding> => {
+        const bindAndPersist = async (nextMemberIds: string[]): Promise<ServiceGroupBinding> => {
           const nextBinding: ServiceGroupBinding = {
             service_group_id: result.service_group_id ?? binding?.service_group_id,
             service_group_name: result.service_group_name ?? binding?.service_group_name,
             display_name: result.display_name ?? displayName,
-            member_resource_ids: memberIds,
+            parent_service_group_id:
+              result.parent_service_group_id ?? binding?.parent_service_group_id ?? parentServiceGroupId ?? undefined,
+            member_resource_ids: nextMemberIds,
           };
           setServiceGroupBinding(nextBinding);
           const updated = await updateWorkload(workloadId, {
@@ -2394,7 +2466,7 @@ const WorkloadView: React.FC = () => {
         };
 
         if (result.status === "applied") {
-          const nextBinding = await bindAndPersist();
+          const nextBinding = await bindAndPersist(memberIds);
           const detached = result.detached_members?.length ?? 0;
           const attached = result.applied_members.length;
           setServiceGroupMessage({
@@ -2419,8 +2491,14 @@ const WorkloadView: React.FC = () => {
           // than offering to create a duplicate. Then surface the partial result.
           const attached = result.applied_members?.length ?? 0;
           const failedCount = result.failed_members?.length ?? 0;
-          if (attached > 0) {
-            await bindAndPersist();
+          const detachedMembers = new Set(result.detached_members ?? []);
+          const previousMembers = new Set(binding?.member_resource_ids ?? []);
+          const nextMemberIds = [
+            ...Array.from(previousMembers).filter(id => !detachedMembers.has(id)),
+            ...result.applied_members.filter(id => !previousMembers.has(id)),
+          ];
+          if (attached > 0 || detachedMembers.size > 0) {
+            await bindAndPersist(nextMemberIds);
           }
           setServiceGroupMessage({
             tone: attached > 0 ? "info" : "error",
@@ -2439,7 +2517,7 @@ const WorkloadView: React.FC = () => {
         setServiceGroupBusy(false);
       }
     },
-    [serviceGroupFormat, buildWorkloadViewState]
+    [serviceGroupFormat, buildWorkloadViewState, serviceGroupSyncBlocked, warnServiceGroupBlocked]
   );
 
   const handleWorkloadSave = useCallback(async () => {
@@ -2452,14 +2530,20 @@ const WorkloadView: React.FC = () => {
       await loadWorkloads();
 
       const memberIds = currentWorkloadAzureResourceIds();
-      if (serviceGroupBinding) {
-        // Already bound → keep the Service Group in sync with the workload.
-        await syncWorkloadServiceGroup({
-          workloadId: activeWorkloadId,
-          displayName: serviceGroupBinding.display_name || workloadName,
-          memberIds,
-          binding: serviceGroupBinding,
-        });
+      if (serviceGroupSyncBlocked) {
+        // Workload metadata is still saved; only Service Group sync is disabled.
+        warnServiceGroupBlocked();
+      } else if (serviceGroupBinding) {
+        const previousMemberIds = serviceGroupBinding.member_resource_ids ?? [];
+        if (!haveSameWorkloadResourceIds(memberIds, previousMemberIds)) {
+          // Only sync the Service Group when the resource membership actually changed.
+          await syncWorkloadServiceGroup({
+            workloadId: activeWorkloadId,
+            displayName: serviceGroupBinding.display_name || workloadName,
+            memberIds,
+            binding: serviceGroupBinding,
+          });
+        }
       } else if (memberIds.length > 0) {
         // Not bound yet → ask whether to create a Service Group.
         setPendingServiceGroupCreate({ memberIds });
@@ -2472,9 +2556,12 @@ const WorkloadView: React.FC = () => {
     buildWorkloadViewState,
     loadWorkloads,
     currentWorkloadAzureResourceIds,
+    haveSameWorkloadResourceIds,
     serviceGroupBinding,
     syncWorkloadServiceGroup,
     workloadName,
+    serviceGroupSyncBlocked,
+    warnServiceGroupBlocked,
   ]);
 
   const confirmCreateServiceGroup = useCallback(async () => {
@@ -2526,11 +2613,30 @@ const WorkloadView: React.FC = () => {
       setWorkloadError(null);
       const updated = await updateWorkload(activeWorkloadId, { name });
       setWorkloadName(updated.name);
+
+       // Keep the linked Azure Service Group display name aligned with the
+       // workload name when this workload is bound to a Service Group.
+       if (serviceGroupBinding) {
+         await syncWorkloadServiceGroup({
+           workloadId: activeWorkloadId,
+           displayName: updated.name,
+           memberIds: currentWorkloadAzureResourceIds(),
+           binding: serviceGroupBinding,
+         });
+       }
+
       await loadWorkloads();
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to rename workload");
     }
-  }, [activeWorkloadId, workloadName, loadWorkloads]);
+  }, [
+    activeWorkloadId,
+    workloadName,
+    serviceGroupBinding,
+    syncWorkloadServiceGroup,
+    currentWorkloadAzureResourceIds,
+    loadWorkloads,
+  ]);
 
   const performWorkloadDelete = useCallback(
     async (workloadId: string, serviceGroupName: string | null): Promise<void> => {
@@ -2728,6 +2834,8 @@ const WorkloadView: React.FC = () => {
               ? "#a7d8a7"
               : serviceGroupMessage?.tone === "error"
               ? "#e6a3a6"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#e6c07b"
               : "#c8c6c4",
             background: serviceGroupInFlight
               ? "#faf9f8"
@@ -2735,6 +2843,8 @@ const WorkloadView: React.FC = () => {
               ? "#f1faf1"
               : serviceGroupMessage?.tone === "error"
               ? "#fdf3f4"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#fdf6e3"
               : "#faf9f8",
             color: serviceGroupInFlight
               ? "#323130"
@@ -2742,6 +2852,8 @@ const WorkloadView: React.FC = () => {
               ? "#107c10"
               : serviceGroupMessage?.tone === "error"
               ? "#a4262c"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#8a6116"
               : "#605e5c",
           }}
         >
@@ -3300,6 +3412,7 @@ const WorkloadView: React.FC = () => {
                           groups={graph?.groups ?? []}
                           graphViewState={pendingGraphView}
                           onGraphViewApplied={() => setPendingGraphView(null)}
+                          onGraphViewChanged={() => setGraphViewRevision(prev => prev + 1)}
                           selectedEdgeId={selectedEdge?.id ?? null}
                           userLayerEnabled={userLayerEnabled}
                           aiLayerEnabled={aiLayerEnabled}
@@ -3616,12 +3729,12 @@ const WorkloadView: React.FC = () => {
         >
           <div
             style={{
-              width: 440,
+              width: 520,
               maxWidth: "90vw",
               background: "#fff",
-              borderRadius: 6,
+              borderRadius: 2,
               boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
-              padding: 20,
+              padding: 24,
               color: "#323130",
               fontFamily: "Segoe UI, Tahoma, Geneva, Verdana, sans-serif",
             }}
@@ -3635,18 +3748,27 @@ const WorkloadView: React.FC = () => {
               Service Group from Azure? This removes the Service Group and its member links, but
               never deletes the underlying Azure resources.
             </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
               <button
                 type="button"
                 onClick={() => setPendingWorkloadDelete(null)}
                 disabled={serviceGroupDeleting}
                 style={{
-                  padding: "6px 14px",
+                  minHeight: 32,
+                  padding: "5px 16px",
                   background: "#fff",
                   color: "#323130",
                   border: "1px solid #8a8886",
-                  borderRadius: 2,
-                  fontSize: 13,
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
                   cursor: serviceGroupDeleting ? "default" : "pointer",
                 }}
               >
@@ -3661,16 +3783,18 @@ const WorkloadView: React.FC = () => {
                 }}
                 disabled={serviceGroupDeleting}
                 style={{
-                  padding: "6px 14px",
+                  minHeight: 32,
+                  padding: "5px 16px",
                   background: "#fff",
                   color: "#323130",
                   border: "1px solid #8a8886",
-                  borderRadius: 2,
-                  fontSize: 13,
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
                   cursor: serviceGroupDeleting ? "default" : "pointer",
                 }}
               >
-                Delete workload only
+                Workload only
               </button>
               <button
                 type="button"
@@ -3681,16 +3805,18 @@ const WorkloadView: React.FC = () => {
                 }}
                 disabled={serviceGroupDeleting}
                 style={{
-                  padding: "6px 14px",
+                  minHeight: 32,
+                  padding: "5px 16px",
                   background: "#a4262c",
                   color: "#fff",
                   border: "1px solid #a4262c",
-                  borderRadius: 2,
-                  fontSize: 13,
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
                   cursor: serviceGroupDeleting ? "default" : "pointer",
                 }}
               >
-                Delete workload & Service Group
+                Delete both
               </button>
             </div>
           </div>

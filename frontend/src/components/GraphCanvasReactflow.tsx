@@ -95,6 +95,7 @@ interface Props {
   onNodeHide?: (nodeId: string) => void;
   onNodeDragStart?: () => void;
 
+  onGraphViewChanged?: () => void;
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
   onMoveNodeToGroup?: (args: { nodeId: string; groupId: string }) => Promise<void> | void;
@@ -148,6 +149,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     onNodeRemoveFromGroup,
     onSelectionStateChange,
     selectedEdgeId = null,
+    onGraphViewChanged,
   } = props;
   
   const { fitView, getViewport, setViewport, getNodes, setCenter } = useReactFlow();
@@ -1016,6 +1018,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
             }
             return next;
           });
+          onGraphViewChanged?.();
         }
 
         // Update groups if any moved nodes are members

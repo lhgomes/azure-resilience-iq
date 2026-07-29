@@ -43,7 +43,7 @@ def list_service_groups() -> List[Dict[str, str]]:
     query = (
         "resourcecontainers "
         '| where type == "microsoft.management/servicegroups" '
-        "| project id, name, displayName = tostring(properties.displayName)"
+        "| project id, name, displayName = tostring(properties.displayName), parentResourceId = tostring(properties.parent.resourceId)"
     )
     results: List[Dict[str, str]] = []
     for row in _run_tenant_query(query):
@@ -55,6 +55,7 @@ def list_service_groups() -> List[Dict[str, str]]:
                 "id": row.get("id") or f"{_SERVICE_GROUP_ID_PREFIX}{name}",
                 "name": name,
                 "display_name": row.get("displayName") or name,
+                "parent_service_group_id": row.get("parentResourceId") or None,
             }
         )
     return results

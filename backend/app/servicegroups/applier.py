@@ -31,6 +31,8 @@ _HTTP_TIMEOUT = 30.0
 _LINKED_AUTH_FAILED = "LinkedAuthorizationFailed"
 _MEMBER_WRITE_MAX_ATTEMPTS = 6
 _MEMBER_WRITE_BACKOFF_SECONDS = 2.0
+_ASYNC_OPERATION_MAX_ATTEMPTS = 30
+_ASYNC_OPERATION_POLL_SECONDS = 2.0
 
 # Member writes are independent, I/O-bound ARM calls, so they are issued
 # concurrently through a bounded pool (httpx.Client is thread-safe; the token is
@@ -48,6 +50,7 @@ class ApplyOutcome:
     failed: List[str] = field(default_factory=list)
     permission_denied: bool = False
     error_message: Optional[str] = None
+    resolved_parent_service_group_id: Optional[str] = None
 
 
 def _service_group_id(service_group_name: str) -> str:
@@ -98,6 +101,21 @@ def _extract_error(resp: httpx.Response) -> str:
     return (resp.text or f"HTTP {resp.status_code}")[:500]
 
 
+def _operation_error(resp: httpx.Response) -> str:
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                error = payload.get("error")
+                if isinstance(error, dict) and error.get("message"):
+                    return str(error["message"])
+            if payload.get("status"):
+                return str(payload["status"])
+    except Exception:
+        pass
+    return _extract_error(resp)
+
+
 def _error_code(resp: httpx.Response) -> Optional[str]:
     try:
         payload = resp.json()
@@ -122,6 +140,44 @@ def _put(client: httpx.Client, token: str, path: str, api_version: str, body: di
     )
 
 
+def _wait_for_async_operation(client: httpx.Client, token: str, resp: httpx.Response) -> Optional[str]:
+    operation_url = resp.headers.get("Azure-AsyncOperation") or resp.headers.get("azure-asyncoperation")
+    if not operation_url:
+        return None
+
+    if not operation_url.startswith("http"):
+        operation_url = f"{ARM_BASE}{operation_url}"
+
+    last_response: Optional[httpx.Response] = None
+    for _ in range(_ASYNC_OPERATION_MAX_ATTEMPTS):
+        try:
+            last_response = client.get(
+                operation_url,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=_HTTP_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            return f"Async operation polling failed: {exc}"
+
+        if not last_response.is_success:
+            return _operation_error(last_response)
+
+        try:
+            payload = last_response.json()
+        except Exception:
+            return _extract_error(last_response)
+
+        status = str((payload or {}).get("status") or "").lower()
+        if status == "succeeded":
+            return None
+        if status in {"failed", "canceled"}:
+            return _operation_error(last_response)
+
+        time.sleep(_ASYNC_OPERATION_POLL_SECONDS)
+
+    return "Azure asynchronous operation did not complete before the retry limit was reached."
+
+
 def _put_member_with_retry(
     client: httpx.Client, token: str, member_path: str, body: dict
 ) -> httpx.Response:
@@ -140,6 +196,17 @@ def _put_member_with_retry(
         time.sleep(_MEMBER_WRITE_BACKOFF_SECONDS * attempt)
         resp = _put(client, token, member_path, SERVICE_GROUP_MEMBER_API_VERSION, body)
         attempt += 1
+    return resp
+
+
+def _put_member_with_async_wait(
+    client: httpx.Client, token: str, member_path: str, body: dict
+) -> httpx.Response:
+    resp = _put_member_with_retry(client, token, member_path, body)
+    async_error = _wait_for_async_operation(client, token, resp)
+    if async_error:
+        resp._content = json.dumps({"error": {"message": async_error}}).encode("utf-8")
+        resp.status_code = 400
     return resp
 
 
@@ -192,7 +259,10 @@ def apply_service_group(
     try:
         token = _acquire_token()
     except Exception as exc:  # credential/token acquisition failure
-        return ApplyOutcome(failed=all_member_ids, error_message=f"Failed to acquire Azure token: {exc}")
+        return ApplyOutcome(
+            failed=all_member_ids,
+            error_message=f"Failed to acquire Azure token: {exc}",
+        )
 
     sg_path = _service_group_id(service_group_name)
 
@@ -203,16 +273,20 @@ def apply_service_group(
         try:
             existing = _get(client, token, sg_path, SERVICE_GROUP_API_VERSION)
         except httpx.HTTPError as exc:
-            return ApplyOutcome(failed=all_member_ids, error_message=f"Service Group lookup failed: {exc}")
-
-        if existing.status_code == 403:
             return ApplyOutcome(
                 failed=all_member_ids,
-                permission_denied=True,
-                error_message=_extract_error(existing),
+                error_message=f"Service Group lookup failed: {exc}",
+                resolved_parent_service_group_id=parent_service_group_id,
             )
 
-        effective_parent = _existing_parent_id(existing) or parent_service_group_id
+        # A missing SG read permission should not block writes if the caller can
+        # still issue the PUT. When the lookup is forbidden we fall back to the
+        # caller-provided parent, or the tenant root for top-level groups.
+        if existing.status_code == 403:
+            effective_parent = parent_service_group_id
+        else:
+            effective_parent = _existing_parent_id(existing) or parent_service_group_id
+
         if not effective_parent:
             tenant_id = _tenant_id_from_token(token)
             if not tenant_id:
@@ -220,8 +294,11 @@ def apply_service_group(
                     failed=all_member_ids,
                     error_message="Unable to determine the tenant id from the Azure token, which "
                     "is required to default the Service Group parent to the tenant root.",
+                    resolved_parent_service_group_id=parent_service_group_id,
                 )
             effective_parent = _service_group_id(tenant_id)
+
+        outcome = ApplyOutcome(resolved_parent_service_group_id=effective_parent)
 
         # 1) Create/update the Service Group under the resolved parent.
         try:
@@ -238,16 +315,33 @@ def apply_service_group(
                 },
             )
         except httpx.HTTPError as exc:
-            return ApplyOutcome(failed=all_member_ids, error_message=f"Service Group request failed: {exc}")
+            return ApplyOutcome(
+                failed=all_member_ids,
+                error_message=f"Service Group request failed: {exc}",
+                resolved_parent_service_group_id=effective_parent,
+            )
 
         if sg_resp.status_code == 403:
             return ApplyOutcome(
                 failed=all_member_ids,
                 permission_denied=True,
                 error_message=_extract_error(sg_resp),
+                resolved_parent_service_group_id=effective_parent,
             )
         if not sg_resp.is_success:
-            return ApplyOutcome(failed=all_member_ids, error_message=_extract_error(sg_resp))
+            return ApplyOutcome(
+                failed=all_member_ids,
+                error_message=_extract_error(sg_resp),
+                resolved_parent_service_group_id=effective_parent,
+            )
+
+        sg_async_error = _wait_for_async_operation(client, token, sg_resp)
+        if sg_async_error:
+            return ApplyOutcome(
+                failed=all_member_ids,
+                error_message=sg_async_error,
+                resolved_parent_service_group_id=effective_parent,
+            )
 
         # Discover the SG's CURRENT member relationships (whatever named them:
         # this tool, IaC, or the portal). This lets us skip resources that are
@@ -272,13 +366,12 @@ def apply_service_group(
                     "Resource Graph, which is required to sync membership safely; no "
                     f"membership changes were applied ({exc})."
                 ),
+                resolved_parent_service_group_id=effective_parent,
             )
 
         # 2) Attach each desired member, skipping any that are already members.
         #    Pending writes go out concurrently (bounded pool) since each member
         #    PUT is an independent ARM call.
-        outcome = ApplyOutcome()
-
         to_attach: List[ServiceGroupMemberRef] = []
         for member in members:
             if norm_id(member.resource_id) in existing_by_source:
@@ -296,7 +389,7 @@ def apply_service_group(
                 f"/providers/Microsoft.Relationships/serviceGroupMember/{member.member_name}"
             )
             try:
-                resp = _put_member_with_retry(
+                resp = _put_member_with_async_wait(
                     client, token, member_path, {"properties": {"targetId": sg_path}}
                 )
                 return member, resp, None

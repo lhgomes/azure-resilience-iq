@@ -131,6 +131,7 @@ export interface ServiceGroupBinding {
   service_group_id?: string;
   service_group_name?: string;
   display_name?: string;
+  parent_service_group_id?: string | null;
   member_resource_ids: string[];
 }
 
@@ -154,6 +155,7 @@ export interface ServiceGroupSummary {
   id: string;
   name: string;
   display_name: string;
+  parent_service_group_id?: string | null;
 }
 
 export interface ServiceGroupImportProgress {
@@ -492,6 +494,7 @@ export interface ServiceGroupApplyResult {
   service_group_name?: string;
   service_group_id?: string;
   display_name?: string;
+  parent_service_group_id?: string | null;
   applied_members: string[];
   detached_members?: string[];
   failed_members: string[];

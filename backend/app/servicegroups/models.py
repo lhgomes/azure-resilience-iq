@@ -31,6 +31,7 @@ class ServiceGroupSummary(BaseModel):
     id: str
     name: str
     display_name: str
+    parent_service_group_id: Optional[str] = None
 
 
 class ServiceGroupArtifact(BaseModel):
@@ -85,6 +86,7 @@ class ApplyServiceGroupResult(BaseModel):
     service_group_name: Optional[str] = None
     service_group_id: Optional[str] = None
     display_name: Optional[str] = None
+    parent_service_group_id: Optional[str] = None
     applied_members: List[str] = []
     detached_members: List[str] = []
     failed_members: List[str] = []
