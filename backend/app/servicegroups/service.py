@@ -10,12 +10,14 @@ from .models import (
     ApplyServiceGroupResult,
     ArtifactFormat,
     ServiceGroupArtifact,
+    ServiceGroupAvailability,
     ServiceGroupMemberRef,
     ServiceGroupSummary,
 )
 from .naming import member_name, service_group_name
 from .generator import generate_artifact
 from .applier import apply_service_group, delete_service_group as _delete_service_group_azure
+from .applier import check_service_group_read_access
 from .reader import list_service_groups, list_service_group_member_ids
 
 
@@ -26,6 +28,16 @@ class GroupNotFoundError(Exception):
 def list_available_service_groups() -> List[ServiceGroupSummary]:
     """Discover Service Groups in the caller's tenant (read path)."""
     return [ServiceGroupSummary(**sg) for sg in list_service_groups()]
+
+
+def get_service_group_availability() -> ServiceGroupAvailability:
+    """Report whether the backend identity can read Service Groups.
+
+    Used to gate the Service Group UI: read requires a grant at the tenant-root
+    Service Group scope that a standard deploy principal cannot self-assign.
+    """
+    access = check_service_group_read_access()
+    return ServiceGroupAvailability(available=access.available, reason=access.reason)
 
 
 def get_service_group_member_ids(service_group_name: str) -> List[str]:

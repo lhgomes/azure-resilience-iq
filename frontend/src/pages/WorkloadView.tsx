@@ -43,6 +43,7 @@ import {
   applyServiceGroupFromWorkload,
   exportServiceGroup,
   listAzureServiceGroups,
+  getServiceGroupAvailability,
   fetchServiceGroupMembers,
   deleteServiceGroup,
   listWorkloads,
@@ -211,6 +212,35 @@ const WorkloadView: React.FC = () => {
   // Progress surface for the SG -> Workload import (create view + map member subscriptions).
   const [serviceGroupImport, setServiceGroupImport] = useState<ServiceGroupImportProgress | null>(null);
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ nonce: number; label: string } | null>(null);
+
+  // Whether the backend identity can read Service Groups at tenant scope. When
+  // false the entire Service Group integration is disabled: read requires a
+  // tenant-root grant a standard deploy principal cannot self-assign. Probed once.
+  const [serviceGroupAvailable, setServiceGroupAvailable] = useState<boolean>(true);
+  const [serviceGroupUnavailableReason, setServiceGroupUnavailableReason] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getServiceGroupAvailability()
+      .then(res => {
+        if (cancelled) return;
+        setServiceGroupAvailable(res.available);
+        setServiceGroupUnavailableReason(
+          res.available ? null : res.reason ?? "Service Group integration is unavailable for the backend identity."
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fail safe: if we can't verify access, disable SG actions rather than offer broken ones.
+        setServiceGroupAvailable(false);
+        setServiceGroupUnavailableReason(
+          "Could not verify Service Group availability. The backend identity may lack access or Azure is unreachable."
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track if user has made changes requiring refresh
   const [needsRefresh, setNeedsRefresh] = useState(false);
@@ -2263,6 +2293,16 @@ const WorkloadView: React.FC = () => {
     });
   }, [serviceGroupIneligibleMembers]);
 
+  // Global gate: the backend identity cannot read Service Groups, so the whole
+  // integration (create/import/apply/export) is disabled regardless of the
+  // selected workload's contents.
+  const warnServiceGroupUnavailable = useCallback(() => {
+    setServiceGroupMessage({
+      tone: "warn",
+      text: serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity.",
+    });
+  }, [serviceGroupUnavailableReason]);
+
   const haveSameWorkloadResourceIds = useCallback((left: string[], right: string[]): boolean => {
     if (left.length !== right.length) return false;
     const normalizedLeft = [...left].map(String).sort();
@@ -2290,7 +2330,9 @@ const WorkloadView: React.FC = () => {
       // "Save as new workload" always offers to create a matching Service Group
       // from the new workload's Azure resources.
       const memberIds = currentWorkloadAzureResourceIds();
-      if (serviceGroupSyncBlocked) {
+      if (!serviceGroupAvailable) {
+        warnServiceGroupUnavailable();
+      } else if (serviceGroupSyncBlocked) {
         warnServiceGroupBlocked();
       } else if (memberIds.length > 0) {
         setPendingServiceGroupCreate({ memberIds });
@@ -2298,7 +2340,7 @@ const WorkloadView: React.FC = () => {
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to save workload");
     }
-  }, [workloadName, buildWorkloadViewState, loadWorkloads, currentWorkloadAzureResourceIds, serviceGroupSyncBlocked, warnServiceGroupBlocked]);
+  }, [workloadName, buildWorkloadViewState, loadWorkloads, currentWorkloadAzureResourceIds, serviceGroupSyncBlocked, warnServiceGroupBlocked, serviceGroupAvailable, warnServiceGroupUnavailable]);
 
   const importServiceGroupAsWorkload = useCallback(async (sg: ServiceGroupSummary) => {
     setWorkloadError(null);
@@ -2426,6 +2468,10 @@ const WorkloadView: React.FC = () => {
       parentServiceGroupId?: string | null;
     }): Promise<void> => {
       const { workloadId, displayName, memberIds, binding, parentServiceGroupId } = opts;
+      if (!serviceGroupAvailable) {
+        warnServiceGroupUnavailable();
+        return;
+      }
       if (serviceGroupSyncBlocked) {
         warnServiceGroupBlocked();
         return;
@@ -2517,7 +2563,7 @@ const WorkloadView: React.FC = () => {
         setServiceGroupBusy(false);
       }
     },
-    [serviceGroupFormat, buildWorkloadViewState, serviceGroupSyncBlocked, warnServiceGroupBlocked]
+    [serviceGroupFormat, buildWorkloadViewState, serviceGroupSyncBlocked, warnServiceGroupBlocked, serviceGroupAvailable, warnServiceGroupUnavailable]
   );
 
   const handleWorkloadSave = useCallback(async () => {
@@ -2530,7 +2576,10 @@ const WorkloadView: React.FC = () => {
       await loadWorkloads();
 
       const memberIds = currentWorkloadAzureResourceIds();
-      if (serviceGroupSyncBlocked) {
+      if (!serviceGroupAvailable) {
+        // Workload metadata is still saved; only Service Group sync is disabled.
+        warnServiceGroupUnavailable();
+      } else if (serviceGroupSyncBlocked) {
         // Workload metadata is still saved; only Service Group sync is disabled.
         warnServiceGroupBlocked();
       } else if (serviceGroupBinding) {
@@ -2562,6 +2611,8 @@ const WorkloadView: React.FC = () => {
     workloadName,
     serviceGroupSyncBlocked,
     warnServiceGroupBlocked,
+    serviceGroupAvailable,
+    warnServiceGroupUnavailable,
   ]);
 
   const confirmCreateServiceGroup = useCallback(async () => {
@@ -2748,6 +2799,10 @@ const WorkloadView: React.FC = () => {
     );
   }
 
+  // Service Group apply/export controls are disabled while a mutation is in
+  // flight OR when the backend identity can't read Service Groups at all.
+  const serviceGroupControlsDisabled = serviceGroupBusy || !serviceGroupAvailable;
+
   const suggestGroupName = (selectedIds: string[]): string => {
     if (selectedIds.length === 0) return "";
 
@@ -2926,6 +2981,8 @@ const WorkloadView: React.FC = () => {
             onImportServiceGroup={importServiceGroupAsWorkload}
             serviceGroupBusy={serviceGroupBusy}
             serviceGroupImportStatus={serviceGroupImport}
+            serviceGroupAvailable={serviceGroupAvailable}
+            serviceGroupUnavailableReason={serviceGroupUnavailableReason}
             workloadError={workloadError}
             workloadDirty={isWorkloadDirty}
             workloadNewDirty={isNewWorkloadDirty}
@@ -3089,13 +3146,19 @@ const WorkloadView: React.FC = () => {
                       Azure Service Group
                     </div>
 
+                    {!serviceGroupAvailable && (
+                      <div style={{ fontSize: 12, color: "#8a6116", background: "#fdf6e3", border: "1px solid #e6c07b", borderRadius: 2, padding: "6px 8px" }}>
+                        {serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity."}
+                      </div>
+                    )}
+
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <label style={{ fontSize: 12, color: "#605e5c" }} htmlFor="sg-format">Format</label>
                       <select
                         id="sg-format"
                         value={serviceGroupFormat}
                         onChange={e => setServiceGroupFormat(e.target.value as ServiceGroupFormat)}
-                        disabled={serviceGroupBusy}
+                        disabled={serviceGroupControlsDisabled}
                         style={{
                           flex: 1,
                           padding: "5px 8px",
@@ -3114,7 +3177,7 @@ const WorkloadView: React.FC = () => {
 
                     <div style={{ display: "flex", gap: 8 }}>
                       <button
-                        disabled={serviceGroupBusy}
+                        disabled={serviceGroupControlsDisabled}
                         onClick={() => {
                           const gid = groupToolbarSelection.selectedGroupId!;
                           const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
@@ -3124,11 +3187,11 @@ const WorkloadView: React.FC = () => {
                         style={{
                           flex: 1,
                           padding: "6px 12px",
-                          background: serviceGroupBusy ? "#f3f2f1" : "#0078d4",
-                          color: serviceGroupBusy ? "#a19f9d" : "#fff",
-                          border: serviceGroupBusy ? "1px solid #c8c6c4" : "1px solid #0078d4",
+                          background: serviceGroupControlsDisabled ? "#f3f2f1" : "#0078d4",
+                          color: serviceGroupControlsDisabled ? "#a19f9d" : "#fff",
+                          border: serviceGroupControlsDisabled ? "1px solid #c8c6c4" : "1px solid #0078d4",
                           borderRadius: 2,
-                          cursor: serviceGroupBusy ? "not-allowed" : "pointer",
+                          cursor: serviceGroupControlsDisabled ? "not-allowed" : "pointer",
                           fontSize: 13,
                         }}
                       >
@@ -3136,7 +3199,7 @@ const WorkloadView: React.FC = () => {
                       </button>
 
                       <button
-                        disabled={serviceGroupBusy}
+                        disabled={serviceGroupControlsDisabled}
                         onClick={() => {
                           const gid = groupToolbarSelection.selectedGroupId!;
                           const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
@@ -3147,10 +3210,10 @@ const WorkloadView: React.FC = () => {
                           flex: 1,
                           padding: "6px 12px",
                           background: "transparent",
-                          color: "#0078d4",
+                          color: serviceGroupControlsDisabled ? "#a19f9d" : "#0078d4",
                           border: "1px solid #8a8886",
                           borderRadius: 2,
-                          cursor: serviceGroupBusy ? "not-allowed" : "pointer",
+                          cursor: serviceGroupControlsDisabled ? "not-allowed" : "pointer",
                           fontSize: 13,
                         }}
                       >

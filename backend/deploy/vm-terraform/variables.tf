@@ -147,3 +147,9 @@ variable "app_allowed_cidrs" {
   default     = []
   description = "Allowed CIDRs for app ingress (ports 80/443) when private_only=false. If empty, auto-discovered from the deploy operator public IP (/32)."
 }
+
+variable "workload_management_group_id" {
+  type        = string
+  default     = ""
+  description = "Management group ID whose subscriptions the app may collect and add to Azure Service Groups. The VM identity is granted Reader plus a least-privilege Service Group member-writer custom role at this scope, so any subscription under it is covered without per-subscription assignments. Defaults to the tenant-root management group (== tenant ID) when empty. NOTE: assigning at this scope requires the deploy principal to hold Microsoft.Authorization/roleAssignments/write at the management group."
+}

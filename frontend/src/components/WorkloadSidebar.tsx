@@ -44,6 +44,10 @@ interface Props {
   workloadDirty?: boolean;
   workloadNewDirty?: boolean;
   serviceGroupBusy?: boolean;
+  // When false, the backend identity cannot read Service Groups, so importing
+  // one is disabled and the reason is surfaced on the affordance.
+  serviceGroupAvailable?: boolean;
+  serviceGroupUnavailableReason?: string | null;
 
   viewLevel: ViewLevel;
   onViewLevelChange: (next: ViewLevel) => void;
@@ -161,6 +165,7 @@ const WorkloadSidebar: React.FC<Props> = props => {
   const [sgImporting, setSgImporting] = React.useState(false);
 
   const openServiceGroupPicker = React.useCallback(async () => {
+    if (props.serviceGroupAvailable === false) return;
     setSgPickerOpen(true);
     setSgError(null);
     setSgLoading(true);
@@ -741,8 +746,13 @@ const WorkloadSidebar: React.FC<Props> = props => {
           </h3>
           <IconButton
             onClick={openServiceGroupPicker}
-            title="Import an Azure Service Group as a workload"
+            title={
+              props.serviceGroupAvailable === false
+                ? props.serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity."
+                : "Import an Azure Service Group as a workload"
+            }
             ariaLabel="Import Azure Service Group"
+            disabled={props.serviceGroupAvailable === false}
             variant={sgPickerOpen ? "primary" : "default"}
           >
             <CloudArrowDownRegular style={{ fontSize: 16, color: "rgb(0, 120, 212)" }} />

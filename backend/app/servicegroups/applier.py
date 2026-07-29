@@ -15,7 +15,7 @@ from .models import (
     SERVICE_GROUP_API_VERSION,
     SERVICE_GROUP_MEMBER_API_VERSION,
 )
-from .reader import list_service_group_member_relationships
+from .reader import list_service_group_member_relationships, list_service_groups
 from app.relationships.utils import norm_id
 
 ARM_BASE = "https://management.azure.com"
@@ -231,6 +231,37 @@ def _delete(client: httpx.Client, token: str, path: str, api_version: str) -> ht
 def _acquire_token() -> str:
     credential = DefaultAzureCredential(exclude_interactive_browser_credential=False)
     return credential.get_token(ARM_SCOPE).token
+
+
+@dataclass
+class ServiceGroupAccess:
+    available: bool
+    reason: Optional[str] = None
+
+
+def check_service_group_read_access() -> ServiceGroupAccess:
+    """Probe whether the backend identity can read Service Groups.
+
+    The import path reads Service Groups via Azure Resource Graph, NOT a direct
+    ARM GET on the tenant-root Service Group. Root read requires a separate,
+    tenant-admin-level ``Microsoft.Management/serviceGroups/read`` grant that
+    most legitimate callers lack — probing it falsely disables a working
+    feature. Mirroring the real ARG read path keeps the signal honest: a query
+    that succeeds means reads work (an empty result just means none are
+    visible); a query that raises means Azure could not be reached at all.
+    """
+    try:
+        list_service_groups()
+    except Exception as exc:
+        return ServiceGroupAccess(
+            available=False,
+            reason=(
+                "Could not query Azure Resource Graph for Service Groups. "
+                "Sign the backend identity in to Azure (az login, or assign the "
+                f"VM's managed identity). Details: {exc}"
+            ),
+        )
+    return ServiceGroupAccess(available=True)
 
 
 def apply_service_group(

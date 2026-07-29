@@ -34,6 +34,18 @@ class ServiceGroupSummary(BaseModel):
     parent_service_group_id: Optional[str] = None
 
 
+class ServiceGroupAvailability(BaseModel):
+    """Whether the backend identity can read Service Groups at tenant scope.
+
+    Gates the Service Group UI: ARG list queries silently trim unreadable
+    results, so an empty list cannot prove access. This flag is derived from a
+    definitive ARM GET probe on the tenant-root Service Group instead.
+    """
+
+    available: bool
+    reason: Optional[str] = None
+
+
 class ServiceGroupArtifact(BaseModel):
     """A downloadable IaC artifact that provisions the Service Group and its members."""
 

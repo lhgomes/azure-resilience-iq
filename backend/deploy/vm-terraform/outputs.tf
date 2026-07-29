@@ -82,3 +82,14 @@ output "deployment_state_prefix" {
   value       = local.deployment_state_prefix
   description = "Blob prefix for deployment state and backend data archives."
 }
+
+output "service_group_root_reader_grant_command" {
+  value       = <<-EOT
+    az role assignment create \
+      --assignee-object-id ${azurerm_linux_virtual_machine.this.identity[0].principal_id} \
+      --assignee-principal-type ServicePrincipal \
+      --role "Service Group Reader" \
+      --scope "/providers/Microsoft.Management/serviceGroups/${data.azurerm_client_config.current.tenant_id}"
+  EOT
+  description = "OPTIONAL manual tenant-admin step (cannot be run by the deploy principal): grants the VM identity Service Group Reader across the tenant so the app can read/import Service Groups it did NOT create. Reading/importing goes through Resource Graph -- Service Groups the app creates are already readable (the creator is auto-assigned Service Group Administrator), so this is unnecessary for them. Only needed to import externally-created Service Groups, and the tenant root is simply the broadest scope (a narrower Service Group scope also works). Requires a Global Admin with elevated access (Microsoft.Authorization/roleAssignments/write at tenant scope)."
+}

@@ -40,7 +40,10 @@ locals {
   deployment_state_prefix = "${var.project_name}/${var.environment}"
   entra_admin_object_id   = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
   operator_public_ip      = length(data.http.operator_public_ip) > 0 ? trimspace(data.http.operator_public_ip[0].response_body) : ""
-  operator_public_cidr    = local.operator_public_ip != "" ? "${local.operator_public_ip}/32" : ""
+
+  workload_management_group_id    = var.workload_management_group_id != "" ? var.workload_management_group_id : data.azurerm_client_config.current.tenant_id
+  workload_management_group_scope = "/providers/Microsoft.Management/managementGroups/${local.workload_management_group_id}"
+  operator_public_cidr            = local.operator_public_ip != "" ? "${local.operator_public_ip}/32" : ""
 
   provided_admin_allowed_cidrs = [for cidr in var.admin_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
   provided_app_allowed_cidrs   = [for cidr in var.app_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
@@ -515,4 +518,45 @@ resource "azurerm_role_assignment" "vm_storage_blob_data_contributor" {
   scope                = azurerm_storage_account.this.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+}
+
+# --- Service Group + collection permissions for the VM identity -------------
+# The collector reads resources and role assignments across the tenant, and the
+# Service Group applier writes Microsoft.Relationships/serviceGroupMember links
+# on member resources (a linked action authorized on the member scope). Both are
+# granted at the management-group scope so every subscription under it is covered
+# without a per-subscription assignment. Creating a Service Group needs no grant
+# here (the creator is auto-assigned Service Group Administrator, which also lets
+# the app read/import that SG through Resource Graph). Reading Service Groups
+# created ELSEWHERE needs Microsoft.Management/serviceGroups/read on them;
+# assigning "Service Group Reader" at the tenant-root SG is the broadest, OPTIONAL
+# way to get that -- see the service_group_root_reader_grant_command output.
+
+resource "azurerm_role_assignment" "vm_workload_reader" {
+  scope                = local.workload_management_group_scope
+  role_definition_name = "Reader"
+  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+}
+
+resource "azurerm_role_definition" "service_group_member_writer" {
+  name        = "Service Group Member Writer (${local.prefix})"
+  scope       = local.workload_management_group_scope
+  description = "Least-privilege role allowing write/read/delete of serviceGroupMember relationships so the workload app can attach resources to Azure Service Groups."
+
+  permissions {
+    actions = [
+      "Microsoft.Relationships/serviceGroupMember/write",
+      "Microsoft.Relationships/serviceGroupMember/read",
+      "Microsoft.Relationships/serviceGroupMember/delete",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [local.workload_management_group_scope]
+}
+
+resource "azurerm_role_assignment" "vm_service_group_member_writer" {
+  scope              = local.workload_management_group_scope
+  role_definition_id = azurerm_role_definition.service_group_member_writer.role_definition_resource_id
+  principal_id       = azurerm_linux_virtual_machine.this.identity[0].principal_id
 }

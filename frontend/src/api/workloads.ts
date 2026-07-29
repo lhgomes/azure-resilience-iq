@@ -573,6 +573,15 @@ export async function listAzureServiceGroups(): Promise<ServiceGroupSummary[]> {
   return await apiJson<ServiceGroupSummary[]>("/api/servicegroups");
 }
 
+export interface ServiceGroupAvailability {
+  available: boolean;
+  reason?: string | null;
+}
+
+export async function getServiceGroupAvailability(): Promise<ServiceGroupAvailability> {
+  return await apiJson<ServiceGroupAvailability>("/api/servicegroups/availability");
+}
+
 export async function fetchServiceGroupMembers(serviceGroupName: string): Promise<string[]> {
   return await apiJson<string[]>(
     `/api/servicegroups/${encodeURIComponent(serviceGroupName)}/members`

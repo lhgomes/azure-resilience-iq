@@ -62,6 +62,7 @@ from app.servicegroups.service import (
     apply_service_group_for_workload,
     delete_service_group,
     export_service_group,
+    get_service_group_availability,
     get_service_group_member_ids,
     list_available_service_groups,
 )
@@ -635,6 +636,17 @@ def list_service_groups_endpoint():
         return [sg.model_dump() for sg in list_available_service_groups()]
     except Exception:
         raise HTTPException(status_code=503, detail=_AZURE_AUTH_ERROR)
+
+
+@app.get("/api/servicegroups/availability")
+def service_group_availability_endpoint():
+    """Report whether the backend identity can read Service Groups (gates the SG UI).
+
+    ARG list queries silently return empty when read access is missing, so the
+    frontend cannot infer capability from an empty list. This runs a definitive
+    ARM probe instead.
+    """
+    return get_service_group_availability().model_dump()
 
 
 @app.get("/api/servicegroups/{service_group_name}/members")
