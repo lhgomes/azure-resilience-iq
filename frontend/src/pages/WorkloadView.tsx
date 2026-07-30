@@ -153,6 +153,7 @@ const WorkloadView: React.FC = () => {
   const [activeWorkloadId, setActiveWorkloadId] = useState<string | null>(null);
   const [activeWorkloadState, setActiveWorkloadState] = useState<WorkloadViewState | null>(null);
   const [workloadName, setWorkloadName] = useState("");
+  const [regionAzCounts, setRegionAzCounts] = useState<Record<string, 1 | 2 | 3>>({});
   const [workloadError, setWorkloadError] = useState<string | null>(null);
   const chatSubscriptionId = useMemo(() => {
     if (singleSubscriptionId) return singleSubscriptionId;
@@ -238,6 +239,10 @@ const WorkloadView: React.FC = () => {
   // tenant-root grant a standard deploy principal cannot self-assign. Probed once.
   const [serviceGroupAvailable, setServiceGroupAvailable] = useState<boolean>(true);
   const [serviceGroupUnavailableReason, setServiceGroupUnavailableReason] = useState<string | null>(null);
+
+  const normalizeRegionKey = useCallback((region: string): string => {
+    return String(region || "").trim().toLowerCase().replace(/\s+/g, "");
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -597,10 +602,18 @@ const WorkloadView: React.FC = () => {
     show_legend: showLegend,
     graph_view: graphCanvasRef.current?.getViewState() ?? undefined,
     service_group_filter: serviceGroupBinding ?? undefined,
-  }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend, serviceGroupBinding]);
+    region_az_counts: regionAzCounts,
+  }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend, serviceGroupBinding, regionAzCounts]);
 
   const normalizeWorkloadViewState = useCallback((state: WorkloadViewState): WorkloadViewState => {
     const sort = (values: string[]) => [...values].map(String).sort();
+    const normalizeRegionCounts = (counts?: Record<string, 1 | 2 | 3>) => {
+      const entries = Object.entries(counts || {})
+        .map(([region, azCount]) => [normalizeRegionKey(region), Number(azCount)] as const)
+        .filter(([region, azCount]) => region.length > 0 && (azCount === 1 || azCount === 2 || azCount === 3))
+        .sort(([a], [b]) => a.localeCompare(b));
+      return Object.fromEntries(entries) as Record<string, 1 | 2 | 3>;
+    };
     const normalizePositions = (positions?: Record<string, { x: number; y: number }>) => {
       if (!positions) return {} as Record<string, { x: number; y: number }>;
       return Object.fromEntries(
@@ -635,8 +648,9 @@ const WorkloadView: React.FC = () => {
             member_resource_ids: sort(state.service_group_filter.member_resource_ids || []),
           }
         : undefined,
+      region_az_counts: normalizeRegionCounts(state.region_az_counts),
     };
-  }, []);
+  }, [normalizeRegionKey]);
 
   const isWorkloadDirty = useMemo(() => {
     if (!activeWorkloadId || !activeWorkloadState) return false;
@@ -657,6 +671,7 @@ const WorkloadView: React.FC = () => {
       service_filter: [],
       expanded_categories: [],
       show_legend: false,
+      region_az_counts: {},
     });
     return JSON.stringify(current) !== JSON.stringify(defaultState);
   }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState, graphViewRevision]);
@@ -677,7 +692,23 @@ const WorkloadView: React.FC = () => {
     setExpandedCategories(new Set(state.expanded_categories || []));
     setShowLegend(!!state.show_legend);
     setServiceGroupBinding(state.service_group_filter ?? null);
+    setRegionAzCounts((state.region_az_counts || {}) as Record<string, 1 | 2 | 3>);
   }, []);
+
+  const handleRegionAzCountChange = useCallback((region: string, azCount: 1 | 2 | 3) => {
+    const key = normalizeRegionKey(region);
+    if (!key) return;
+    setRegionAzCounts(prev => ({ ...prev, [key]: azCount }));
+  }, [normalizeRegionKey]);
+
+  const workloadRegions = useMemo(() => {
+    const regions = new Set<string>();
+    for (const item of zonal_resilience_data?.resources || []) {
+      const location = String(item.location || "").trim();
+      if (location) regions.add(location);
+    }
+    return Array.from(regions).sort((a, b) => a.localeCompare(b));
+  }, [zonal_resilience_data]);
 
   const hydrateServiceGroupBinding = useCallback(async (binding: ServiceGroupBinding | null): Promise<ServiceGroupBinding | null> => {
     if (!binding || binding.parent_service_group_id || !binding.service_group_id) return binding;
@@ -752,6 +783,199 @@ const WorkloadView: React.FC = () => {
       })
     );
   }, []);
+
+  const applyAzConstraintNormalization = useCallback((evaluations: Record<string, any>) => {
+    const normalizeRegionKey = (region: string): string => String(region || "").trim().toLowerCase().replace(/\s+/g, "");
+
+    const getRequiredAzCountForRegion = (region: string): 1 | 2 | 3 => {
+      const configured = regionAzCounts[normalizeRegionKey(region)];
+      return configured ?? 3;
+    };
+
+    const getResourceLocation = (resourceId: string, evaluation: any): string => {
+      const fromEvaluation = String(
+        evaluation?.location
+        || evaluation?.resource_location
+        || evaluation?.resourceLocation
+        || ""
+      ).trim();
+      if (fromEvaluation) return fromEvaluation;
+
+      const node = graph?.nodes?.find(n => String(n.id).toLowerCase() === String(resourceId).toLowerCase());
+      const metadata = (node?.metadata ?? {}) as Record<string, unknown>;
+      const fromNode = String(metadata.location || metadata.region || "").trim();
+      return fromNode;
+    };
+
+    const zoneKeywords = [
+      "availability zone",
+      "availability zones",
+      "zone-redundant",
+      "zone redundant",
+      "zonal",
+      "multi-zone",
+      "cross-zone",
+      "3-az",
+      "third zone",
+      "third availability zone",
+    ];
+
+    const isZoneRelatedText = (text?: string): boolean => {
+      const source = String(text || "").toLowerCase();
+      return zoneKeywords.some(keyword => source.includes(keyword));
+    };
+
+    const extractRequiredAzFromText = (text?: string): number | null => {
+      const source = String(text || "").toLowerCase();
+      if (!source) return null;
+
+      if (source.includes("3-az") || source.includes("all 3 availability zones") || source.includes("third availability zone") || source.includes("third zone")) {
+        return 3;
+      }
+      if (/need\s*3\+?/.test(source) || /require\w*\s*3\+?/.test(source)) {
+        return 3;
+      }
+      if (/need\s*2\+?/.test(source) || /require\w*\s*2\+?/.test(source)) {
+        return 2;
+      }
+      if (source.includes("across multiple availability zones") || source.includes("multi-zone") || source.includes("zone-redundant")) {
+        return 2;
+      }
+      return null;
+    };
+
+    const hasNonZoneFailureSignal = (check: any): boolean => {
+      const reasoningCandidates = [
+        String(check?.heuristic_reasoning || ""),
+        String(check?.llm_reasoning || ""),
+      ].filter(Boolean);
+
+      for (const candidate of reasoningCandidates) {
+        const text = candidate.toLowerCase();
+        if (!text.includes("failed:")) continue;
+        const failedPart = text.split("failed:")[1] || "";
+        const parts = failedPart.split("|").map(p => p.trim()).filter(Boolean);
+        if (parts.length === 0) continue;
+
+        const nonZoneParts = parts.filter(part => !isZoneRelatedText(part));
+        if (nonZoneParts.length > 0) return true;
+      }
+      return false;
+    };
+
+    const splitFailedClauses = (text?: string): { prefix: string; clauses: string[] } => {
+      const source = String(text || "");
+      const lower = source.toLowerCase();
+      const marker = "failed:";
+      const idx = lower.indexOf(marker);
+      if (idx < 0) {
+        return { prefix: source.trim(), clauses: [] };
+      }
+
+      const prefix = source.slice(0, idx + marker.length).trim();
+      const rest = source.slice(idx + marker.length).trim();
+      const clauses = rest.length > 0
+        ? rest.split("|").map(part => part.trim()).filter(Boolean)
+        : [];
+      return { prefix, clauses };
+    };
+
+    return Object.fromEntries(
+      Object.entries(evaluations || {}).map(([resourceId, evaluation]) => {
+        const location = getResourceLocation(resourceId, evaluation);
+        const requiredAzCount = getRequiredAzCountForRegion(location);
+
+        if (requiredAzCount >= 3) {
+          return [resourceId, evaluation];
+        }
+
+        const adaptCheck = (check: any) => {
+          const currentStatus = String(check?.status || "").toLowerCase();
+          if (currentStatus !== "fail") return check;
+
+          const texts = [
+            check?.description,
+            check?.long_description,
+            check?.heuristic_reasoning,
+            check?.llm_reasoning,
+          ].map(v => String(v || ""));
+
+          const isZoneRelated = texts.some(isZoneRelatedText)
+            || String(check?.deployment_pattern || "").toLowerCase().includes("zone");
+          if (!isZoneRelated) return check;
+
+          const requiredByRule = texts
+            .map(extractRequiredAzFromText)
+            .filter((v): v is number => typeof v === "number")
+            .reduce((max, v) => Math.max(max, v), 0);
+
+          if (!requiredByRule || requiredByRule <= requiredAzCount) {
+            if (!hasNonZoneFailureSignal(check)) {
+              const adaptationNote = `Adapted due to regional AZ limit: rule expects ${requiredByRule} AZ(s), region configured for ${requiredAzCount} AZ(s).`;
+              return {
+                ...check,
+                status: "pass",
+                az_constraint_adapted: true,
+                az_required_by_rule: requiredByRule,
+                az_available_in_region: requiredAzCount,
+                heuristic_reasoning: check?.heuristic_reasoning
+                  ? `${check.heuristic_reasoning} | ${adaptationNote}`
+                  : adaptationNote,
+              };
+            }
+
+            // Mixed failure case: keep failed status, but remove AZ-only failed clauses
+            // so users only see actionable non-AZ blockers.
+            const originalReasoning = String(check?.heuristic_reasoning || "");
+            if (!originalReasoning) return check;
+
+            const { prefix, clauses } = splitFailedClauses(originalReasoning);
+            if (clauses.length === 0) return check;
+
+            const filteredClauses = clauses.filter(clause => !isZoneRelatedText(clause));
+            const adaptationNote = `AZ-only failures were adapted for configured regional limit (${requiredAzCount} AZ).`;
+            const rewrittenReasoning = filteredClauses.length > 0
+              ? `${prefix} ${filteredClauses.join(" | ")} | ${adaptationNote}`
+              : adaptationNote;
+
+            return {
+              ...check,
+              az_constraint_adapted: true,
+              az_required_by_rule: requiredByRule,
+              az_available_in_region: requiredAzCount,
+              heuristic_reasoning: rewrittenReasoning,
+            };
+          }
+
+          return check;
+        };
+
+        const nextFindings = (evaluation?.findings || []).map(adaptCheck);
+        const nextChecks = (evaluation?.checks || []).map(adaptCheck);
+        const listForCounts = (nextChecks.length > 0 ? nextChecks : nextFindings) as any[];
+
+        const passed = listForCounts.filter((c: any) => String(c?.status || "").toLowerCase() === "pass").length;
+        const failed = listForCounts.filter((c: any) => String(c?.status || "").toLowerCase() === "fail").length;
+
+        return [
+          resourceId,
+          {
+            ...evaluation,
+            findings: evaluation?.findings ? nextFindings : undefined,
+            checks: evaluation?.checks ? nextChecks : undefined,
+            passed_checks: passed,
+            failed_checks: failed,
+            total_checks: listForCounts.length,
+          },
+        ];
+      })
+    );
+  }, [graph?.nodes, regionAzCounts]);
+
+  const azNormalizedEvaluations = useMemo(() => {
+    if (!resilience_evaluations) return null;
+    return applyAzConstraintNormalization(resilience_evaluations);
+  }, [resilience_evaluations, applyAzConstraintNormalization]);
 
   const upsertResiliencyOverride = useCallback((override: { resilience_check_id?: string; status: "pass" | "fail" | "pending"; overridden_by?: string; resource_id?: string; recommendation_id?: string }) => {
     const resilienceCheckId = override?.resilience_check_id;
@@ -1192,9 +1416,9 @@ const WorkloadView: React.FC = () => {
 
   // Merge overrides into evaluations for scoring without mutating cached graph
   const mergedEvaluations = useMemo(() => {
-    if (!resilience_evaluations) return null;
-    return applyResiliencyOverrides(resilience_evaluations, resilience_overrides);
-  }, [resilience_evaluations, resilience_overrides, applyResiliencyOverrides]);
+    if (!azNormalizedEvaluations) return null;
+    return applyResiliencyOverrides(azNormalizedEvaluations, resilience_overrides);
+  }, [azNormalizedEvaluations, resilience_overrides, applyResiliencyOverrides]);
 
   // Enrich graph with calculated resilience scores (SINGLE CALCULATION POINT)
   const graphWithScores = useMemo(() => {
@@ -2636,6 +2860,7 @@ const WorkloadView: React.FC = () => {
       setActiveWorkloadId(null);
       setWorkloadName("");
       setServiceGroupBinding(null);
+      setRegionAzCounts({});
       return;
     }
     try {
@@ -3391,6 +3616,9 @@ const WorkloadView: React.FC = () => {
             workloadError={workloadError}
             workloadDirty={isWorkloadDirty}
             workloadNewDirty={isNewWorkloadDirty}
+            workloadRegions={workloadRegions}
+            regionAzCounts={regionAzCounts}
+            onRegionAzCountChange={handleRegionAzCountChange}
             viewLevel={viewLevel}
             onViewLevelChange={setViewLevel}
             resourceGroupOptions={resourceGroupOptions}
@@ -4009,12 +4237,12 @@ const WorkloadView: React.FC = () => {
                   <div style={{ padding: "32px", textAlign: "center", color: "#6b7280" }}>
                     Select one or more subscriptions to view resilience findings.
                   </div>
-                ) : resilience_evaluations ? (
+                ) : azNormalizedEvaluations ? (
                   <>
                     <div style={{ display: "flex", height: "100%", gap: "12px" }}>
                       <div style={{ flex: 1, overflow: "auto" }}>
                         <ResiliencySummary
-                          evaluations={resilience_evaluations || {}}
+                          evaluations={azNormalizedEvaluations || {}}
                           workloadScore={resilience_data?.workload_score}
                           subscriptionId={singleSubscriptionId ?? undefined}
                           subscriptionOptions={selectedSubscriptionOptions}
@@ -4061,6 +4289,7 @@ const WorkloadView: React.FC = () => {
                     graphData={graph ?? undefined}
                     resourceGroupFilter={resourceGroupFilter}
                     serviceFilter={serviceFilter}
+                    regionAzCounts={regionAzCounts}
                     onResourceSelect={handleOpenResourceDetails}
                   />
                 ) : (
