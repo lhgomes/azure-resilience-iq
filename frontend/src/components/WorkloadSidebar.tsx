@@ -43,6 +43,9 @@ interface Props {
   workloadError?: string | null;
   workloadDirty?: boolean;
   workloadNewDirty?: boolean;
+  workloadRegions: string[];
+  regionAzCounts: Record<string, 1 | 2 | 3>;
+  onRegionAzCountChange: (region: string, azCount: 1 | 2 | 3) => void;
   serviceGroupBusy?: boolean;
   // When false, the backend identity cannot read Service Groups, so importing
   // one is disabled and the reason is surfaced on the affordance.
@@ -163,6 +166,16 @@ const WorkloadSidebar: React.FC<Props> = props => {
   const [sgError, setSgError] = React.useState<string | null>(null);
   const [sgSelectedName, setSgSelectedName] = React.useState("");
   const [sgImporting, setSgImporting] = React.useState(false);
+
+  const normalizeRegionKey = React.useCallback((region: string) => {
+    return String(region || "").trim().toLowerCase().replace(/\s+/g, "");
+  }, []);
+
+  const getRegionAzCount = React.useCallback((region: string): 1 | 2 | 3 => {
+    const key = normalizeRegionKey(region);
+    const configured = props.regionAzCounts[key];
+    return configured ?? 3;
+  }, [normalizeRegionKey, props.regionAzCounts]);
 
   const openServiceGroupPicker = React.useCallback(async () => {
     if (props.serviceGroupAvailable === false) return;
@@ -805,6 +818,61 @@ const WorkloadSidebar: React.FC<Props> = props => {
           onFocus={e => e.target.style.borderColor = "#0078d4"}
           onBlur={e => e.target.style.borderColor = "#8a8886"}
         />
+
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "8px",
+            border: "1px solid #e1dfdd",
+            borderRadius: 4,
+            background: "#fff",
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#323130", marginBottom: 6 }}>
+            Regional AZ Availability
+          </div>
+          {props.workloadRegions.length === 0 ? (
+            <div style={{ fontSize: 12, color: "#605e5c" }}>
+              No regions detected yet. Select subscriptions and load workload resources first.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 6 }}>
+              {props.workloadRegions.map(region => {
+                const selected = getRegionAzCount(region);
+                return (
+                  <div
+                    key={region}
+                    style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}
+                  >
+                    <div style={{ fontSize: 12, color: "#323130" }}>{region}</div>
+                    <select
+                      value={selected}
+                      onChange={e => props.onRegionAzCountChange(region, Number(e.target.value) as 1 | 2 | 3)}
+                      style={{
+                        minWidth: 86,
+                        background: "#fff",
+                        color: "#323130",
+                        border: "1px solid #8a8886",
+                        padding: "4px 6px",
+                        borderRadius: 2,
+                        fontSize: 12,
+                        cursor: "pointer",
+                        outline: "none",
+                      }}
+                    >
+                      <option value={1}>1 AZ</option>
+                      <option value={2}>2 AZs</option>
+                      <option value={3}>3 AZs</option>
+                    </select>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ marginTop: 6, fontSize: 11, color: "#605e5c" }}>
+            These values are saved with the workload and default to 3 AZs when not configured.
+          </div>
+        </div>
 
         <div style={{ display: "flex", gap: 4 }}>
           <button

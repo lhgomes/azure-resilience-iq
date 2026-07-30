@@ -149,6 +149,7 @@ export interface WorkloadViewState {
     node_positions?: Record<string, { x: number; y: number }>;
   };
   service_group_filter?: ServiceGroupBinding;
+  region_az_counts?: Record<string, 1 | 2 | 3>;
 }
 
 export interface ServiceGroupSummary {
