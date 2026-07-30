@@ -5,16 +5,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF_DIR="${SCRIPT_DIR}/../vm-terraform"
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <terraform.tfvars> [--auto-approve] [--force]"
+  echo "Usage: $0 <terraform.tfvars> [--audit-only] [--auto-approve] [--force]"
   exit 1
 fi
 
 TFVARS_PATH=""
+AUDIT_ONLY=false
 AUTO_APPROVE=false
 FORCE=false
 
 for arg in "$@"; do
   case "$arg" in
+    --audit-only)
+      AUDIT_ONLY=true
+      ;;
     --auto-approve)
       AUTO_APPROVE=true
       ;;
@@ -23,7 +27,7 @@ for arg in "$@"; do
       ;;
     -* )
       echo "Unknown option: $arg"
-      echo "Usage: $0 <terraform.tfvars> [--auto-approve] [--force]"
+      echo "Usage: $0 <terraform.tfvars> [--audit-only] [--auto-approve] [--force]"
       exit 1
       ;;
     *)
@@ -111,12 +115,21 @@ if [[ -n "$RG_NAME" ]]; then
     fi
   done < <(terraform state list)
 
-  AZ_RESOURCES_RAW="$(az resource list -g "$RG_NAME" --query "[].{id:id,managedBy:managedBy,type:type,name:name}" -o json 2>/dev/null || echo '[]')"
+  PROJECT_NAME="$(extract_tfvar_value "project_name" "$TFVARS_PATH")"
+  ENVIRONMENT_NAME="$(extract_tfvar_value "environment" "$TFVARS_PATH")"
+  LOCATION_NAME="$(extract_tfvar_value "location" "$TFVARS_PATH")"
+  PROJECT_NAME="${PROJECT_NAME:-resilienceiq}"
+  ENVIRONMENT_NAME="${ENVIRONMENT_NAME:-dev}"
+  LOCATION_NAME="${LOCATION_NAME:-eastus}"
 
-  export MANAGED_IDS_RAW AZ_RESOURCES_RAW FORCE
+  AZ_RESOURCES_RAW="$(az resource list -g "$RG_NAME" --query "[].{id:id,managedBy:managedBy,type:type,name:name}" -o json 2>/dev/null || echo '[]')"
+  EVENTGRID_TOPICS_RAW="$(az eventgrid system-topic list -g "$RG_NAME" --query "[].{id:id,source:source}" -o json 2>/dev/null || echo '[]')"
+  NETWORK_SECURITY_GROUPS_RAW="$(az network nsg list -g "$RG_NAME" --query "[].{id:id,name:name,subnets:subnets[].id,tags:tags}" -o json 2>/dev/null || echo '[]')"
+
+  export MANAGED_IDS_RAW AZ_RESOURCES_RAW EVENTGRID_TOPICS_RAW NETWORK_SECURITY_GROUPS_RAW
+  export PROJECT_NAME ENVIRONMENT_NAME LOCATION_NAME FORCE
   AUDIT_RESULT="$(python3 - <<'PY'
 import os
-import re
 import json
 
 managed = {line.strip().lower() for line in os.environ.get("MANAGED_IDS_RAW", "").splitlines() if line.strip()}
@@ -126,11 +139,48 @@ try:
 except json.JSONDecodeError:
     actual = []
 
-# Known ephemeral orphan currently seen in this stack:
-# vnet-<prefix>-snet-private-endpoints-nsg-<region>
-allowed_patterns = [
-    re.compile(r".*/providers/microsoft\.network/networksecuritygroups/vnet-.*-snet-private-endpoints-nsg-.*$", re.IGNORECASE),
-]
+try:
+  eventgrid_topics = json.loads(os.environ.get("EVENTGRID_TOPICS_RAW", "[]"))
+except json.JSONDecodeError:
+  eventgrid_topics = []
+
+try:
+  network_security_groups = json.loads(os.environ.get("NETWORK_SECURITY_GROUPS_RAW", "[]"))
+except json.JSONDecodeError:
+  network_security_groups = []
+
+eventgrid_sources = {
+  (item.get("id") or "").strip().lower(): (item.get("source") or "").strip().lower()
+  for item in eventgrid_topics
+  if (item.get("id") or "").strip()
+}
+nsg_subnets = {
+  (item.get("id") or "").strip().lower(): {
+    str(subnet_id).strip().lower()
+    for subnet_id in (item.get("subnets") or [])
+    if str(subnet_id).strip()
+  }
+  for item in network_security_groups
+  if (item.get("id") or "").strip()
+}
+nsg_details = {
+  (item.get("id") or "").strip().lower(): item
+  for item in network_security_groups
+  if (item.get("id") or "").strip()
+}
+
+project_name = os.environ["PROJECT_NAME"]
+environment_name = os.environ["ENVIRONMENT_NAME"]
+location_name = os.environ["LOCATION_NAME"]
+expected_orphan_nsg_names = {
+  f"vnet-{project_name}-{environment_name}-snet-private-endpoints-nsg-{location_name}".lower(),
+  f"vnet-{project_name}-{environment_name}-azurebastionsubnet-nsg-{location_name}".lower(),
+}
+expected_orphan_nsg_tags = {
+  "project": project_name,
+  "environment": environment_name,
+  "managed_by": "terraform",
+}
 
 autodelete = []
 unexpected = []
@@ -150,10 +200,28 @@ for item in actual:
         derived_managed.append(rid)
         continue
 
-    if any(p.match(rid) for p in allowed_patterns):
-        autodelete.append(rid)
-    else:
-        unexpected.append(rid)
+    eventgrid_source = eventgrid_sources.get(rid_l, "")
+    if eventgrid_source and eventgrid_source in managed:
+      derived_managed.append(rid)
+      continue
+
+    attached_subnets = nsg_subnets.get(rid_l, set())
+    if attached_subnets and attached_subnets.issubset(managed):
+      derived_managed.append(rid)
+      continue
+
+    nsg = nsg_details.get(rid_l, {})
+    nsg_name = (nsg.get("name") or "").lower()
+    nsg_tags = nsg.get("tags") or {}
+    if (
+      not attached_subnets
+      and nsg_name in expected_orphan_nsg_names
+      and all(nsg_tags.get(key) == value for key, value in expected_orphan_nsg_tags.items())
+    ):
+      autodelete.append(rid)
+      continue
+
+    unexpected.append(rid)
 
 print("DERIVED_MANAGED_COUNT=" + str(len(derived_managed)))
 print("AUTO_DELETE_COUNT=" + str(len(autodelete)))
@@ -172,7 +240,7 @@ PY
   AUTO_DELETE_COUNT="$(echo "$AUDIT_RESULT" | awk -F= '/^AUTO_DELETE_COUNT=/{print $2; exit}')"
   UNEXPECTED_COUNT="$(echo "$AUDIT_RESULT" | awk -F= '/^UNEXPECTED_COUNT=/{print $2; exit}')"
 
-  if [[ "${AUTO_DELETE_COUNT:-0}" -gt 0 ]]; then
+  if [[ "${AUTO_DELETE_COUNT:-0}" -gt 0 && "$AUDIT_ONLY" != "true" ]]; then
     echo "==> Removing known unmanaged ephemeral resources"
     while IFS= read -r line; do
       [[ "$line" == AUTO_DELETE=* ]] || continue
@@ -191,12 +259,43 @@ PY
   fi
 fi
 
+if [[ "$AUDIT_ONLY" == "true" ]]; then
+  echo "==> Audit complete; no resources were destroyed"
+  popd >/dev/null
+  exit 0
+fi
+
 DESTROY_ARGS=(destroy -var-file="$TFVARS_PATH")
 if [[ "$AUTO_APPROVE" == "true" ]]; then
   DESTROY_ARGS+=(-auto-approve)
 fi
 
-echo "==> Running terraform ${DESTROY_ARGS[*]}"
-terraform "${DESTROY_ARGS[@]}"
+DESTROY_MAX_ATTEMPTS=3
+DESTROY_SUCCEEDED=false
+for ((attempt = 1; attempt <= DESTROY_MAX_ATTEMPTS; attempt++)); do
+  DESTROY_LOG="$(mktemp)"
+  echo "==> Running terraform ${DESTROY_ARGS[*]} (attempt ${attempt}/${DESTROY_MAX_ATTEMPTS})"
+
+  if terraform "${DESTROY_ARGS[@]}" 2>&1 | tee "$DESTROY_LOG"; then
+    DESTROY_SUCCEEDED=true
+    rm -f "$DESTROY_LOG"
+    break
+  fi
+
+  DESTROY_STATUS="${PIPESTATUS[0]}"
+  if ! grep -q "IfMatchPreconditionFailed" "$DESTROY_LOG" || [[ "$attempt" -eq "$DESTROY_MAX_ATTEMPTS" ]]; then
+    rm -f "$DESTROY_LOG"
+    exit "$DESTROY_STATUS"
+  fi
+
+  rm -f "$DESTROY_LOG"
+  RETRY_DELAY_SECONDS=$((attempt * 20))
+  echo "Foundry project changed during deletion. Retrying with refreshed state in ${RETRY_DELAY_SECONDS}s."
+  sleep "$RETRY_DELAY_SECONDS"
+done
+
+if [[ "$DESTROY_SUCCEEDED" != "true" ]]; then
+  exit 1
+fi
 
 popd >/dev/null

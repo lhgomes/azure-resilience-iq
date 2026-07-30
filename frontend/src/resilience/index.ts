@@ -23,8 +23,8 @@
  * ```
  */
 
-export { default as ScoreCircle } from './components/ScoreCircle';
-export { default as CategoryBreakdownView } from './components/CategoryBreakdownView';
-export { default as ResiliencyScoreDashboard } from './pages/ResiliencyScoreDashboard';
+export { default as ScoreCircle } from '../components/ScoreCircle';
+export { default as CategoryBreakdownView } from '../components/CategoryBreakdownView';
+export { default as ResiliencyScoreDashboard } from '../pages/ResilienceScoreDashboard';
 
-export * from './api/resilience';
+export * from '../api/resilience';

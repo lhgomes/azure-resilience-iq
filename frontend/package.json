@@ -13,6 +13,8 @@
     "@fluentui/font-icons-mdl2": "^8.5.70",
     "@fluentui/react-icons": "^2.0.316",
     "dagre": "^0.8.5",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "reactflow": "^11.11.4",

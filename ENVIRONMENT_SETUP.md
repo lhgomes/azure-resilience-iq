@@ -4,24 +4,25 @@
 
 This project supports two execution modes:
 
-1. **Automated Azure VM deployment (recommended)**
+1. **Azure VM deployment (recommended)**
 2. **Local development**
 
 Use the automated VM path for shared/test/prod-like environments.
 
 ---
 
-## Automated Azure VM Deployment (Recommended)
+## Azure VM Deployment (Recommended)
 
 ### Terraform approach (`backend/deploy/vm-terraform`)
 
 Terraform provisions and manages:
 
-- Linux VM + network (VNet/subnets/NSG/public IP)
+- Private Windows Server 2022 VM + network (VNet/subnets/NSG)
+- Azure Bastion Standard for Entra-authenticated RDP access and automated package transfer (enabled by default)
 - Private endpoints + DNS for Foundry/Search
 - Azure AI Foundry account/project (`AIServices`)
 - Model deployments:
-  - reasoning: `gpt-4.1`
+  - reasoning: `gpt-5.4-mini`
   - embeddings: `text-embedding-3-small`
 - Azure AI Search
 - Required RBAC for VM managed identity (Foundry/OpenAI/Search)
@@ -34,29 +35,45 @@ Configure `backend/deploy/vm-terraform/terraform.tfvars`:
 - `resource_group_name`
 - `embedding_model_capacity` (current validated env max: `350`)
 
-Optional network exposure controls:
+The VM always has private IP connectivity only. It never receives a public IP, and its application remains bound to `127.0.0.1:80`. Blob Storage remains private in both deployment modes.
 
-- `private_only` (`false` by default)
-  - `true`: no VM public IP and no internet-facing NSG ingress rules for `22/80/443`
-  - `false`: VM public IP enabled and ingress allowlists apply
-- `admin_allowed_cidrs` (optional list)
-  - Used for SSH (`22`) when `private_only=false`
-  - If omitted, auto-discovered from operator public IP as `/32`
-- `app_allowed_cidrs` (optional list)
-  - Used for app ingress (`80/443`) when `private_only=false`
-  - If omitted, auto-discovered from operator public IP as `/32`
+### Bastion default behavior and consequences
 
-Guardrail behavior:
+Azure Bastion is enabled by default. The standard deployment command:
 
-- When `private_only=false`, Terraform fails early if no effective CIDRs can be resolved.
-- If your environment blocks outbound access to `https://api.ipify.org`, set both `admin_allowed_cidrs` and `app_allowed_cidrs` explicitly.
+- Creates an Azure Bastion Standard host, a dedicated `AzureBastionSubnet`, and a Standard static public IP assigned to Bastion. The public IP belongs to the Azure-managed Bastion service, not to the VM.
+- Adds VM-subnet NSG rules for RDP (`3389`) and SSH (`22`) whose source is restricted to `AzureBastionSubnet`; these ports are not open directly to the internet.
+- Uses an ephemeral SSH key and the Bastion tunnel to copy the application package. The script starts Windows OpenSSH for the transfer, then removes the key and stops the SSH service. The Bastion-originated NSG rule remains while Bastion is enabled.
+- Runs the Windows bootstrap through Azure VM Run Command and verifies `http://localhost`.
+- Supports interactive RDP through Bastion. The UI is available at `http://localhost` inside the VM session; Bastion does not publish the application as a public website.
+- Incurs Azure Bastion Standard and public IP charges while those resources remain deployed. Review current Azure Bastion pricing for the deployment region.
+
+Use `--disable-bastion` only when an approved private connection to the VM already exists. On a full deployment or refresh, this opt-out removes any Terraform-managed Bastion host, Bastion public IP, Bastion subnet, and Bastion-specific NSG rules. It also disables automated package transfer, RDP through Bastion, and the Bastion connection helper.
 
 ### Full deployment command
+
+The default command deploys Bastion and completes application installation automatically:
 
 ```bash
 cd backend/deploy/scripts
 bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
 ```
+
+`--enable-bastion` remains accepted for compatibility but is no longer required.
+
+To deploy without Bastion:
+
+```bash
+bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --disable-bastion
+```
+
+With `--disable-bastion`, the command completes infrastructure provisioning and creates a handoff bundle at `/tmp/azure-resilience-iq-handoff-<vm-name>`. Transfer the complete folder to the VM over your approved private connection, then run the generated finalizer from an elevated PowerShell session:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File C:\AzureResilienceIQ-Handoff\Finalize-Deployment.ps1
+```
+
+The deployment is infrastructure-complete but application-finalization-pending until this command succeeds. The finalizer contains non-secret service configuration only; VM authorization continues to use managed identity.
 
 Force agent recreation/tool reattachment when needed:
 
@@ -104,27 +121,31 @@ These roles are required for:
 - No static cloud credentials are embedded in app code.
 - Deployment host uses the operator Azure CLI session (`az login`).
 - VM runtime uses **Managed Identity** (`DefaultAzureCredential`) for Foundry, Search, and Blob access.
-- Runtime environment values (endpoints/model names/storage settings) are written to `/etc/azure-resilience-iq.env` by the deployment script.
-- With `private_only=true`, deployment/operations still require network path to the VM (for example VPN/ExpressRoute/peering or another private access path).
+- Runtime environment values are written to `C:\AzureResilienceIQ\backend\.env` by the Windows bootstrap.
+- By default, package transfer and bootstrap are automated through Bastion and Azure VM Run Command. With `--disable-bastion`, the operator transfers and runs the generated handoff bundle through an approved private connection.
 
-### Provisioning flow (automated)
+### Provisioning flow
 
 1. Terraform apply (infra + Foundry + model deployments)
 2. Foundry project connection creation/validation (`azure-ai-search-default`)
-3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy
-4. Search index ensure:
+3. Application package creation
+4. Package delivery:
+  - Default (Bastion enabled): automatic transfer through a temporary SSH tunnel, followed by SSH key removal and service shutdown
+  - `--disable-bastion`: local handoff bundle creation for operator-managed private transfer
+5. Windows bootstrap, invoked automatically with Bastion or by the generated finalizer without Bastion
+6. Search index ensure:
    - `learn-aprl-index`
    - `learn-terraform-index`
-5. Agent ensure + tool attachments:
+7. Agent ensure + tool attachments:
    - `chat-agent` → APRL index + MCP Learn
    - `resilience-agent` → APRL index + MCP Learn
    - `terraform-compiler-agent` → Terraform index
    - `annotations-agent` → no tools
-6. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
-7. Index hydration (embeddings + upload):
+8. RAG refresh into `backend/agent/rag` (staged swap only on successful refresh)
+9. Index hydration (embeddings + upload):
   - APRL from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`)
   - Terraform from `backend/agent/rag` only
-8. Frontend build + backend/nginx restart
+10. Frontend build + Windows service installation/restart
 
 ### Blob data persistence behavior
 
@@ -153,13 +174,19 @@ cd backend/deploy/scripts
 ./deploy_app_only.sh ../vm-terraform/terraform.tfvars
 ```
 
+App-only deployment uses the existing Bastion by default. If the existing stack was deployed without Bastion, request a manual handoff explicitly:
+
+```bash
+./deploy_app_only.sh ../vm-terraform/terraform.tfvars --disable-bastion
+```
+
 What it does:
 
-- Computes backend/frontend hashes locally
-- Compares against VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`)
-- Syncs only changed app folders
-- Reinstalls backend deps/restarts service only when backend changed
-- Rebuilds frontend/reloads nginx only when frontend changed
+- Packages the current backend/frontend source
+- Transfers and installs automatically through the existing Bastion by default, or creates the same manual handoff with `--disable-bastion`
+- Reinstalls backend dependencies and rebuilds the frontend
+- Restarts the Windows service
+- Skips Terraform apply, Foundry agent reconciliation, RAG refresh, and index hydration
 
 ---
 
@@ -169,6 +196,7 @@ Preferred (safe) clean-up command with unmanaged-resource audit:
 
 ```bash
 cd backend/deploy/scripts
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --audit-only
 bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
 ```
 
@@ -183,6 +211,7 @@ terraform destroy -var-file=terraform.tfvars -auto-approve
 
 - Run with the same Azure CLI identity/subscription context used for deployment (`az login` + correct subscription).
 - Use the same `terraform.tfvars` file that was used during `apply`.
+- Use `--audit-only` to classify managed, Azure-derived, and unexpected resources without deleting anything.
 - `safe_destroy_vm_stack.sh` maps unmanaged resources in the RG, auto-removes only known ephemeral network orphans, and blocks deletion if unexpected unmanaged resources are found.
 - Use `--force` with `safe_destroy_vm_stack.sh` only when you intentionally want to continue despite unexpected unmanaged resources.
 - This command removes all Terraform-managed resources in this stack (VM, networking, Foundry, Search, Storage, private endpoints, RBAC assignments).
@@ -202,7 +231,7 @@ llm:
 ai_agent:
   foundry_project_endpoint: "https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>"
   openai_api_version: "2024-10-21"
-  reasoning_model: "gpt-4.1"
+  reasoning_model: "gpt-5.4-mini"
   embedding_model: "text-embedding-3-small"
   chat_agent_reference: "chat-agent"
   resilience_agent_reference: "resilience-agent"
@@ -222,7 +251,7 @@ AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.co
 
 # Optional Foundry + Agent overrides
 AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
-AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_REASONING_MODEL=gpt-5.4-mini
 AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
 AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
 AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent

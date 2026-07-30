@@ -1,6 +1,7 @@
 import React from "react";
 import type { ViewLevel } from "../domain/graphView";
-import { AddRegular, DeleteRegular, EditRegular, Save16Regular } from "@fluentui/react-icons";
+import type { ServiceGroupSummary, ServiceGroupImportProgress } from "../api/workloads";
+import { AddRegular, ArrowSync16Regular, CloudArrowDownRegular, DeleteRegular, EditRegular, Save16Regular } from "@fluentui/react-icons";
 import { CloseIconButton, BulkSelectionButtons, IconButton, CopyToClipboardButton } from "./common/buttons";
 
 export interface SubscriptionOption {
@@ -37,9 +38,16 @@ interface Props {
   onWorkloadSave: () => void;
   onWorkloadRename: () => void;
   onWorkloadDelete: () => void;
+  onListServiceGroups: () => Promise<ServiceGroupSummary[]>;
+  onImportServiceGroup: (sg: ServiceGroupSummary) => Promise<void>;
   workloadError?: string | null;
   workloadDirty?: boolean;
   workloadNewDirty?: boolean;
+  serviceGroupBusy?: boolean;
+  // When false, the backend identity cannot read Service Groups, so importing
+  // one is disabled and the reason is surfaced on the affordance.
+  serviceGroupAvailable?: boolean;
+  serviceGroupUnavailableReason?: string | null;
 
   viewLevel: ViewLevel;
   onViewLevelChange: (next: ViewLevel) => void;
@@ -101,6 +109,7 @@ interface Props {
   } | null;
   mappingError?: string | null;
   mappingAuthRequired?: boolean;
+  serviceGroupImportStatus?: ServiceGroupImportProgress | null;
 }
 
 type MappingModalUiCache = {
@@ -146,6 +155,46 @@ const WorkloadSidebar: React.FC<Props> = props => {
   const loggedProgressMilestonesRef = React.useRef<Set<string>>(new Set(mappingModalUiCache.loggedProgressMilestones));
   const [mappingSessionDismissed, setMappingSessionDismissedState] = React.useState(mappingModalUiCache.mappingSessionDismissed);
   const [mappingRunRequested, setMappingRunRequestedState] = React.useState(mappingModalUiCache.mappingRunRequested);
+
+  // Import Azure Service Group -> Workload picker state
+  const [sgPickerOpen, setSgPickerOpen] = React.useState(false);
+  const [sgList, setSgList] = React.useState<ServiceGroupSummary[] | null>(null);
+  const [sgLoading, setSgLoading] = React.useState(false);
+  const [sgError, setSgError] = React.useState<string | null>(null);
+  const [sgSelectedName, setSgSelectedName] = React.useState("");
+  const [sgImporting, setSgImporting] = React.useState(false);
+
+  const openServiceGroupPicker = React.useCallback(async () => {
+    if (props.serviceGroupAvailable === false) return;
+    setSgPickerOpen(true);
+    setSgError(null);
+    setSgLoading(true);
+    try {
+      const list = await props.onListServiceGroups();
+      setSgList(list);
+      setSgSelectedName(list[0]?.name ?? "");
+    } catch (err: any) {
+      setSgList([]);
+      setSgError(err?.message ?? "Failed to load Service Groups.");
+    } finally {
+      setSgLoading(false);
+    }
+  }, [props]);
+
+  const confirmServiceGroupImport = React.useCallback(async () => {
+    const sg = (sgList ?? []).find(s => s.name === sgSelectedName);
+    if (!sg) return;
+    setSgImporting(true);
+    setSgError(null);
+    try {
+      await props.onImportServiceGroup(sg);
+      setSgPickerOpen(false);
+    } catch (err: any) {
+      setSgError(err?.message ?? "Failed to import Service Group.");
+    } finally {
+      setSgImporting(false);
+    }
+  }, [sgList, sgSelectedName, props]);
 
   const setShowMappingModal = React.useCallback((next: boolean | ((prev: boolean) => boolean)) => {
     setShowMappingModalState(prev => {
@@ -477,6 +526,9 @@ const WorkloadSidebar: React.FC<Props> = props => {
   React.useEffect(() => {
     const hasMappingUpdates = props.mappingInProgress || !!props.mappingStatus || !!props.mappingError;
     if (mappingSessionDismissed || !hasMappingUpdates) return;
+    // Service Group imports drive their own dedicated progress view — never
+    // surface the generic tabbed mapping modal for that flow.
+    if (props.serviceGroupImportStatus?.active) return;
     if (!showMappingModal) {
       setShowMappingModal(true);
     }
@@ -485,6 +537,7 @@ const WorkloadSidebar: React.FC<Props> = props => {
     props.mappingError,
     props.mappingInProgress,
     props.mappingStatus,
+    props.serviceGroupImportStatus?.active,
     showMappingModal,
   ]);
 
@@ -680,16 +733,31 @@ const WorkloadSidebar: React.FC<Props> = props => {
     >
       {/* Workload Section */}
       <div style={{ marginBottom: 20 }}>
-        <h3 style={{ 
-          margin: "0 0 8px 0", 
-          fontSize: 13, 
-          fontWeight: 600,
-          color: "#323130",
-          textTransform: "uppercase",
-          letterSpacing: "0.5px"
-        }}>
-          Workload
-        </h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{
+            margin: 0,
+            fontSize: 13,
+            fontWeight: 600,
+            color: "#323130",
+            textTransform: "uppercase",
+            letterSpacing: "0.5px"
+          }}>
+            Workload
+          </h3>
+          <IconButton
+            onClick={openServiceGroupPicker}
+            title={
+              props.serviceGroupAvailable === false
+                ? props.serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity."
+                : "Import an Azure Service Group as a workload"
+            }
+            ariaLabel="Import Azure Service Group"
+            disabled={props.serviceGroupAvailable === false}
+            variant={sgPickerOpen ? "primary" : "default"}
+          >
+            <CloudArrowDownRegular style={{ fontSize: 16, color: "rgb(0, 120, 212)" }} />
+          </IconButton>
+        </div>
         
         <select
           value={props.activeWorkloadId ?? ""}
@@ -764,26 +832,40 @@ const WorkloadSidebar: React.FC<Props> = props => {
           </button>
           <button
             onClick={props.onWorkloadSave}
-            disabled={!props.activeWorkloadId}
-            title="Save workload"
+            disabled={!props.activeWorkloadId || props.serviceGroupBusy || !props.workloadDirty}
+            title={
+              props.serviceGroupBusy
+                ? "Syncing Service Group in Azure…"
+                : props.activeWorkloadId && !props.workloadDirty
+                  ? "No changes to save"
+                  : "Save workload"
+            }
             style={{
               ...iconButton,
               color: props.activeWorkloadId ? (props.workloadDirty ? "#fff" : "#0078d4") : "#c8c6c4",
               background: props.activeWorkloadId && props.workloadDirty ? "#107c10" : "transparent",
-              cursor: props.activeWorkloadId ? "pointer" : "not-allowed",
+              cursor: props.serviceGroupBusy
+                ? "wait"
+                : props.activeWorkloadId && props.workloadDirty
+                  ? "pointer"
+                  : "not-allowed",
             }}
             onMouseEnter={e => {
-              if (props.activeWorkloadId) {
+              if (props.activeWorkloadId && props.workloadDirty && !props.serviceGroupBusy) {
                 e.currentTarget.style.background = props.workloadDirty ? "#0e6b0e" : "#f3f2f1";
               }
             }}
             onMouseLeave={e => {
-              if (props.activeWorkloadId) {
+              if (props.activeWorkloadId && props.workloadDirty && !props.serviceGroupBusy) {
                 e.currentTarget.style.background = props.workloadDirty ? "#107c10" : "transparent";
               }
             }}
           >
-            <Save16Regular style={{ fontSize: 16 }} />
+            {props.serviceGroupBusy ? (
+              <ArrowSync16Regular className="wl-spin" style={{ fontSize: 16 }} />
+            ) : (
+              <Save16Regular style={{ fontSize: 16 }} />
+            )}
           </button>
           <button
             onClick={props.onWorkloadRename}
@@ -830,6 +912,79 @@ const WorkloadSidebar: React.FC<Props> = props => {
             <DeleteRegular style={{ fontSize: 16 }} />
           </button>
         </div>
+
+        {sgPickerOpen && (
+          <div
+            style={{
+              marginTop: 8,
+              padding: 10,
+              border: "1px solid #e1dfdd",
+              borderRadius: 4,
+              background: "#faf9f8",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#323130", marginBottom: 6 }}>
+              Import Azure Service Group
+            </div>
+            {sgLoading ? (
+              <div style={{ fontSize: 12, color: "#605e5c" }}>Loading Service Groups…</div>
+            ) : (
+              <>
+                <select
+                  value={sgSelectedName}
+                  onChange={e => setSgSelectedName(e.target.value)}
+                  disabled={!sgList || sgList.length === 0 || sgImporting}
+                  style={{
+                    width: "100%",
+                    background: "#fff",
+                    color: "#323130",
+                    border: "1px solid #8a8886",
+                    padding: "5px 8px",
+                    borderRadius: 2,
+                    fontSize: 13,
+                    marginBottom: 8,
+                    cursor: "pointer",
+                    outline: "none",
+                  }}
+                >
+                  {(!sgList || sgList.length === 0) && <option value="">No Service Groups found</option>}
+                  {(sgList ?? []).map(sg => (
+                    <option key={sg.id} value={sg.name}>
+                      {sg.display_name || sg.name}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={confirmServiceGroupImport}
+                    disabled={!sgSelectedName || sgImporting}
+                    style={{
+                      ...primaryButton,
+                      flex: 1,
+                      opacity: !sgSelectedName || sgImporting ? 0.6 : 1,
+                      cursor: !sgSelectedName || sgImporting ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {sgImporting ? "Importing…" : "Import"}
+                  </button>
+                  <button
+                    onClick={() => setSgPickerOpen(false)}
+                    disabled={sgImporting}
+                    style={{
+                      ...secondaryButton,
+                      cursor: sgImporting ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            )}
+            {sgError && (
+              <div style={{ fontSize: 12, color: "#d13438", marginTop: 6 }}>{sgError}</div>
+            )}
+          </div>
+        )}
 
         {props.workloadError && (
           <div style={{ fontSize: 12, color: "#d13438", marginTop: 6 }}>{props.workloadError}</div>
@@ -1247,6 +1402,89 @@ const WorkloadSidebar: React.FC<Props> = props => {
             {props.showLegend ? "Hide" : "Show"} Legend
           </button>
         </>
+      )}
+
+      {props.serviceGroupImportStatus?.active && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.35)",
+            backdropFilter: "blur(2px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: 20,
+          }}
+        >
+          <div
+            style={{
+              width: "min(520px, 94vw)",
+              background: "#ffffff",
+              color: "#111827",
+              border: "1px solid #d1d5db",
+              borderRadius: 12,
+              boxShadow: "0 24px 48px -20px rgba(15, 23, 42, 0.35)",
+              display: "flex",
+              flexDirection: "column",
+              padding: 24,
+            }}
+          >
+            <h2 style={{ marginTop: 0, marginBottom: 4, fontSize: 20, fontWeight: 700, color: "#111827" }}>
+              Importing Service Group
+            </h2>
+            <div style={{ fontSize: 13, color: "#4b5563", marginBottom: 20 }}>
+              {props.serviceGroupImportStatus.message}
+            </div>
+
+            {props.serviceGroupImportStatus.total > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
+                  <span>Subscriptions mapped</span>
+                  <span>
+                    {props.serviceGroupImportStatus.current} / {props.serviceGroupImportStatus.total}
+                  </span>
+                </div>
+                <div style={{ height: 8, borderRadius: 4, background: "#e5e7eb", overflow: "hidden" }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${Math.round(
+                        (props.serviceGroupImportStatus.current /
+                          Math.max(props.serviceGroupImportStatus.total, 1)) *
+                          100,
+                      )}%`,
+                      background: "#0078d4",
+                      transition: "width 0.3s ease",
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {props.serviceGroupImportStatus.phase === "mapping" && (props.mappingStatus?.stages?.length ?? 0) > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {(props.mappingStatus?.stages ?? []).map(stage => {
+                  const status = (stage.status || "").toLowerCase();
+                  const isDone = status === "completed" || status === "succeeded" || status === "success";
+                  const isRunning = status === "running" || status === "in_progress";
+                  const isFailed = status === "failed" || status === "error";
+                  const color = isFailed ? "#d13438" : isDone ? "#107c10" : isRunning ? "#0078d4" : "#9ca3af";
+                  const symbol = isFailed ? "✕" : isDone ? "✓" : isRunning ? "●" : "○";
+                  return (
+                    <div key={stage.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ color, fontSize: 14, width: 16, textAlign: "center" }}>{symbol}</span>
+                      <span style={{ fontSize: 13, color: isRunning ? "#111827" : "#4b5563", fontWeight: isRunning ? 600 : 400 }}>
+                        {stageTitle(stage.name)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {showMappingModal && (

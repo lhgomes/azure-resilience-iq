@@ -16,20 +16,47 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 - Azure AI Foundry project with deployed agents
 - Appropriate Azure RBAC permissions to query resources
 
+#### Deploy principal (identity running `terraform apply`)
+
+| Permission | Scope |
+|---|---|
+| Contributor | Resource group / subscription — creates all resources |
+| `Microsoft.Authorization/roleAssignments/write` | Subscription — assigns VM MI roles |
+| `Microsoft.Authorization/roleDefinitions/write` | Subscription — creates the custom Service Group Member Writer role |
+| `Microsoft.Authorization/roleAssignments/write` | Management group — **only if** `enable_workload_management_group_rbac = true` |
+
+In practice **Owner** at the resource group + subscription covers all of the above (Contributor alone does not include `roleAssignments/write`). For management-group-scoped RBAC, Owner or User Access Administrator at that management group is also required.
+
 ## Automated Azure VM Deployment (Terraform + Foundry + Search)
 
-Production-style deployment is fully automated from `backend/deploy/scripts/deploy_vm_stack.sh`.
+Production-style infrastructure deployment and application packaging are driven by `backend/deploy/scripts/deploy_vm_stack.sh`.
 
 ### What the stack provisions
 
-- **Compute/Network**: Linux VM, VNet/subnets, NSG, public IP, private endpoints.
+- **Compute/Network**: Private Windows Server 2022 VM, VNet/subnets, NSG, Azure Bastion Standard enabled by default with an explicit opt-out, and private endpoints.
 - **Azure AI Foundry (new model)**:
   - `azurerm_cognitive_account` (`AIServices`)
   - `azurerm_cognitive_account_project`
-  - Reasoning deployment (`gpt-4.1` by default)
+  - Reasoning deployment (`gpt-5.4-mini` by default)
   - Embedding deployment (`text-embedding-3-small`) required for hydration.
 - **Azure AI Search** with private networking.
 - **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
+
+#### VM Managed Identity — roles granted by Terraform
+
+| Role | Scope |
+|---|---|
+| Foundry User | AI Foundry hub |
+| Cognitive Services OpenAI User | AI Foundry hub |
+| Foundry User | AI Foundry project |
+| Search Service Contributor | Azure AI Search |
+| Search Index Data Contributor | Azure AI Search |
+| Storage Blob Data Contributor | Storage account |
+| Reader | Current subscription (always) |
+| Reader | Management group — only if `enable_workload_management_group_rbac = true` |
+| Custom: Service Group Member Writer (`serviceGroupMember/write/read/delete`) | Subscription or management group |
+
+**Optional / requires Global Admin (post-deploy):** grant `Service Group Reader` at the tenant-root service group scope to allow the app to read/import Service Groups created by other principals. The `service_group_root_reader_grant_command` Terraform output provides the exact `az` command.
 
 ### End-to-end deployment command
 
@@ -48,20 +75,23 @@ bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
 
 1. Terraform apply for infra + Foundry + model deployments.
 2. Create/verify Foundry project Azure AI Search connection (`azure-ai-search-default`).
-3. Ensure VM is running (auto-start if stopped) before Entra SSH deploy.
-3. Ensure Search indexes:
+3. Build an application ZIP.
+4. Transfer and bootstrap automatically through Bastion, or create a local handoff bundle for operator-managed private transfer.
+5. Ensure Search indexes:
   - `learn-aprl-index`
   - `learn-terraform-index`
-4. Ensure Foundry agents and attach tools:
+6. Ensure Foundry agents and attach tools:
   - `chat-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
   - `resilience-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
   - `terraform-compiler-agent` → Search (`learn-terraform-index`)
   - `annotations-agent` → no tools
-5. Refresh RAG data into `backend/agent/rag` (staged swap on success).
-6. Hydrate indexes (embeddings + upload):
+7. Refresh RAG data into `backend/agent/rag` (staged swap on success).
+8. Hydrate indexes (embeddings + upload):
   - APRL corpus from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`).
   - Terraform corpus from `backend/agent/rag` only.
-7. Build frontend, configure systemd + nginx.
+9. Build the frontend and install FastAPI as a Windows service bound to `127.0.0.1:80`.
+
+Azure Bastion Standard is enabled by default for automatic private package transfer and RDP access. Bastion receives a public IP and incurs ongoing charges, but the VM has no public IP and its RDP/SSH rules accept traffic only from `AzureBastionSubnet`. Use `--disable-bastion` when an approved private connection already exists; the script then creates `/tmp/azure-resilience-iq-handoff-<vm-name>` for manual transfer and finalization. Blob Storage stays private in both modes.
 
 ### Incremental updates (no Terraform re-provision)
 
@@ -73,10 +103,22 @@ cd backend/deploy/scripts
 ```
 
 What it does:
-- Computes local backend/frontend hashes.
-- Compares with VM state (`/opt/azure-resilience-iq/.deploy-hashes.env`).
-- Syncs only changed app folders.
-- Restarts backend and rebuilds frontend only when needed.
+- Packages the current backend/frontend source.
+- Transfers automatically through the existing Bastion by default, or creates a manual handoff bundle with `--disable-bastion`.
+- Reinstalls backend dependencies, rebuilds the frontend, and restarts the Windows service.
+- Skips Terraform apply, Foundry agent reconciliation, RAG refresh, and index hydration.
+
+### Safe teardown
+
+Audit the resource group before destroying the stack, then run the approved teardown:
+
+```bash
+cd backend/deploy/scripts
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --audit-only
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
+```
+
+The wrapper blocks unexpected unmanaged resources, removes only verified generated network remnants, and retries transient Foundry project concurrency failures.
 
 ### Model capacity / quota
 
@@ -142,7 +184,7 @@ AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.co
 
 # Required/expected Foundry + agent settings
 AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
-AI_FOUNDRY_REASONING_MODEL=gpt-4.1
+AI_FOUNDRY_REASONING_MODEL=gpt-5.4-mini
 AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
 AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
 AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
@@ -727,7 +769,7 @@ Set these in `backend/config/app_config.yaml`.
 | `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
 | `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
 | `ai_agent.foundry_project_endpoint` / `AI_FOUNDRY_PROJECT_ENDPOINT` | Yes (if LLM enabled) | - | Foundry project endpoint for agent threads/runs/messages |
-| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-4.1` | Reasoning model used by Foundry agent execution |
+| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-5.4-mini` | Reasoning model used by Foundry agent execution |
 | `ai_agent.embedding_model` / `AI_FOUNDRY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
 | `ai_agent.chat_agent_reference` / `AI_FOUNDRY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
 | `ai_agent.resilience_agent_reference` / `AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |

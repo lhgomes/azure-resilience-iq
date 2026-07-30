@@ -4,33 +4,28 @@ output "resource_group_name" {
 }
 
 output "vm_name" {
-  value       = azurerm_linux_virtual_machine.this.name
+  value       = azurerm_windows_virtual_machine.this.name
   description = "Deployed VM name."
 }
 
-output "vm_admin_username" {
-  value       = azurerm_linux_virtual_machine.this.admin_username
-  description = "VM SSH admin username."
+output "nic_name" {
+  value       = azurerm_network_interface.this.name
+  description = "Network interface name attached to the Windows virtual machine."
 }
 
-output "vm_public_ip" {
-  value       = try(azurerm_public_ip.this[0].ip_address, "")
-  description = "VM public IP address (empty when private_only=true)."
+output "vm_admin_username" {
+  value       = azurerm_windows_virtual_machine.this.admin_username
+  description = "Local Windows administrator username."
+}
+
+output "bastion_name" {
+  value       = try(azurerm_bastion_host.this[0].name, null)
+  description = "Azure Bastion host used for RDP access to the private VM when enabled."
 }
 
 output "vm_private_ip" {
   value       = azurerm_network_interface.this.private_ip_address
   description = "VM private IP address."
-}
-
-output "effective_admin_allowed_cidrs" {
-  value       = local.effective_admin_allowed_cidrs
-  description = "Effective SSH allowlist CIDRs (provided values or auto-discovered /32)."
-}
-
-output "effective_app_allowed_cidrs" {
-  value       = local.effective_app_allowed_cidrs
-  description = "Effective app ingress allowlist CIDRs (provided values or auto-discovered /32)."
 }
 
 output "search_service_name" {
@@ -81,4 +76,15 @@ output "deployment_state_container_name" {
 output "deployment_state_prefix" {
   value       = local.deployment_state_prefix
   description = "Blob prefix for deployment state and backend data archives."
+}
+
+output "service_group_root_reader_grant_command" {
+  value       = <<-EOT
+    az role assignment create \
+      --assignee-object-id ${azurerm_windows_virtual_machine.this.identity[0].principal_id} \
+      --assignee-principal-type ServicePrincipal \
+      --role "Service Group Reader" \
+      --scope "/providers/Microsoft.Management/serviceGroups/${data.azurerm_client_config.current.tenant_id}"
+  EOT
+  description = "OPTIONAL manual tenant-admin step (cannot be run by the deploy principal): grants the VM identity Service Group Reader across the tenant so the app can read/import Service Groups it did NOT create. Reading/importing goes through Resource Graph -- Service Groups the app creates are already readable (the creator is auto-assigned Service Group Administrator), so this is unnecessary for them. Only needed to import externally-created Service Groups, and the tenant root is simply the broadest scope (a narrower Service Group scope also works). Requires a Global Admin with elevated access (Microsoft.Authorization/roleAssignments/write at tenant scope)."
 }

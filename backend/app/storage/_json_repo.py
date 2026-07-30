@@ -12,11 +12,30 @@ from app.storage.data_repository import get_data_repository
 T = TypeVar("T")
 
 
+def _normalize_data_path(path: Path) -> Path | None:
+    base = DATA_DIR.resolve()
+    candidate = path if path.is_absolute() else (DATA_DIR / path)
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(base)
+        return resolved
+    except Exception:
+        return None
+
+
 def read_json(path: Path, default: T) -> T:
-    return get_data_repository().read_json(path, default)
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        return default
+    return get_data_repository().read_json(normalized, default)
 
 
 def write_json(path: Path, payload: Any, *, indent: int = 2) -> None:
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        raise ValueError(f"Path must be inside data directory: {path}")
+
+    path = normalized
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Atomic write: write to a temp file in the same directory then replace.
@@ -37,16 +56,28 @@ def write_json(path: Path, payload: Any, *, indent: int = 2) -> None:
 
 
 def path_exists(path: Path) -> bool:
-    return get_data_repository().exists(path)
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        return False
+    return get_data_repository().exists(normalized)
 
 
 def delete_path(path: Path) -> None:
-    get_data_repository().delete_file(path)
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        return
+    get_data_repository().delete_file(normalized)
 
 
 def list_data_dirs(path: Path) -> list[Path]:
-    return get_data_repository().list_dirs(path)
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        return []
+    return get_data_repository().list_dirs(normalized)
 
 
 def list_data_files(path: Path, pattern: str = "*") -> list[Path]:
-    return get_data_repository().list_files(path, pattern)
+    normalized = _normalize_data_path(path)
+    if normalized is None:
+        return []
+    return get_data_repository().list_files(normalized, pattern)

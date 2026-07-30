@@ -123,7 +123,10 @@ class TerraformResourceGenerator:
         # Enrich parent resources to align with Collector output format
         # - Embed subnet details inside VNet properties
         self._embed_vnet_subnets()
-        
+
+        # Annotate AKS clusters with kubernetes workload zone spread analysis
+        self._enrich_aks_kubernetes_workloads()
+
         # Generate relationships/edges
         self._generate_edges()
         
@@ -160,6 +163,69 @@ class TerraformResourceGenerator:
         }
         
         return resources_output, edges_output
+
+    def _enrich_aks_kubernetes_workloads(self) -> None:
+        """Scan kubernetes_deployment/stateful_set resources and annotate AKS cluster properties.
+
+        Stores a summary of whether workloads have topologySpreadConstraints configured
+        with topology.kubernetes.io/zone so the pod zone checker can evaluate them
+        without needing Container Insights.
+        """
+        _WORKLOAD_TYPES = frozenset({
+            "kubernetes_deployment",
+            "kubernetes_deployment_v1",
+            "kubernetes_stateful_set",
+            "kubernetes_stateful_set_v1",
+        })
+        _ZONE_KEY = "topology.kubernetes.io/zone"
+
+        workloads = [r for r in self.terraform_resources if r.type in _WORKLOAD_TYPES]
+        if not workloads:
+            return
+
+        with_zone_spread: list = []
+        without_zone_spread: list = []
+
+        for workload in workloads:
+            attrs = workload.attributes
+            meta = attrs.get("metadata", {})
+            if isinstance(meta, list) and meta:
+                meta = meta[0]
+            namespace = meta.get("namespace", "default") if isinstance(meta, dict) else "default"
+            workload_label = f"{namespace}/{workload.name}"
+
+            # Navigate spec.template.spec.topology_spread_constraints
+            # hcl2 wraps HCL blocks in lists; handle both list and dict forms
+            def _unwrap(val: Any) -> Any:
+                return val[0] if isinstance(val, list) and val else val
+
+            spec = _unwrap(attrs.get("spec", {}))
+            template = _unwrap(spec.get("template", {}) if isinstance(spec, dict) else {})
+            inner_spec = _unwrap(template.get("spec", {}) if isinstance(template, dict) else {})
+            tsc_raw = inner_spec.get("topology_spread_constraints") if isinstance(inner_spec, dict) else None
+
+            has_zone_spread = False
+            if tsc_raw:
+                tsc_list = tsc_raw if isinstance(tsc_raw, list) else [tsc_raw]
+                for tsc in tsc_list:
+                    if isinstance(tsc, dict) and tsc.get("topology_key") == _ZONE_KEY:
+                        has_zone_spread = True
+                        break
+
+            (with_zone_spread if has_zone_spread else without_zone_spread).append(workload_label)
+
+        summary = {
+            "workload_count": len(workloads),
+            "with_zone_spread": len(with_zone_spread),
+            "without_zone_spread": len(without_zone_spread),
+            "workloads_without_spread": without_zone_spread,
+        }
+
+        for resource in self.generated_resources.values():
+            if resource.type.lower() == "microsoft.containerservice/managedclusters":
+                if resource.properties is None:
+                    resource.properties = {}
+                resource.properties["kubernetes_workloads_zone_spread"] = summary
 
     def _embed_vnet_subnets(self) -> None:
         """Embed subnet information inside each VNet's properties.

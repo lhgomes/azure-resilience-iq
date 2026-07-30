@@ -4,53 +4,38 @@ resource "random_string" "suffix" {
   upper   = false
 }
 
-resource "tls_private_key" "vm_admin" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
+resource "random_password" "vm_admin" {
+  length           = 24
+  special          = true
+  override_special = "!@#%_-"
 }
 
 data "azurerm_client_config" "current" {}
-
-data "http" "operator_public_ip" {
-  count = !var.private_only && (length(var.admin_allowed_cidrs) == 0 || length(var.app_allowed_cidrs) == 0) ? 1 : 0
-  url   = "https://api.ipify.org"
-
-  request_headers = {
-    Accept = "text/plain"
-  }
-}
 
 locals {
   prefix              = "${var.project_name}-${var.environment}"
   resource_group_name = var.resource_group_name != "" ? var.resource_group_name : "rg-${local.prefix}"
 
-  vnet_name               = "vnet-${local.prefix}"
-  subnet_name             = "snet-app"
-  pe_subnet_name          = "snet-private-endpoints"
-  nsg_name                = "nsg-${local.prefix}"
-  pip_name                = "pip-${local.prefix}"
-  nic_name                = "nic-${local.prefix}"
-  vm_name                 = "vm-${local.prefix}"
-  foundry_hub_name        = "fdh-${local.prefix}-${random_string.suffix.result}"
-  foundry_account_name    = "fdh-${local.prefix}-${random_string.suffix.result}"
-  foundry_subdomain       = substr(replace("fdry${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 63)
-  foundry_project_name    = "fdp-${local.prefix}-${random_string.suffix.result}"
-  search_name             = substr(replace("srch${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 60)
-  storage_account_name    = substr(replace("st${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 24)
-  deployment_state_prefix = "${var.project_name}/${var.environment}"
-  entra_admin_object_id   = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
-  operator_public_ip      = length(data.http.operator_public_ip) > 0 ? trimspace(data.http.operator_public_ip[0].response_body) : ""
-  operator_public_cidr    = local.operator_public_ip != "" ? "${local.operator_public_ip}/32" : ""
-
-  provided_admin_allowed_cidrs = [for cidr in var.admin_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
-  provided_app_allowed_cidrs   = [for cidr in var.app_allowed_cidrs : trimspace(cidr) if trimspace(cidr) != ""]
-
-  effective_admin_allowed_cidrs = length(local.provided_admin_allowed_cidrs) > 0 ? local.provided_admin_allowed_cidrs : (
-    local.operator_public_cidr != "" ? [local.operator_public_cidr] : []
-  )
-  effective_app_allowed_cidrs = length(local.provided_app_allowed_cidrs) > 0 ? local.provided_app_allowed_cidrs : (
-    local.operator_public_cidr != "" ? [local.operator_public_cidr] : []
-  )
+  vnet_name                       = "vnet-${local.prefix}"
+  subnet_name                     = "snet-app"
+  pe_subnet_name                  = "snet-private-endpoints"
+  bastion_subnet_name             = "AzureBastionSubnet"
+  nsg_name                        = "nsg-${local.prefix}"
+  bastion_pip_name                = "pip-bastion-${local.prefix}"
+  bastion_name                    = "bas-${local.prefix}"
+  nic_name                        = "nic-${local.prefix}"
+  vm_name                         = "vm-${local.prefix}"
+  foundry_hub_name                = "fdh-${local.prefix}-${random_string.suffix.result}"
+  foundry_account_name            = "fdh-${local.prefix}-${random_string.suffix.result}"
+  foundry_subdomain               = substr(replace("fdry${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 63)
+  foundry_project_name            = "fdp-${local.prefix}-${random_string.suffix.result}"
+  search_name                     = substr(replace("srch${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 60)
+  storage_account_name            = substr(replace("st${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 24)
+  deployment_state_prefix         = "${var.project_name}/${var.environment}"
+  entra_admin_object_id           = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
+  workload_management_group_id    = var.workload_management_group_id != "" ? var.workload_management_group_id : data.azurerm_client_config.current.tenant_id
+  workload_management_group_scope = "/providers/Microsoft.Management/managementGroups/${local.workload_management_group_id}"
+  service_group_member_rbac_scope = var.enable_workload_management_group_rbac ? local.workload_management_group_scope : "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
 
   common_tags = merge(
     {
@@ -60,20 +45,6 @@ locals {
     },
     var.tags
   )
-}
-
-resource "terraform_data" "validate_public_ingress_cidrs" {
-  input = true
-
-  lifecycle {
-    precondition {
-      condition = var.private_only || (
-        length(local.effective_admin_allowed_cidrs) > 0 &&
-        length(local.effective_app_allowed_cidrs) > 0
-      )
-      error_message = "No effective CIDR allowlists were resolved while private_only=false. Provide admin_allowed_cidrs and app_allowed_cidrs explicitly, or ensure the Terraform runner can reach https://api.ipify.org for auto-discovery."
-    }
-  }
 }
 
 resource "azurerm_resource_group" "this" {
@@ -105,6 +76,15 @@ resource "azurerm_subnet" "private_endpoints" {
   private_endpoint_network_policies = "Disabled"
 }
 
+resource "azurerm_subnet" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
+  name                 = local.bastion_subnet_name
+  resource_group_name  = azurerm_resource_group.this.name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = ["10.20.3.0/26"]
+}
+
 resource "azurerm_network_security_group" "this" {
   name                = local.nsg_name
   location            = azurerm_resource_group.this.location
@@ -112,46 +92,33 @@ resource "azurerm_network_security_group" "this" {
   tags                = local.common_tags
 }
 
-resource "azurerm_network_security_rule" "allow_ssh" {
-  count                       = !var.private_only && length(local.effective_admin_allowed_cidrs) > 0 ? 1 : 0
-  name                        = "allow-ssh"
+resource "azurerm_network_security_rule" "allow_bastion_rdp" {
+  count = var.enable_bastion ? 1 : 0
+
+  name                        = "allow-bastion-rdp"
   priority                    = 100
   direction                   = "Inbound"
   access                      = "Allow"
   protocol                    = "Tcp"
   source_port_range           = "*"
+  destination_port_range      = "3389"
+  source_address_prefix       = azurerm_subnet.bastion[0].address_prefixes[0]
+  destination_address_prefix  = "*"
+  resource_group_name         = azurerm_resource_group.this.name
+  network_security_group_name = azurerm_network_security_group.this.name
+}
+
+resource "azurerm_network_security_rule" "allow_bastion_ssh" {
+  count = var.enable_bastion ? 1 : 0
+
+  name                        = "allow-bastion-ssh"
+  priority                    = 105
+  direction                   = "Inbound"
+  access                      = "Allow"
+  protocol                    = "Tcp"
+  source_port_range           = "*"
   destination_port_range      = "22"
-  source_address_prefixes     = local.effective_admin_allowed_cidrs
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.this.name
-  network_security_group_name = azurerm_network_security_group.this.name
-}
-
-resource "azurerm_network_security_rule" "allow_http" {
-  count                       = !var.private_only && length(local.effective_app_allowed_cidrs) > 0 ? 1 : 0
-  name                        = "allow-http"
-  priority                    = 110
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "80"
-  source_address_prefixes     = local.effective_app_allowed_cidrs
-  destination_address_prefix  = "*"
-  resource_group_name         = azurerm_resource_group.this.name
-  network_security_group_name = azurerm_network_security_group.this.name
-}
-
-resource "azurerm_network_security_rule" "allow_https" {
-  count                       = !var.private_only && length(local.effective_app_allowed_cidrs) > 0 ? 1 : 0
-  name                        = "allow-https"
-  priority                    = 120
-  direction                   = "Inbound"
-  access                      = "Allow"
-  protocol                    = "Tcp"
-  source_port_range           = "*"
-  destination_port_range      = "443"
-  source_address_prefixes     = local.effective_app_allowed_cidrs
+  source_address_prefix       = azurerm_subnet.bastion[0].address_prefixes[0]
   destination_address_prefix  = "*"
   resource_group_name         = azurerm_resource_group.this.name
   network_security_group_name = azurerm_network_security_group.this.name
@@ -162,9 +129,10 @@ resource "azurerm_subnet_network_security_group_association" "this" {
   network_security_group_id = azurerm_network_security_group.this.id
 }
 
-resource "azurerm_public_ip" "this" {
-  count               = var.private_only ? 0 : 1
-  name                = local.pip_name
+resource "azurerm_public_ip" "bastion" {
+  count = var.enable_bastion ? 1 : 0
+
+  name                = local.bastion_pip_name
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
   allocation_method   = "Static"
@@ -179,6 +147,23 @@ resource "azurerm_public_ip" "this" {
   }
 }
 
+resource "azurerm_bastion_host" "this" {
+  count = var.enable_bastion ? 1 : 0
+
+  name                = local.bastion_name
+  location            = azurerm_resource_group.this.location
+  resource_group_name = azurerm_resource_group.this.name
+  sku                 = "Standard"
+  tunneling_enabled   = true
+  tags                = local.common_tags
+
+  ip_configuration {
+    name                 = "configuration"
+    subnet_id            = azurerm_subnet.bastion[0].id
+    public_ip_address_id = azurerm_public_ip.bastion[0].id
+  }
+}
+
 resource "azurerm_network_interface" "this" {
   name                = local.nic_name
   location            = azurerm_resource_group.this.location
@@ -189,17 +174,18 @@ resource "azurerm_network_interface" "this" {
     name                          = "ipconfig1"
     subnet_id                     = azurerm_subnet.this.id
     private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = var.private_only ? null : azurerm_public_ip.this[0].id
   }
 }
 
-resource "azurerm_linux_virtual_machine" "this" {
+resource "azurerm_windows_virtual_machine" "this" {
   name                = local.vm_name
+  computer_name       = substr(replace(local.vm_name, "-", ""), 0, 15)
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
   size                = var.vm_size
   zone                = var.vm_zone != "" ? var.vm_zone : null
   admin_username      = var.admin_username
+  admin_password      = random_password.vm_admin.result
   network_interface_ids = [
     azurerm_network_interface.this.id,
   ]
@@ -209,24 +195,17 @@ resource "azurerm_linux_virtual_machine" "this" {
     type = "SystemAssigned"
   }
 
-  admin_ssh_key {
-    username   = var.admin_username
-    public_key = tls_private_key.vm_admin.public_key_openssh
-  }
-
   os_disk {
     caching              = "ReadWrite"
     storage_account_type = "Premium_LRS"
   }
 
   source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts-gen2"
+    publisher = "MicrosoftWindowsServer"
+    offer     = "WindowsServer"
+    sku       = "2022-datacenter-azure-edition"
     version   = "latest"
   }
-
-  disable_password_authentication = true
 }
 
 resource "azurerm_cognitive_account" "this" {
@@ -272,6 +251,11 @@ resource "azurerm_cognitive_deployment" "reasoning" {
     name     = var.reasoning_model_sku
     capacity = var.reasoning_model_capacity
   }
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [rai_policy_name]
+  }
 }
 
 resource "azurerm_cognitive_deployment" "embedding" {
@@ -314,6 +298,11 @@ resource "azurerm_storage_account" "this" {
   shared_access_key_enabled       = false
   min_tls_version                 = "TLS1_2"
   tags                            = local.common_tags
+
+  network_rules {
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+  }
 }
 
 resource "azurerm_private_dns_zone" "foundry" {
@@ -461,16 +450,17 @@ resource "azurerm_private_endpoint" "blob" {
   }
 }
 
-resource "azurerm_virtual_machine_extension" "aad_ssh_login" {
-  name                 = "AADSSHLoginForLinux"
-  virtual_machine_id   = azurerm_linux_virtual_machine.this.id
-  publisher            = "Microsoft.Azure.ActiveDirectory"
-  type                 = "AADSSHLoginForLinux"
-  type_handler_version = "1.0"
+resource "azurerm_virtual_machine_extension" "aad_login" {
+  name                       = "AADLoginForWindows"
+  virtual_machine_id         = azurerm_windows_virtual_machine.this.id
+  publisher                  = "Microsoft.Azure.ActiveDirectory"
+  type                       = "AADLoginForWindows"
+  type_handler_version       = "2.2"
+  auto_upgrade_minor_version = true
 }
 
 resource "azurerm_role_assignment" "entra_vm_admin_login" {
-  scope                = azurerm_linux_virtual_machine.this.id
+  scope                = azurerm_windows_virtual_machine.this.id
   role_definition_name = "Virtual Machine Administrator Login"
   principal_id         = local.entra_admin_object_id
 }
@@ -478,19 +468,19 @@ resource "azurerm_role_assignment" "entra_vm_admin_login" {
 resource "azurerm_role_assignment" "vm_foundry_hub_user" {
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Foundry User"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_foundry_openai_user" {
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Cognitive Services OpenAI User"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_foundry_project_user" {
   scope                = azurerm_cognitive_account_project.this.id
   role_definition_name = "Foundry User"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "foundry_project_identity_hub_user" {
@@ -502,17 +492,67 @@ resource "azurerm_role_assignment" "foundry_project_identity_hub_user" {
 resource "azurerm_role_assignment" "vm_search_service_contributor" {
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Service Contributor"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_search_index_data_contributor" {
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Index Data Contributor"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_storage_blob_data_contributor" {
   scope                = azurerm_storage_account.this.id
   role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_linux_virtual_machine.this.identity[0].principal_id
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
+}
+
+# --- Service Group + collection permissions for the VM identity -------------
+# The collector reads resources and role assignments in the current subscription,
+# with optional management-group Reader access for broader collection. The
+# Service Group applier writes Microsoft.Relationships/serviceGroupMember links
+# on member resources (a linked action authorized on the member scope). The
+# least-privilege writer is always granted: at management-group scope when broad
+# workload RBAC is enabled, otherwise at the current subscription. Creating a
+# Service Group needs no grant here (the creator is auto-assigned Service Group
+# Administrator, which also lets the app read/import that SG through Resource
+# Graph). Reading Service Groups
+# created ELSEWHERE needs Microsoft.Management/serviceGroups/read on them;
+# assigning "Service Group Reader" at the tenant-root SG is the broadest, OPTIONAL
+# way to get that -- see the service_group_root_reader_grant_command output.
+
+resource "azurerm_role_assignment" "vm_subscription_reader" {
+  scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
+  role_definition_name = "Reader"
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "vm_workload_reader" {
+  count                = var.enable_workload_management_group_rbac ? 1 : 0
+  scope                = local.workload_management_group_scope
+  role_definition_name = "Reader"
+  principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
+}
+
+resource "azurerm_role_definition" "service_group_member_writer" {
+  name        = "Service Group Member Writer (${local.prefix})"
+  scope       = local.service_group_member_rbac_scope
+  description = "Least-privilege role allowing write/read/delete of serviceGroupMember relationships so the workload app can attach resources to Azure Service Groups."
+
+  permissions {
+    actions = [
+      "Microsoft.Relationships/serviceGroupMember/write",
+      "Microsoft.Relationships/serviceGroupMember/read",
+      "Microsoft.Relationships/serviceGroupMember/delete",
+    ]
+    not_actions = []
+  }
+
+  assignable_scopes = [local.service_group_member_rbac_scope]
+}
+
+resource "azurerm_role_assignment" "vm_service_group_member_writer" {
+  scope              = local.service_group_member_rbac_scope
+  role_definition_id = azurerm_role_definition.service_group_member_writer.role_definition_resource_id
+  principal_id       = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }

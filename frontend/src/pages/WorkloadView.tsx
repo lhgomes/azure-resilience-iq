@@ -16,6 +16,7 @@ import NodeDrawer, { NodeData } from "../components/NodeDrawer";
 import WorkloadSidebar from "../components/WorkloadSidebar";
 import LegendPanel from "../components/LegendPanel";
 import { ChatPanel } from "../components/Chat";
+import "../components/common/spin.css";
 import { LLMChatService } from "../services/chatService";
 import {
   acceptEdge,
@@ -38,11 +39,23 @@ import {
   deleteGroup,
   addNodesToGroup,
   removeNodeFromGroup,
+  applyServiceGroup,
+  applyServiceGroupFromWorkload,
+  exportServiceGroup,
+  listAzureServiceGroups,
+  getServiceGroupAvailability,
+  fetchServiceGroupMembers,
+  deleteServiceGroup,
   listWorkloads,
   getWorkload,
   createWorkload,
   updateWorkload,
   deleteWorkload,
+  type ServiceGroupArtifact,
+  type ServiceGroupBinding,
+  type ServiceGroupFormat,
+  type ServiceGroupImportProgress,
+  type ServiceGroupSummary,
   type SubscriptionInfo,
   type DiscoverableSubscriptionInfo,
   type SubscriptionMappingStatus,
@@ -52,18 +65,39 @@ import {
 } from "../api/workloads";
 import {
   buildViewGraph,
+  canonicalTypeForNode,
+  canonicalTypeForResourceId,
   computeResourceGroupOptions,
   computeServiceOptions,
   computeValidationSourceOptions,
   LEVEL_TO_MAX_IMPORTANCE,
   normalizeGraph,
+  normalizeTypeString,
   type GraphSnapshot,
   type ViewLevel,
 } from "../domain/graphView";
 import { calculateResiliencyScore, getElementWeight, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 import { getZonalResiliency, type ZonalResiliencyResponse } from "../api/resilience";
 import { mergeGraphSnapshots, mergeResiliencyEvaluations, mergeZonalResiliencyData } from "../utils/multiSubscriptionMerge";
-import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular } from "@fluentui/react-icons";
+import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular, ArrowSync16Regular, Dismiss12Regular, DocumentPdf20Regular } from "@fluentui/react-icons";
+
+interface ResiliencyPdfReport {
+  score: number;
+  totalChecks: number;
+  passedChecks: number;
+  failedChecks: number;
+  categories: Array<{ name: string; score: number; passed: number; failed: number }>;
+  impacts: Array<{ name: string; score: number; passed: number; failed: number }>;
+  services: Array<{ name: string; score: number; passed: number; failed: number }>;
+  recommendations: Array<{
+    title: string;
+    benefit: string;
+    category: string;
+    impact: string;
+    resources: string[];
+    contributionPercent: number;
+  }>;
+}
 
 // Subscription-aware view: user selects one or more subscriptions
 
@@ -156,7 +190,77 @@ const WorkloadView: React.FC = () => {
     selectedGroupMemberIds?: string[];
   }>({ selectedNodeIds: [], selectedGroupId: null });
   const [groupToolbarName, setGroupToolbarName] = useState<string>("");
+  const [graphViewRevision, setGraphViewRevision] = useState(0);
+
+  // Azure Service Group apply/export state (scoped to the selected group)
+  const [serviceGroupFormat, setServiceGroupFormat] = useState<ServiceGroupFormat>("terraform");
+  const [serviceGroupBusy, setServiceGroupBusy] = useState<boolean>(false);
+  // Separate from serviceGroupBusy: a Service Group deletion is in flight. Kept
+  // distinct so a delete drives the status toast without spinning the Save
+  // button (which reflects save/sync, not delete).
+  const [serviceGroupDeleting, setServiceGroupDeleting] = useState<boolean>(false);
+  const [serviceGroupMessage, setServiceGroupMessage] = useState<
+    { tone: "info" | "success" | "error" | "warn"; text: string } | null
+  >(null);
+
+  // Auto-dismiss the Service Group status toast 10s after an outcome is shown.
+  // Skipped while busy so the "syncing…" indicator stays until the op finishes.
+  useEffect(() => {
+    if (!serviceGroupMessage || serviceGroupBusy || serviceGroupDeleting) return;
+    const timer = window.setTimeout(() => setServiceGroupMessage(null), 10000);
+    return () => window.clearTimeout(timer);
+  }, [serviceGroupMessage, serviceGroupBusy, serviceGroupDeleting]);
+
+  // Authoritative membership of an imported Azure Service Group (SG -> Workload).
+  const [serviceGroupBinding, setServiceGroupBinding] = useState<ServiceGroupBinding | null>(null);
+
+  // Pending "create a Service Group?" confirmation raised from Save Workload when
+  // the workload is not yet bound to a Service Group.
+  const [pendingServiceGroupCreate, setPendingServiceGroupCreate] = useState<
+    { memberIds: string[] } | null
+  >(null);
+  // Pending "delete the Service Group too?" confirmation raised from Delete
+  // Workload when the workload is bound to an Azure Service Group.
+  const [pendingWorkloadDelete, setPendingWorkloadDelete] = useState<
+    { workloadId: string; workloadName: string; serviceGroupName: string; serviceGroupDisplayName: string } | null
+  >(null);
+  // Parent choice for a NEW Service Group: "" = tenant root, otherwise an
+  // existing Service Group id. Only used by the create confirmation modal.
+  const [parentServiceGroupOptions, setParentServiceGroupOptions] = useState<ServiceGroupSummary[]>([]);
+  const [selectedParentServiceGroupId, setSelectedParentServiceGroupId] = useState<string>("");
+
+  // Progress surface for the SG -> Workload import (create view + map member subscriptions).
+  const [serviceGroupImport, setServiceGroupImport] = useState<ServiceGroupImportProgress | null>(null);
   const [groupCreateRequest, setGroupCreateRequest] = useState<{ nonce: number; label: string } | null>(null);
+
+  // Whether the backend identity can read Service Groups at tenant scope. When
+  // false the entire Service Group integration is disabled: read requires a
+  // tenant-root grant a standard deploy principal cannot self-assign. Probed once.
+  const [serviceGroupAvailable, setServiceGroupAvailable] = useState<boolean>(true);
+  const [serviceGroupUnavailableReason, setServiceGroupUnavailableReason] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getServiceGroupAvailability()
+      .then(res => {
+        if (cancelled) return;
+        setServiceGroupAvailable(res.available);
+        setServiceGroupUnavailableReason(
+          res.available ? null : res.reason ?? "Service Group integration is unavailable for the backend identity."
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Fail safe: if we can't verify access, disable SG actions rather than offer broken ones.
+        setServiceGroupAvailable(false);
+        setServiceGroupUnavailableReason(
+          "Could not verify Service Group availability. The backend identity may lack access or Azure is unreachable."
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track if user has made changes requiring refresh
   const [needsRefresh, setNeedsRefresh] = useState(false);
@@ -179,12 +283,14 @@ const WorkloadView: React.FC = () => {
   const lastSuggestedGroupNameRef = useRef<string>("");
   const lastGroupToolbarSelectionRef = useRef(groupToolbarSelection);
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const graphCaptureRef = useRef<HTMLDivElement>(null);
   const skipFilterResetRef = useRef(false);
   const pendingWorkloadApplyRef = useRef(false);
   const suppressNextNodeDrawerOpenRef = useRef(false);
   const [pendingGraphView, setPendingGraphView] = useState<WorkloadViewState["graph_view"] | null>(null);
   const skipNextFitViewRef = useRef(false);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [selectedRecommendationFocus, setSelectedRecommendationFocus] = useState<{ id?: string; title?: string } | null>(null);
 
   useEffect(() => {
@@ -206,6 +312,236 @@ const WorkloadView: React.FC = () => {
     });
     setActiveTabIndex(1);
   }, []);
+
+  const handleExportPdf = useCallback(async (report: ResiliencyPdfReport) => {
+    const previousTab = activeTabIndex;
+    setActiveTabIndex(0);
+
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await graphCanvasRef.current?.fitView();
+    await new Promise(resolve => window.setTimeout(resolve, 100));
+
+    const graphElement = graphCaptureRef.current;
+    if (!graphElement) {
+      setActiveTabIndex(previousTab);
+      throw new Error("The workload diagram is not available for capture.");
+    }
+
+    try {
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import("html2canvas"),
+        import("jspdf"),
+      ]);
+      const diagramCanvas = await html2canvas(graphElement, {
+        backgroundColor: "#ffffff",
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+      });
+
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const margin = 14;
+      const contentWidth = pageWidth - margin * 2;
+      const scorePercent = Math.round(report.score * 100);
+      const scoreColor: [number, number, number] = scorePercent >= 80
+        ? [16, 185, 129]
+        : scorePercent >= 60
+          ? [245, 158, 11]
+          : [220, 38, 38];
+
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(20);
+      pdf.setTextColor(17, 24, 39);
+      pdf.text("Azure Resiliency IQ", margin, 18);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text(`Evaluation report | ${new Date().toLocaleString()}`, margin, 25);
+
+      const summaryCards = [
+        { label: "Overall score", value: `${scorePercent}%`, color: scoreColor },
+        { label: "Total resiliency items", value: String(report.totalChecks), color: [59, 130, 246] as [number, number, number] },
+        { label: "Passed", value: String(report.passedChecks), color: [16, 185, 129] as [number, number, number] },
+        { label: "Failed", value: String(report.failedChecks), color: [239, 68, 68] as [number, number, number] },
+      ];
+      const summaryGap = 3;
+      const summaryWidth = (contentWidth - summaryGap * 3) / 4;
+      summaryCards.forEach((card, index) => {
+        const x = margin + index * (summaryWidth + summaryGap);
+        pdf.setFillColor(249, 250, 251);
+        pdf.roundedRect(x, 32, summaryWidth, 25, 2, 2, "F");
+        pdf.setDrawColor(...card.color);
+        pdf.setLineWidth(1);
+        pdf.line(x, 34, x, 55);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8);
+        pdf.setTextColor(75, 85, 99);
+        pdf.text(card.label, x + 4, 40);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(14);
+        pdf.setTextColor(...card.color);
+        pdf.text(card.value, x + 4, 51);
+      });
+
+      const drawBreakdown = (
+        title: string,
+        items: Array<{ name: string; score: number; passed: number; failed: number }>,
+        startY: number,
+      ): number => {
+        pdf.setTextColor(31, 41, 55);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11);
+        pdf.text(title, margin, startY);
+        const gap = 3;
+        const columns = 4;
+        const cardWidth = (contentWidth - gap * (columns - 1)) / columns;
+        const cardHeight = 18;
+        items.forEach((item, index) => {
+          const row = Math.floor(index / columns);
+          const column = index % columns;
+          const x = margin + column * (cardWidth + gap);
+          const y = startY + 4 + row * (cardHeight + gap);
+          pdf.setFillColor(249, 250, 251);
+          pdf.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "F");
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(7);
+          pdf.setTextColor(31, 41, 55);
+          const name = pdf.splitTextToSize(item.name, cardWidth - 17)[0] || item.name;
+          pdf.text(name, x + 3, y + 5);
+          pdf.setFontSize(10);
+          pdf.setTextColor(item.score >= 0.8 ? 16 : item.score >= 0.6 ? 245 : 220, item.score >= 0.8 ? 185 : item.score >= 0.6 ? 158 : 38, item.score >= 0.8 ? 129 : item.score >= 0.6 ? 11 : 38);
+          pdf.text(`${Math.round(item.score * 100)}%`, x + cardWidth - 3, y + 6, { align: "right" });
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(6);
+          pdf.setTextColor(107, 114, 128);
+          pdf.text("(weighted score)", x + 3, y + 8.5);
+          pdf.setFontSize(6.5);
+          pdf.text(`Checks: ${item.passed} passed | ${item.failed} failed`, x + 3, y + 14);
+        });
+        return startY + 7 + Math.ceil(items.length / columns) * (cardHeight + gap);
+      };
+
+      let overviewY = drawBreakdown("By resiliency category", report.categories, 67);
+      overviewY = drawBreakdown("By impact level", report.impacts, overviewY);
+      drawBreakdown("By Azure service", report.services, overviewY);
+
+      pdf.addPage();
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(17);
+      pdf.text("Workload diagram", margin, 20);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text("Resources and dependencies included in this evaluation", margin, 27);
+      const imageData = diagramCanvas.toDataURL("image/png");
+      const diagramY = 34;
+      const availableDiagramHeight = pdf.internal.pageSize.getHeight() - diagramY - 12;
+      const imageHeight = Math.min(availableDiagramHeight, (diagramCanvas.height * contentWidth) / diagramCanvas.width);
+      const imageWidth = Math.min(contentWidth, (diagramCanvas.width * imageHeight) / diagramCanvas.height);
+      pdf.addImage(imageData, "PNG", margin + (contentWidth - imageWidth) / 2, diagramY, imageWidth, imageHeight, undefined, "FAST");
+
+      pdf.addPage();
+      pdf.setTextColor(17, 24, 39);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(17);
+      pdf.text("Top recommendations", margin, 20);
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(107, 114, 128);
+      pdf.text("Prioritized by contribution to workload risk", margin, 27);
+
+      const recommendationColumns = {
+        recommendation: { x: margin, width: 66 },
+        benefit: { x: margin + 68, width: 42 },
+        category: { x: margin + 112, width: 34 },
+        impact: { x: margin + 148, width: 16 },
+        weight: { x: margin + 166, width: 12 },
+      };
+      const drawRecommendationHeader = (headerY: number) => {
+        pdf.setFillColor(243, 244, 246);
+        pdf.rect(margin, headerY, contentWidth, 10, "F");
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(8);
+        pdf.text("Recommendation / resources", recommendationColumns.recommendation.x + 2, headerY + 6);
+        pdf.text("Benefit", recommendationColumns.benefit.x + 2, headerY + 6);
+        pdf.text("Category", recommendationColumns.category.x + 2, headerY + 6);
+        pdf.text("Impact", recommendationColumns.impact.x + 2, headerY + 6);
+        pdf.text("Weight", recommendationColumns.weight.x + 2, headerY + 6);
+      };
+
+      let y = 38;
+      drawRecommendationHeader(y);
+      y += 12;
+      if (report.recommendations.length === 0) {
+        pdf.setTextColor(75, 85, 99);
+        pdf.text("No failing recommendations were found.", margin, y);
+      } else {
+        report.recommendations.forEach((recommendation, index) => {
+          const titleLines = pdf.splitTextToSize(recommendation.title, recommendationColumns.recommendation.width - 6) as string[];
+          const resourceText = recommendation.resources.length > 0 ? recommendation.resources.join(", ") : "No resource name available";
+          const resourceLines = pdf.splitTextToSize(resourceText, recommendationColumns.recommendation.width - 6) as string[];
+          const benefitLines = pdf.splitTextToSize(recommendation.benefit, recommendationColumns.benefit.width - 6) as string[];
+          const categoryLines = pdf.splitTextToSize(recommendation.category, recommendationColumns.category.width - 6) as string[];
+          const blockHeight = Math.max(20, 8 + (titleLines.length + resourceLines.length) * 4, 8 + benefitLines.length * 4, 8 + categoryLines.length * 4);
+          if (y + blockHeight > pdf.internal.pageSize.getHeight() - 12) {
+            pdf.addPage();
+            y = 16;
+            drawRecommendationHeader(y);
+            y += 12;
+          }
+          if (index % 2 === 0) {
+            pdf.setFillColor(249, 250, 251);
+            pdf.rect(margin, y, contentWidth, blockHeight, "F");
+          }
+          const drawInCell = (column: { x: number; width: number }, draw: () => void) => {
+            pdf.saveGraphicsState();
+            pdf.rect(column.x, y, column.width, blockHeight, null);
+            pdf.clip();
+            pdf.discardPath();
+            draw();
+            pdf.restoreGraphicsState();
+          };
+          pdf.setTextColor(31, 41, 55);
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(8);
+          drawInCell(recommendationColumns.recommendation, () => {
+            pdf.text(titleLines, recommendationColumns.recommendation.x + 2, y + 5);
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(7);
+            pdf.setTextColor(185, 28, 28);
+            pdf.text(resourceLines, recommendationColumns.recommendation.x + 2, y + 7 + titleLines.length * 4);
+          });
+          drawInCell(recommendationColumns.benefit, () => {
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(7);
+            pdf.setTextColor(37, 99, 235);
+            pdf.text(benefitLines, recommendationColumns.benefit.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.category, () => {
+            pdf.setTextColor(75, 85, 99);
+            pdf.text(categoryLines, recommendationColumns.category.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.impact, () => {
+            pdf.setTextColor(recommendation.impact === "High" ? 220 : 75, recommendation.impact === "High" ? 38 : 85, recommendation.impact === "High" ? 38 : 99);
+            pdf.text(recommendation.impact, recommendationColumns.impact.x + 2, y + 5);
+          });
+          drawInCell(recommendationColumns.weight, () => {
+            pdf.setTextColor(75, 85, 99);
+            pdf.text(`${recommendation.contributionPercent.toFixed(1)}%`, recommendationColumns.weight.x + 2, y + 5);
+          });
+          y += blockHeight;
+        });
+      }
+
+      const filenameDate = new Date().toISOString().slice(0, 10);
+      pdf.save(`resiliency-evaluation-${filenameDate}.pdf`);
+    } finally {
+      setActiveTabIndex(previousTab);
+    }
+  }, [activeTabIndex]);
 
   const markSubscriptionDirty = useCallback((subscriptionId: string | null) => {
     if (!subscriptionId) return;
@@ -260,7 +596,8 @@ const WorkloadView: React.FC = () => {
     expanded_categories: Array.from(expandedCategories),
     show_legend: showLegend,
     graph_view: graphCanvasRef.current?.getViewState() ?? undefined,
-  }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend]);
+    service_group_filter: serviceGroupBinding ?? undefined,
+  }), [selectedSubscriptionIds, viewLevel, aiLayerEnabled, userLayerEnabled, resourceGroupFilter, serviceFilter, expandedCategories, showLegend, serviceGroupBinding]);
 
   const normalizeWorkloadViewState = useCallback((state: WorkloadViewState): WorkloadViewState => {
     const sort = (values: string[]) => [...values].map(String).sort();
@@ -289,6 +626,15 @@ const WorkloadView: React.FC = () => {
             node_positions: normalizePositions(state.graph_view.node_positions),
           }
         : undefined,
+      service_group_filter: state.service_group_filter
+        ? {
+            service_group_id: state.service_group_filter.service_group_id,
+            service_group_name: state.service_group_filter.service_group_name,
+            display_name: state.service_group_filter.display_name,
+            parent_service_group_id: state.service_group_filter.parent_service_group_id ?? undefined,
+            member_resource_ids: sort(state.service_group_filter.member_resource_ids || []),
+          }
+        : undefined,
     };
   }, []);
 
@@ -297,7 +643,7 @@ const WorkloadView: React.FC = () => {
     const current = normalizeWorkloadViewState(buildWorkloadViewState());
     const saved = normalizeWorkloadViewState(activeWorkloadState);
     return JSON.stringify(current) !== JSON.stringify(saved);
-  }, [activeWorkloadId, activeWorkloadState, buildWorkloadViewState, normalizeWorkloadViewState]);
+  }, [activeWorkloadId, activeWorkloadState, buildWorkloadViewState, normalizeWorkloadViewState, graphViewRevision]);
 
   const isNewWorkloadDirty = useMemo(() => {
     if (activeWorkloadId) return false;
@@ -313,7 +659,7 @@ const WorkloadView: React.FC = () => {
       show_legend: false,
     });
     return JSON.stringify(current) !== JSON.stringify(defaultState);
-  }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState]);
+  }, [activeWorkloadId, buildWorkloadViewState, normalizeWorkloadViewState, graphViewRevision]);
 
   const applyWorkloadViewState = useCallback((state: WorkloadViewState) => {
     skipFilterResetRef.current = true;
@@ -330,6 +676,19 @@ const WorkloadView: React.FC = () => {
     setServiceFilter(new Set(state.service_filter || []));
     setExpandedCategories(new Set(state.expanded_categories || []));
     setShowLegend(!!state.show_legend);
+    setServiceGroupBinding(state.service_group_filter ?? null);
+  }, []);
+
+  const hydrateServiceGroupBinding = useCallback(async (binding: ServiceGroupBinding | null): Promise<ServiceGroupBinding | null> => {
+    if (!binding || binding.parent_service_group_id || !binding.service_group_id) return binding;
+    try {
+      const groups = await listAzureServiceGroups();
+      const match = groups.find(group => group.id === binding.service_group_id || group.name === binding.service_group_name);
+      if (!match?.parent_service_group_id) return binding;
+      return { ...binding, parent_service_group_id: match.parent_service_group_id };
+    } catch {
+      return binding;
+    }
   }, []);
 
   const loadWorkloads = useCallback(async () => {
@@ -916,6 +1275,159 @@ const WorkloadView: React.FC = () => {
   const edgesForView = viewGraph?.edges ?? graph?.edges ?? [];
   const hasSelection = selectedSubscriptionIds.length > 0;
 
+  const pdfReport = useMemo<ResiliencyPdfReport | null>(() => {
+    if (!graph || !mergedEvaluations || nodesForView.length === 0) return null;
+
+    const graphNodeMap = new Map(graph.nodes.map(node => [node.id.toLowerCase(), node]));
+    const categories = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const impacts = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const services = new Map<string, { totalWeight: number; passedWeight: number; passed: number; failed: number }>();
+    const recommendations = new Map<string, {
+      title: string;
+      benefit: string;
+      category: string;
+      impact: string;
+      resources: Set<string>;
+      failedWeight: number;
+    }>();
+    let totalWeight = 0;
+    let passedWeight = 0;
+    let totalChecks = 0;
+    let passedChecks = 0;
+    let failedChecks = 0;
+
+    const resourceMatchesReportFilters = (resourceId: string, evaluation: any): boolean => {
+      const graphNode = graphNodeMap.get(resourceId.toLowerCase());
+      if (graphNode) {
+        const annotation = annotationMap.get(resourceId.toLowerCase());
+        const maxImportance = LEVEL_TO_MAX_IMPORTANCE[viewLevel];
+        const importance = annotation?.layer ?? (graphNode.metadata as any)?.importance ?? 3;
+        if (importance > maxImportance) return false;
+      }
+
+      if (resourceGroupFilter.size === 0 || serviceFilter.size === 0) return false;
+
+      const evaluationResourceGroup = (evaluation?.resource_group || evaluation?.resource_group_name || evaluation?.resourceGroup || "")
+        .toString()
+        .toLowerCase();
+      const resourceIdParts = resourceId.split("/").filter(Boolean);
+      const resourceIdPartsLower = resourceIdParts.map(part => part.toLowerCase());
+      const resourceGroupIndex = resourceIdPartsLower.indexOf("resourcegroups");
+      const resourceGroup = evaluationResourceGroup || (
+        resourceGroupIndex >= 0 && resourceGroupIndex + 1 < resourceIdParts.length
+          ? resourceIdParts[resourceGroupIndex + 1].toLowerCase()
+          : ""
+      );
+      if (resourceGroup && !resourceGroupFilter.has(resourceGroup)) return false;
+
+      const serviceKey = graphNode
+        ? canonicalTypeForNode(graphNode as any)
+        : normalizeTypeString(evaluation?.resource_type);
+      const normalizedServiceKey = String(serviceKey || "").toLowerCase();
+      if (normalizedServiceKey && !serviceFilter.has(normalizedServiceKey)) return false;
+
+      return true;
+    };
+
+    Object.entries(mergedEvaluations).forEach(([resourceId, evaluation]: [string, any]) => {
+      if (!resourceMatchesReportFilters(resourceId, evaluation)) return;
+      const checks = (evaluation.findings || evaluation.checks || []).filter((check: any) => {
+        if (validationSourceFilter.size === 0) return true;
+        return validationSourceFilter.has(check.validation_source || "");
+      });
+      const elementWeight = getElementWeight(resourceId, annotationMap);
+      const annotation = annotationMap.get(resourceId.toLowerCase());
+      const graphNode = graphNodeMap.get(resourceId.toLowerCase());
+      const resourceName = annotation?.display_name || evaluation.resource_name || graphNode?.name || resourceId.split("/").filter(Boolean).pop() || resourceId;
+      const serviceName = annotation?.azure_service_category || "Other";
+
+      checks.forEach((check: any) => {
+        const category = check.category || "Other";
+        const rawWeight = elementWeight
+          * (resilienceWeights.categoryWeights[category] ?? 0.05)
+          * (resilienceWeights.impactWeights[check.impact] ?? 0.1);
+        totalChecks += 1;
+        totalWeight += rawWeight;
+
+        const categoryStats = categories.get(category) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        const impactName = check.impact || "Unknown";
+        const impactStats = impacts.get(impactName) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        const serviceStats = services.get(serviceName) || { totalWeight: 0, passedWeight: 0, passed: 0, failed: 0 };
+        categoryStats.totalWeight += rawWeight;
+        impactStats.totalWeight += rawWeight;
+        serviceStats.totalWeight += rawWeight;
+        if (check.status === "pass") {
+          passedChecks += 1;
+          passedWeight += rawWeight;
+          categoryStats.passed += 1;
+          categoryStats.passedWeight += rawWeight;
+          impactStats.passed += 1;
+          impactStats.passedWeight += rawWeight;
+          serviceStats.passed += 1;
+          serviceStats.passedWeight += rawWeight;
+        } else {
+          categoryStats.failed += 1;
+          impactStats.failed += 1;
+          serviceStats.failed += 1;
+          if (check.status !== "fail") {
+            categories.set(category, categoryStats);
+            impacts.set(impactName, impactStats);
+            services.set(serviceName, serviceStats);
+            return;
+          }
+          failedChecks += 1;
+          const recommendationId = check.recommendation_id || check.description;
+          const recommendation = recommendations.get(recommendationId) || {
+            title: check.description || recommendationId,
+            benefit: check.potential_benefits || "Not specified",
+            category,
+            impact: check.impact || "Unknown",
+            resources: new Set<string>(),
+            failedWeight: 0,
+          };
+          recommendation.resources.add(resourceName);
+          recommendation.failedWeight += rawWeight;
+          recommendations.set(recommendationId, recommendation);
+        }
+        categories.set(category, categoryStats);
+        impacts.set(impactName, impactStats);
+        services.set(serviceName, serviceStats);
+      });
+    });
+
+    const toBreakdown = (entries: typeof categories) => Array.from(entries.entries())
+      .map(([name, item]) => ({
+        name,
+        score: item.totalWeight > 0 ? item.passedWeight / item.totalWeight : 0,
+        passed: item.passed,
+        failed: item.failed,
+        totalWeight: item.totalWeight,
+      }))
+      .sort((a, b) => b.totalWeight - a.totalWeight)
+      .map(({ totalWeight: _totalWeight, ...item }) => item);
+
+    return {
+      score: totalWeight > 0 ? passedWeight / totalWeight : 0,
+      totalChecks,
+      passedChecks,
+      failedChecks,
+      categories: toBreakdown(categories),
+      impacts: toBreakdown(impacts),
+      services: toBreakdown(services),
+      recommendations: Array.from(recommendations.values())
+        .sort((a, b) => b.failedWeight - a.failedWeight)
+        .slice(0, 10)
+        .map(recommendation => ({
+          title: recommendation.title,
+          benefit: recommendation.benefit,
+          category: recommendation.category,
+          impact: recommendation.impact,
+          resources: Array.from(recommendation.resources),
+          contributionPercent: totalWeight > 0 ? (recommendation.failedWeight / totalWeight) * 100 : 0,
+        })),
+    };
+  }, [graph, mergedEvaluations, nodesForView, validationSourceFilter, annotationMap, resilienceWeights, viewLevel, resourceGroupFilter, serviceFilter]);
+
   // Auto layout once when the view graph is recomputed
   const layoutResetKeyRef = useRef<string>("");
   useEffect(() => {
@@ -1364,6 +1876,12 @@ const WorkloadView: React.FC = () => {
         return { ...prev, nodes: remainingNodes, edges: newEdges, groups: remainingGroups, node_overrides: updatedOverrides };
       });
 
+      if ((graph?.nodes?.length ?? 0) > 1) {
+        window.setTimeout(() => {
+          graphCanvasRef.current?.fitView();
+        }, 0);
+      }
+
       setResiliencyEvaluations(prev => {
         if (!prev) return prev;
         const next = { ...prev } as Record<string, any>;
@@ -1688,6 +2206,89 @@ const WorkloadView: React.FC = () => {
     updateGraph(prev => prev ? { ...prev, groups: (prev.groups ?? []).map(g => g.id === groupId ? { ...g, name: label } : g) } : prev);
   };
 
+  const downloadServiceGroupArtifact = (artifact: ServiceGroupArtifact) => {
+    const blob = new Blob([artifact.content], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = artifact.filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
+  const applyServiceGroupForSelection = async (args: { groupId: string; memberIds: string[] }) => {
+    const subscriptionId = resolveSubscriptionIdForNodeIds(args.memberIds);
+    if (!subscriptionId) {
+      setServiceGroupMessage({ tone: "error", text: "Unable to resolve the subscription for this group." });
+      return;
+    }
+
+    setServiceGroupBusy(true);
+    setServiceGroupMessage(null);
+    try {
+      const result = await applyServiceGroup(subscriptionId, args.groupId, serviceGroupFormat);
+      switch (result.status) {
+        case "applied":
+          setServiceGroupMessage({
+            tone: "success",
+            text: `Applied Service Group “${result.display_name}” with ${result.applied_members.length} member${result.applied_members.length === 1 ? "" : "s"}.`,
+          });
+          break;
+        case "permission_denied":
+          if (result.artifact) downloadServiceGroupArtifact(result.artifact);
+          setServiceGroupMessage({
+            tone: "error",
+            text: `${result.message ?? "The VM identity lacks permission to write Service Groups."} Downloaded ${result.artifact?.filename ?? "IaC"} so your team can apply it via CI/CD.`,
+          });
+          break;
+        case "empty":
+          setServiceGroupMessage({ tone: "info", text: result.message ?? "This group has no Azure resources to include." });
+          break;
+        default:
+          if (result.artifact) downloadServiceGroupArtifact(result.artifact);
+          setServiceGroupMessage({
+            tone: "error",
+            text: `${result.message ?? "Failed to apply the Service Group."}${result.artifact ? ` Downloaded ${result.artifact.filename} as a fallback.` : ""}`,
+          });
+      }
+    } catch (err) {
+      setServiceGroupMessage({
+        tone: "error",
+        text: err instanceof Error ? err.message : "Failed to apply the Service Group.",
+      });
+    } finally {
+      setServiceGroupBusy(false);
+    }
+  };
+
+  const exportServiceGroupForSelection = async (args: { groupId: string; memberIds: string[] }) => {
+    const subscriptionId = resolveSubscriptionIdForNodeIds(args.memberIds);
+    if (!subscriptionId) {
+      setServiceGroupMessage({ tone: "error", text: "Unable to resolve the subscription for this group." });
+      return;
+    }
+
+    setServiceGroupBusy(true);
+    setServiceGroupMessage(null);
+    try {
+      const artifact = await exportServiceGroup(subscriptionId, args.groupId, serviceGroupFormat);
+      downloadServiceGroupArtifact(artifact);
+      setServiceGroupMessage({
+        tone: "success",
+        text: `Exported ${artifact.filename} (${artifact.member_count} member${artifact.member_count === 1 ? "" : "s"}).`,
+      });
+    } catch (err) {
+      setServiceGroupMessage({
+        tone: "error",
+        text: err instanceof Error ? err.message : "Failed to export the Service Group.",
+      });
+    } finally {
+      setServiceGroupBusy(false);
+    }
+  };
+
   const moveNodeToGroup = async (args: { nodeId: string; groupId: string }) => {
     const { nodeId, groupId } = args;
     if (!graph) return;
@@ -1891,6 +2492,31 @@ const WorkloadView: React.FC = () => {
     }
   };
 
+  const runSubscriptionMapping = useCallback(async (
+    subscriptionId: string,
+    resourceGroups: string[],
+    tags: Record<string, string> = {},
+  ): Promise<string> => {
+    const started = await startSubscriptionMapping(subscriptionId, {
+      resource_groups: resourceGroups,
+      tags,
+    });
+    setMappingStatus(started);
+
+    let currentStatus = started.status;
+    const startTime = Date.now();
+    const timeoutMs = 30 * 60 * 1000;
+
+    while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const polled = await fetchSubscriptionMappingStatus(subscriptionId);
+      setMappingStatus(polled);
+      currentStatus = polled.status;
+    }
+
+    return currentStatus;
+  }, []);
+
   const handleStartSubscriptionMapping = useCallback(async (
     payload: {
       subscriptionId: string;
@@ -1905,28 +2531,17 @@ const WorkloadView: React.FC = () => {
       setMappingStatus(null);
       setMappingInProgress(true);
 
-      const started = await startSubscriptionMapping(payload.subscriptionId, {
-        resource_groups: payload.resourceGroups,
-        tags: payload.tags,
-      });
-      setMappingStatus(started);
+      const finalStatus = await runSubscriptionMapping(
+        payload.subscriptionId,
+        payload.resourceGroups,
+        payload.tags,
+      );
 
-      let currentStatus = started.status;
-      const startTime = Date.now();
-      const timeoutMs = 30 * 60 * 1000;
-
-      while (currentStatus === "running" && Date.now() - startTime < timeoutMs) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        const polled = await fetchSubscriptionMappingStatus(payload.subscriptionId);
-        setMappingStatus(polled);
-        currentStatus = polled.status;
-      }
-
-      if (currentStatus === "failed") {
+      if (finalStatus === "failed") {
         throw new Error("Subscription mapping failed");
       }
 
-      if (currentStatus === "completed") {
+      if (finalStatus === "completed") {
         await loadMappedSubscriptions(false);
         await loadAvailableSubscriptionsForMapping();
         setSelectedSubscriptions(prev => {
@@ -1940,7 +2555,7 @@ const WorkloadView: React.FC = () => {
     } finally {
       setMappingInProgress(false);
     }
-  }, [mappingInProgress, loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
+  }, [mappingInProgress, runSubscriptionMapping, loadAvailableSubscriptionsForMapping, loadMappedSubscriptions]);
 
   const handleUploadTerraformScripts = useCallback(async (
     payload: { files: File[]; subscriptionName: string }
@@ -2020,18 +2635,85 @@ const WorkloadView: React.FC = () => {
     if (!workloadId) {
       setActiveWorkloadId(null);
       setWorkloadName("");
+      setServiceGroupBinding(null);
       return;
     }
     try {
       const workload = await getWorkload(workloadId);
+      const hydratedBinding = await hydrateServiceGroupBinding(workload.view_state.service_group_filter ?? null);
+      const nextViewState = hydratedBinding === (workload.view_state.service_group_filter ?? null)
+        ? workload.view_state
+        : {
+            ...workload.view_state,
+            service_group_filter: hydratedBinding ?? undefined,
+          };
       setActiveWorkloadId(workload.workload_id);
       setWorkloadName(workload.name);
-      setActiveWorkloadState(workload.view_state);
-      applyWorkloadViewState(workload.view_state);
+      setActiveWorkloadState(nextViewState);
+      applyWorkloadViewState(nextViewState);
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to load workload");
     }
-  }, [applyWorkloadViewState]);
+  }, [applyWorkloadViewState, hydrateServiceGroupBinding]);
+
+  const currentWorkloadAzureResourceIds = useCallback((): string[] => {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const node of nodesForView) {
+      const id = node.id;
+      if (id && id.toLowerCase().startsWith("/subscriptions/") && !seen.has(id)) {
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }, [nodesForView]);
+
+  // A Service Group can only contain live Azure resources in the caller's tenant.
+  // Virtual resources (imported from Terraform, or otherwise not backed by a real
+  // Azure subscription in this tenant) cannot be attached, so their presence
+  // disables Service Group sync for the whole workload.
+  const serviceGroupIneligibleMembers = useMemo(() => {
+    const seen = new Set<string>();
+    const items: Array<{ id: string; name: string }> = [];
+    for (const node of nodesForView) {
+      const id = node.id;
+      if (!id || !id.toLowerCase().startsWith("/subscriptions/")) continue;
+      const meta = (node.metadata ?? {}) as Record<string, unknown>;
+      if (!meta.virtual) continue;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      items.push({ id, name: (meta.display_name as string) || node.name || id });
+    }
+    return items;
+  }, [nodesForView]);
+
+  const serviceGroupSyncBlocked = serviceGroupIneligibleMembers.length > 0;
+
+  const warnServiceGroupBlocked = useCallback(() => {
+    const count = serviceGroupIneligibleMembers.length;
+    setServiceGroupMessage({
+      tone: "warn",
+      text: `Service Group sync is disabled: this workload includes ${count} virtual resource${count === 1 ? "" : "s"} (imported from Terraform or not backed by a live Azure subscription in this tenant) that cannot be added to an Azure Service Group.`,
+    });
+  }, [serviceGroupIneligibleMembers]);
+
+  // Global gate: the backend identity cannot read Service Groups, so the whole
+  // integration (create/import/apply/export) is disabled regardless of the
+  // selected workload's contents.
+  const warnServiceGroupUnavailable = useCallback(() => {
+    setServiceGroupMessage({
+      tone: "warn",
+      text: serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity.",
+    });
+  }, [serviceGroupUnavailableReason]);
+
+  const haveSameWorkloadResourceIds = useCallback((left: string[], right: string[]): boolean => {
+    if (left.length !== right.length) return false;
+    const normalizedLeft = [...left].map(String).sort();
+    const normalizedRight = [...right].map(String).sort();
+    return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+  }, []);
 
   const handleWorkloadCreate = useCallback(async () => {
     const name = workloadName.trim();
@@ -2041,15 +2723,253 @@ const WorkloadView: React.FC = () => {
     }
     try {
       setWorkloadError(null);
-      const view_state = buildWorkloadViewState();
+      // A newly created workload is never bound to a Service Group. Strip any
+      // binding inherited from a previously open workload so it is neither
+      // persisted nor synced.
+      const view_state = { ...buildWorkloadViewState(), service_group_filter: undefined };
       const created = await createWorkload({ name, view_state });
       setActiveWorkloadId(created.workload_id);
       setActiveWorkloadState(created.view_state);
+      setServiceGroupBinding(null);
       await loadWorkloads();
+      // "Save as new workload" always offers to create a matching Service Group
+      // from the new workload's Azure resources.
+      const memberIds = currentWorkloadAzureResourceIds();
+      if (!serviceGroupAvailable) {
+        warnServiceGroupUnavailable();
+      } else if (serviceGroupSyncBlocked) {
+        warnServiceGroupBlocked();
+      } else if (memberIds.length > 0) {
+        setPendingServiceGroupCreate({ memberIds });
+      }
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to save workload");
     }
-  }, [workloadName, buildWorkloadViewState, loadWorkloads]);
+  }, [workloadName, buildWorkloadViewState, loadWorkloads, currentWorkloadAzureResourceIds, serviceGroupSyncBlocked, warnServiceGroupBlocked, serviceGroupAvailable, warnServiceGroupUnavailable]);
+
+  const importServiceGroupAsWorkload = useCallback(async (sg: ServiceGroupSummary) => {
+    setWorkloadError(null);
+    setMappingStatus(null);
+    setServiceGroupImport({
+      active: true,
+      phase: "reading",
+      message: `Reading members of '${sg.display_name || sg.name}'…`,
+      current: 0,
+      total: 0,
+    });
+
+    try {
+      const memberIds = await fetchServiceGroupMembers(sg.name);
+
+      const memberSubs = new Set<string>();
+      const memberRgs = new Set<string>();
+      const memberServices = new Set<string>();
+      const rgsBySubscription = new Map<string, Set<string>>();
+      for (const id of memberIds) {
+        const lower = id.toLowerCase();
+        const subMatch = lower.match(/\/subscriptions\/([^/]+)/);
+        const rgMatch = lower.match(/\/resourcegroups\/([^/]+)/);
+        if (subMatch) memberSubs.add(subMatch[1]);
+        if (rgMatch) memberRgs.add(rgMatch[1]);
+        if (subMatch && rgMatch) {
+          if (!rgsBySubscription.has(subMatch[1])) rgsBySubscription.set(subMatch[1], new Set());
+          rgsBySubscription.get(subMatch[1])!.add(rgMatch[1]);
+        }
+        const service = canonicalTypeForResourceId(id);
+        if (service && service !== "resource") memberServices.add(service);
+      }
+
+      const binding: ServiceGroupBinding = {
+        service_group_id: sg.id,
+        service_group_name: sg.name,
+        display_name: sg.display_name,
+        parent_service_group_id: sg.parent_service_group_id ?? undefined,
+        member_resource_ids: memberIds,
+      };
+
+      const view_state: WorkloadViewState = {
+        selected_subscriptions: Array.from(memberSubs),
+        view_level: "full",
+        ai_layer_enabled: true,
+        user_layer_enabled: true,
+        resource_group_filter: Array.from(memberRgs),
+        service_filter: Array.from(memberServices),
+        expanded_categories: [],
+        show_legend: false,
+        service_group_filter: binding,
+      };
+
+      setServiceGroupImport({
+        active: true,
+        phase: "creating",
+        message: "Creating workload…",
+        current: 0,
+        total: 0,
+      });
+      const created = await createWorkload({ name: sg.display_name || sg.name, view_state });
+      await loadWorkloads();
+
+      // Map any member subscriptions that have not been collected yet so the
+      // imported workload renders full edges, annotations, and resilience.
+      const mappedIds = new Set(subscriptions.map(s => s.id));
+      const toMap = Array.from(memberSubs).filter(id => !mappedIds.has(id));
+
+      if (toMap.length > 0) {
+        setMappingInProgress(true);
+        try {
+          let index = 0;
+          for (const subId of toMap) {
+            index += 1;
+            setServiceGroupImport({
+              active: true,
+              phase: "mapping",
+              message: `Mapping subscription ${index} of ${toMap.length}…`,
+              current: index,
+              total: toMap.length,
+            });
+            const resourceGroups = Array.from(rgsBySubscription.get(subId) ?? []);
+            const status = await runSubscriptionMapping(subId, resourceGroups);
+            if (status === "failed") {
+              throw new Error(`Mapping failed for subscription ${subId}.`);
+            }
+          }
+          await loadMappedSubscriptions(false);
+          await loadAvailableSubscriptionsForMapping();
+        } finally {
+          setMappingInProgress(false);
+        }
+      }
+
+      setServiceGroupImport({
+        active: false,
+        phase: "completed",
+        message:
+          toMap.length > 0
+            ? `Imported '${sg.display_name || sg.name}' and mapped ${toMap.length} subscription(s).`
+            : `Imported '${sg.display_name || sg.name}'.`,
+        current: toMap.length,
+        total: toMap.length,
+      });
+      await handleWorkloadSelect(created.workload_id);
+    } catch (err: any) {
+      setServiceGroupImport({
+        active: false,
+        phase: "error",
+        message: err?.message ?? "Failed to import Service Group.",
+        current: 0,
+        total: 0,
+      });
+      setWorkloadError(err?.message ?? "Failed to import Service Group.");
+      throw err;
+    }
+  }, [subscriptions, runSubscriptionMapping, loadWorkloads, loadMappedSubscriptions, loadAvailableSubscriptionsForMapping, handleWorkloadSelect]);
+
+  const syncWorkloadServiceGroup = useCallback(
+    async (opts: {
+      workloadId: string;
+      displayName: string;
+      memberIds: string[];
+      binding: ServiceGroupBinding | null;
+      parentServiceGroupId?: string | null;
+    }): Promise<void> => {
+      const { workloadId, displayName, memberIds, binding, parentServiceGroupId } = opts;
+      if (!serviceGroupAvailable) {
+        warnServiceGroupUnavailable();
+        return;
+      }
+      if (serviceGroupSyncBlocked) {
+        warnServiceGroupBlocked();
+        return;
+      }
+      setServiceGroupBusy(true);
+      setServiceGroupMessage(null);
+      try {
+        const result = await applyServiceGroupFromWorkload({
+          workload_id: workloadId,
+          display_name: displayName,
+          member_resource_ids: memberIds,
+          previous_member_resource_ids: binding?.member_resource_ids ?? [],
+          service_group_name: binding?.service_group_name,
+          parent_service_group_id: parentServiceGroupId ?? binding?.parent_service_group_id ?? null,
+          fallback_format: serviceGroupFormat,
+        });
+
+        // A Service Group id + at least one attached member proves the Service
+        // Group now exists in Azure. Binding to it (and persisting it in the
+        // workload's view_state) is what lets a later Save UPDATE the existing
+        // Service Group instead of re-offering to create a duplicate — this is
+        // essential for partial results, where some members failed transiently.
+        const bindAndPersist = async (nextMemberIds: string[]): Promise<ServiceGroupBinding> => {
+          const nextBinding: ServiceGroupBinding = {
+            service_group_id: result.service_group_id ?? binding?.service_group_id,
+            service_group_name: result.service_group_name ?? binding?.service_group_name,
+            display_name: result.display_name ?? displayName,
+            parent_service_group_id:
+              result.parent_service_group_id ?? binding?.parent_service_group_id ?? parentServiceGroupId ?? undefined,
+            member_resource_ids: nextMemberIds,
+          };
+          setServiceGroupBinding(nextBinding);
+          const updated = await updateWorkload(workloadId, {
+            view_state: { ...buildWorkloadViewState(), service_group_filter: nextBinding },
+          });
+          setActiveWorkloadState(updated.view_state);
+          return nextBinding;
+        };
+
+        if (result.status === "applied") {
+          const nextBinding = await bindAndPersist(memberIds);
+          const detached = result.detached_members?.length ?? 0;
+          const attached = result.applied_members.length;
+          setServiceGroupMessage({
+            tone: "success",
+            text: `Service Group “${nextBinding.display_name}” saved: ${attached} member${attached === 1 ? "" : "s"} attached${detached ? `, ${detached} removed` : ""}.`,
+          });
+        } else if (result.status === "permission_denied") {
+          if (result.artifact) downloadServiceGroupArtifact(result.artifact);
+          setServiceGroupMessage({
+            tone: "error",
+            text: `${result.message ?? "The backend identity lacks permission to write Service Groups."}${result.artifact ? ` Downloaded ${result.artifact.filename} so your team can apply it via CI/CD.` : ""}`,
+          });
+        } else if (result.status === "empty") {
+          setServiceGroupMessage({
+            tone: "info",
+            text: result.message ?? "This workload has no Azure resources to include.",
+          });
+        } else {
+          // Partial or genuine failure. If the Service Group was created and at
+          // least one member attached, bind to it and persist so the NEXT Save
+          // UPDATES the existing Service Group (attaching the stragglers) rather
+          // than offering to create a duplicate. Then surface the partial result.
+          const attached = result.applied_members?.length ?? 0;
+          const failedCount = result.failed_members?.length ?? 0;
+          const detachedMembers = new Set(result.detached_members ?? []);
+          const previousMembers = new Set(binding?.member_resource_ids ?? []);
+          const nextMemberIds = [
+            ...Array.from(previousMembers).filter(id => !detachedMembers.has(id)),
+            ...result.applied_members.filter(id => !previousMembers.has(id)),
+          ];
+          if (attached > 0 || detachedMembers.size > 0) {
+            await bindAndPersist(nextMemberIds);
+          }
+          setServiceGroupMessage({
+            tone: attached > 0 ? "info" : "error",
+            text:
+              attached > 0
+                ? `Service Group partially saved: ${attached} member${attached === 1 ? "" : "s"} attached, ${failedCount} still pending. ${result.message ?? ""} Save again to attach the remaining resource${failedCount === 1 ? "" : "s"}.`.trim()
+                : `${result.message ?? "Failed to save the Service Group."}${failedCount ? ` (${failedCount} resource${failedCount === 1 ? "" : "s"} affected)` : ""}`,
+          });
+        }
+      } catch (err) {
+        setServiceGroupMessage({
+          tone: "error",
+          text: err instanceof Error ? err.message : "Failed to save the Service Group.",
+        });
+      } finally {
+        setServiceGroupBusy(false);
+      }
+    },
+    [serviceGroupFormat, buildWorkloadViewState, serviceGroupSyncBlocked, warnServiceGroupBlocked, serviceGroupAvailable, warnServiceGroupUnavailable]
+  );
 
   const handleWorkloadSave = useCallback(async () => {
     if (!activeWorkloadId) return;
@@ -2059,10 +2979,84 @@ const WorkloadView: React.FC = () => {
       const updated = await updateWorkload(activeWorkloadId, { view_state });
       setActiveWorkloadState(updated.view_state);
       await loadWorkloads();
+
+      const memberIds = currentWorkloadAzureResourceIds();
+      if (!serviceGroupAvailable) {
+        // Workload metadata is still saved; only Service Group sync is disabled.
+        warnServiceGroupUnavailable();
+      } else if (serviceGroupSyncBlocked) {
+        // Workload metadata is still saved; only Service Group sync is disabled.
+        warnServiceGroupBlocked();
+      } else if (serviceGroupBinding) {
+        const previousMemberIds = serviceGroupBinding.member_resource_ids ?? [];
+        if (!haveSameWorkloadResourceIds(memberIds, previousMemberIds)) {
+          // Only sync the Service Group when the resource membership actually changed.
+          await syncWorkloadServiceGroup({
+            workloadId: activeWorkloadId,
+            displayName: serviceGroupBinding.display_name || workloadName,
+            memberIds,
+            binding: serviceGroupBinding,
+          });
+        }
+      } else if (memberIds.length > 0) {
+        // Not bound yet → ask whether to create a Service Group.
+        setPendingServiceGroupCreate({ memberIds });
+      }
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to update workload");
     }
-  }, [activeWorkloadId, buildWorkloadViewState, loadWorkloads]);
+  }, [
+    activeWorkloadId,
+    buildWorkloadViewState,
+    loadWorkloads,
+    currentWorkloadAzureResourceIds,
+    haveSameWorkloadResourceIds,
+    serviceGroupBinding,
+    syncWorkloadServiceGroup,
+    workloadName,
+    serviceGroupSyncBlocked,
+    warnServiceGroupBlocked,
+    serviceGroupAvailable,
+    warnServiceGroupUnavailable,
+  ]);
+
+  const confirmCreateServiceGroup = useCallback(async () => {
+    if (!activeWorkloadId || !pendingServiceGroupCreate) return;
+    const { memberIds } = pendingServiceGroupCreate;
+    const parentServiceGroupId = selectedParentServiceGroupId || null;
+    setPendingServiceGroupCreate(null);
+    await syncWorkloadServiceGroup({
+      workloadId: activeWorkloadId,
+      displayName: workloadName,
+      memberIds,
+      binding: null,
+      parentServiceGroupId,
+    });
+  }, [
+    activeWorkloadId,
+    pendingServiceGroupCreate,
+    selectedParentServiceGroupId,
+    syncWorkloadServiceGroup,
+    workloadName,
+  ]);
+
+  // Load selectable parents (existing Service Groups) when the create modal opens.
+  useEffect(() => {
+    if (!pendingServiceGroupCreate) return;
+    let cancelled = false;
+    setSelectedParentServiceGroupId("");
+    listAzureServiceGroups()
+      .then((groups) => {
+        if (!cancelled) setParentServiceGroupOptions(groups);
+      })
+      .catch(() => {
+        if (!cancelled) setParentServiceGroupOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingServiceGroupCreate]);
+
 
   const handleWorkloadRename = useCallback(async () => {
     if (!activeWorkloadId) return;
@@ -2075,25 +3069,88 @@ const WorkloadView: React.FC = () => {
       setWorkloadError(null);
       const updated = await updateWorkload(activeWorkloadId, { name });
       setWorkloadName(updated.name);
+
+       // Keep the linked Azure Service Group display name aligned with the
+       // workload name when this workload is bound to a Service Group.
+       if (serviceGroupBinding) {
+         await syncWorkloadServiceGroup({
+           workloadId: activeWorkloadId,
+           displayName: updated.name,
+           memberIds: currentWorkloadAzureResourceIds(),
+           binding: serviceGroupBinding,
+         });
+       }
+
       await loadWorkloads();
     } catch (err: any) {
       setWorkloadError(err.message ?? "Failed to rename workload");
     }
-  }, [activeWorkloadId, workloadName, loadWorkloads]);
+  }, [
+    activeWorkloadId,
+    workloadName,
+    serviceGroupBinding,
+    syncWorkloadServiceGroup,
+    currentWorkloadAzureResourceIds,
+    loadWorkloads,
+  ]);
+
+  const performWorkloadDelete = useCallback(
+    async (workloadId: string, serviceGroupName: string | null): Promise<void> => {
+      try {
+        setWorkloadError(null);
+        // Optionally delete the backing Azure Service Group first. If that fails,
+        // abort so the local workload (and its binding) is preserved and the user
+        // can retry or choose "workload only".
+        if (serviceGroupName) {
+          setServiceGroupDeleting(true);
+          setServiceGroupMessage(null);
+          try {
+            const result = await deleteServiceGroup(serviceGroupName);
+            if (result.status !== "deleted") {
+              setServiceGroupMessage({
+                tone: result.status === "empty" ? "info" : "error",
+                text: result.message ?? "Failed to delete the Service Group.",
+              });
+              return;
+            }
+            setServiceGroupMessage({
+              tone: "success",
+              text: result.message ?? "Service Group deleted.",
+            });
+          } finally {
+            setServiceGroupDeleting(false);
+          }
+        }
+
+        await deleteWorkload(workloadId);
+        setActiveWorkloadId(null);
+        setActiveWorkloadState(null);
+        setWorkloadName("");
+        setServiceGroupBinding(null);
+        await loadWorkloads();
+      } catch (err: any) {
+        setWorkloadError(err.message ?? "Failed to delete workload");
+      }
+    },
+    [loadWorkloads]
+  );
 
   const handleWorkloadDelete = useCallback(async () => {
     if (!activeWorkloadId) return;
-    try {
-      setWorkloadError(null);
-      await deleteWorkload(activeWorkloadId);
-      setActiveWorkloadId(null);
-      setActiveWorkloadState(null);
-      setWorkloadName("");
-      await loadWorkloads();
-    } catch (err: any) {
-      setWorkloadError(err.message ?? "Failed to delete workload");
+    // A workload bound to an Azure Service Group triggers a confirmation asking
+    // whether to also delete that Service Group; unbound workloads delete directly.
+    if (serviceGroupBinding?.service_group_name) {
+      setPendingWorkloadDelete({
+        workloadId: activeWorkloadId,
+        workloadName,
+        serviceGroupName: serviceGroupBinding.service_group_name,
+        serviceGroupDisplayName:
+          serviceGroupBinding.display_name || serviceGroupBinding.service_group_name,
+      });
+      return;
     }
-  }, [activeWorkloadId, loadWorkloads]);
+    await performWorkloadDelete(activeWorkloadId, null);
+  }, [activeWorkloadId, serviceGroupBinding, workloadName, performWorkloadDelete]);
 
   useEffect(() => {
     if (activeSubscriptionId && selectedSubscriptionIds.includes(activeSubscriptionId)) return;
@@ -2147,6 +3204,10 @@ const WorkloadView: React.FC = () => {
     );
   }
 
+  // Service Group apply/export controls are disabled while a mutation is in
+  // flight OR when the backend identity can't read Service Groups at all.
+  const serviceGroupControlsDisabled = serviceGroupBusy || !serviceGroupAvailable;
+
   const suggestGroupName = (selectedIds: string[]): string => {
     if (selectedIds.length === 0) return "";
 
@@ -2190,6 +3251,11 @@ const WorkloadView: React.FC = () => {
     return name(best);
   };
 
+  // A Service Group mutation (save/sync/create OR delete) is in flight; drives
+  // the status toast. The Save button uses serviceGroupBusy alone so a delete
+  // does not spin it.
+  const serviceGroupInFlight = serviceGroupBusy || serviceGroupDeleting;
+
   return (
     <div
       style={{
@@ -2200,6 +3266,86 @@ const WorkloadView: React.FC = () => {
         fontFamily: "Segoe UI, Tahoma, Geneva, Verdana, sans-serif",
       }}
     >
+      {/* Global Service Group status toast: always visible so the user has
+          feedback during the slow, serial Azure ARM sync and can read the
+          success/error outcome regardless of which panel is open. */}
+      {(serviceGroupInFlight || serviceGroupMessage) && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            bottom: 20,
+            right: 20,
+            zIndex: 1000,
+            maxWidth: 360,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "10px 12px",
+            borderRadius: 4,
+            fontSize: 13,
+            lineHeight: 1.4,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            border: "1px solid",
+            borderColor: serviceGroupInFlight
+              ? "#c8c6c4"
+              : serviceGroupMessage?.tone === "success"
+              ? "#a7d8a7"
+              : serviceGroupMessage?.tone === "error"
+              ? "#e6a3a6"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#e6c07b"
+              : "#c8c6c4",
+            background: serviceGroupInFlight
+              ? "#faf9f8"
+              : serviceGroupMessage?.tone === "success"
+              ? "#f1faf1"
+              : serviceGroupMessage?.tone === "error"
+              ? "#fdf3f4"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#fdf6e3"
+              : "#faf9f8",
+            color: serviceGroupInFlight
+              ? "#323130"
+              : serviceGroupMessage?.tone === "success"
+              ? "#107c10"
+              : serviceGroupMessage?.tone === "error"
+              ? "#a4262c"
+              : serviceGroupMessage?.tone === "warn"
+              ? "#8a6116"
+              : "#605e5c",
+          }}
+        >
+          {serviceGroupInFlight ? (
+            <>
+              <ArrowSync16Regular className="wl-spin" style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>Updating the Service Group in Azure… This can take a few seconds per resource.</span>
+            </>
+          ) : (
+            <>
+              <span style={{ flex: 1 }}>{serviceGroupMessage?.text}</span>
+              <button
+                onClick={() => setServiceGroupMessage(null)}
+                title="Dismiss"
+                style={{
+                  flexShrink: 0,
+                  border: "none",
+                  background: "transparent",
+                  cursor: "pointer",
+                  color: "inherit",
+                  padding: 2,
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <Dismiss12Regular />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Left sidebar */}
       <div
         style={{
@@ -2236,6 +3382,12 @@ const WorkloadView: React.FC = () => {
             onWorkloadSave={handleWorkloadSave}
             onWorkloadRename={handleWorkloadRename}
             onWorkloadDelete={handleWorkloadDelete}
+            onListServiceGroups={listAzureServiceGroups}
+            onImportServiceGroup={importServiceGroupAsWorkload}
+            serviceGroupBusy={serviceGroupBusy}
+            serviceGroupImportStatus={serviceGroupImport}
+            serviceGroupAvailable={serviceGroupAvailable}
+            serviceGroupUnavailableReason={serviceGroupUnavailableReason}
             workloadError={workloadError}
             workloadDirty={isWorkloadDirty}
             workloadNewDirty={isNewWorkloadDirty}
@@ -2385,6 +3537,97 @@ const WorkloadView: React.FC = () => {
                   )}
                 </div>
 
+                {hasGroupSelected && (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                      paddingTop: 8,
+                      borderTop: "1px dashed #e0e0e0",
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: "#605e5c", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                      Azure Service Group
+                    </div>
+
+                    {!serviceGroupAvailable && (
+                      <div style={{ fontSize: 12, color: "#8a6116", background: "#fdf6e3", border: "1px solid #e6c07b", borderRadius: 2, padding: "6px 8px" }}>
+                        {serviceGroupUnavailableReason ?? "Service Group integration is unavailable for the backend identity."}
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <label style={{ fontSize: 12, color: "#605e5c" }} htmlFor="sg-format">Format</label>
+                      <select
+                        id="sg-format"
+                        value={serviceGroupFormat}
+                        onChange={e => setServiceGroupFormat(e.target.value as ServiceGroupFormat)}
+                        disabled={serviceGroupControlsDisabled}
+                        style={{
+                          flex: 1,
+                          padding: "5px 8px",
+                          background: "#fff",
+                          color: "#323130",
+                          border: "1px solid #8a8886",
+                          borderRadius: 2,
+                          fontSize: 13,
+                          outline: "none",
+                        }}
+                      >
+                        <option value="terraform">Terraform (azapi)</option>
+                        <option value="arm">ARM template</option>
+                      </select>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        disabled={serviceGroupControlsDisabled}
+                        onClick={() => {
+                          const gid = groupToolbarSelection.selectedGroupId!;
+                          const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
+                          void applyServiceGroupForSelection({ groupId: gid, memberIds: members });
+                        }}
+                        title="Create the Service Group in Azure using the VM's managed identity"
+                        style={{
+                          flex: 1,
+                          padding: "6px 12px",
+                          background: serviceGroupControlsDisabled ? "#f3f2f1" : "#0078d4",
+                          color: serviceGroupControlsDisabled ? "#a19f9d" : "#fff",
+                          border: serviceGroupControlsDisabled ? "1px solid #c8c6c4" : "1px solid #0078d4",
+                          borderRadius: 2,
+                          cursor: serviceGroupControlsDisabled ? "not-allowed" : "pointer",
+                          fontSize: 13,
+                        }}
+                      >
+                        Apply to Azure
+                      </button>
+
+                      <button
+                        disabled={serviceGroupControlsDisabled}
+                        onClick={() => {
+                          const gid = groupToolbarSelection.selectedGroupId!;
+                          const members = groupToolbarSelection.selectedGroupMemberIds ?? [];
+                          void exportServiceGroupForSelection({ groupId: gid, memberIds: members });
+                        }}
+                        title="Download infrastructure-as-code to share with your team or CI/CD"
+                        style={{
+                          flex: 1,
+                          padding: "6px 12px",
+                          background: "transparent",
+                          color: serviceGroupControlsDisabled ? "#a19f9d" : "#0078d4",
+                          border: "1px solid #8a8886",
+                          borderRadius: 2,
+                          cursor: serviceGroupControlsDisabled ? "not-allowed" : "pointer",
+                          fontSize: 13,
+                        }}
+                      >
+                        Export IaC
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {hasMultiSelect && (
                   <button
                     onClick={async () => {
@@ -2528,6 +3771,42 @@ const WorkloadView: React.FC = () => {
           </button>
           <h2 style={{ margin: 0, fontSize: 16, color: "#323130", flex: "1 1 220px", minWidth: 180 }}>Azure Resiliency IQ</h2>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {pdfReport && (
+              <button
+                onClick={async () => {
+                  setIsExportingPdf(true);
+                  try {
+                    await handleExportPdf(pdfReport);
+                  } catch (exportError) {
+                    console.error("Failed to export resilience PDF:", exportError);
+                    alert("Failed to export the PDF report. Please try again.");
+                  } finally {
+                    setIsExportingPdf(false);
+                  }
+                }}
+                disabled={isExportingPdf}
+                title="Download evaluation report as PDF"
+                style={{
+                  width: 132,
+                  height: 34,
+                  padding: "6px 12px",
+                  background: "#0078d4",
+                  color: "#fff",
+                  border: "1px solid #0078d4",
+                  borderRadius: 4,
+                  cursor: isExportingPdf ? "wait" : "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  opacity: isExportingPdf ? 0.7 : 1,
+                }}
+              >
+                <DocumentPdf20Regular />
+                {isExportingPdf ? "Creating PDF..." : "Export PDF"}
+              </button>
+            )}
             <button
               onClick={() => {
                 fetchGraph();
@@ -2535,6 +3814,8 @@ const WorkloadView: React.FC = () => {
               }}
               disabled={selectedSubscriptionIds.length === 0}
               style={{
+                width: 132,
+                height: 34,
                 padding: "6px 12px",
                 background: selectedSubscriptionIds.length > 0 ? "#fff" : "#f3f2f1",
                 color: selectedSubscriptionIds.length > 0 ? "#0078d4" : "#a0a09f",
@@ -2542,6 +3823,11 @@ const WorkloadView: React.FC = () => {
                 borderRadius: 4,
                 cursor: selectedSubscriptionIds.length > 0 ? "pointer" : "not-allowed",
                 fontSize: 12,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
                 transition: "all 0.1s ease-in-out",
               }}
               title="Reload graph and zonal resilience data from server"
@@ -2558,6 +3844,7 @@ const WorkloadView: React.FC = () => {
                 }
               }}
             >
+              <ArrowSync16Regular />
               Reload
             </button>
             
@@ -2628,7 +3915,7 @@ const WorkloadView: React.FC = () => {
                   </div>
                 ) : (
                   <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
-                    <div style={{ flex: 1, position: "relative" }}>
+                    <div ref={graphCaptureRef} style={{ flex: 1, position: "relative" }}>
                       <ReactFlowProvider>
                         <GraphCanvas
                           ref={graphCanvasRef}
@@ -2637,6 +3924,7 @@ const WorkloadView: React.FC = () => {
                           groups={graph?.groups ?? []}
                           graphViewState={pendingGraphView}
                           onGraphViewApplied={() => setPendingGraphView(null)}
+                          onGraphViewChanged={() => setGraphViewRevision(prev => prev + 1)}
                           selectedEdgeId={selectedEdge?.id ?? null}
                           userLayerEnabled={userLayerEnabled}
                           aiLayerEnabled={aiLayerEnabled}
@@ -2655,6 +3943,11 @@ const WorkloadView: React.FC = () => {
                             const prevSelection = lastGroupToolbarSelectionRef.current;
                             lastGroupToolbarSelectionRef.current = state;
                             setGroupToolbarSelection(state);
+
+                            // Clear any stale Service Group status when the selection changes.
+                            if (state.selectedGroupId !== prevSelection.selectedGroupId) {
+                              setServiceGroupMessage(null);
+                            }
 
                             // Initialize toolbar name when mode changes or selecting a different group.
                             if (state.selectedGroupId) {
@@ -2825,6 +4118,222 @@ const WorkloadView: React.FC = () => {
         />
       )}
       <LegendPanel open={showLegend} onClose={() => setShowLegend(false)} />
+
+      {pendingServiceGroupCreate && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              width: 420,
+              maxWidth: "90vw",
+              background: "#fff",
+              borderRadius: 6,
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+              padding: 20,
+              color: "#323130",
+              fontFamily: "Segoe UI, Tahoma, Geneva, Verdana, sans-serif",
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+              Create a Service Group?
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.5, color: "#605e5c", marginBottom: 16 }}>
+              This workload isn’t linked to an Azure Service Group yet. Create one from its{" "}
+              {pendingServiceGroupCreate.memberIds.length} Azure resource
+              {pendingServiceGroupCreate.memberIds.length === 1 ? "" : "s"}? Future saves will keep
+              it in sync.
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label
+                htmlFor="sg-parent-select"
+                style={{ display: "block", fontSize: 12, fontWeight: 600, marginBottom: 4 }}
+              >
+                Parent
+              </label>
+              <select
+                id="sg-parent-select"
+                value={selectedParentServiceGroupId}
+                onChange={(e) => setSelectedParentServiceGroupId(e.target.value)}
+                disabled={serviceGroupBusy}
+                style={{
+                  width: "100%",
+                  padding: "6px 8px",
+                  fontSize: 13,
+                  border: "1px solid #8a8886",
+                  borderRadius: 2,
+                  background: "#fff",
+                  color: "#323130",
+                }}
+              >
+                <option value="">Tenant root (top-level)</option>
+                {parentServiceGroupOptions.map((sg) => (
+                  <option key={sg.id} value={sg.id}>
+                    {sg.display_name}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: "#605e5c", marginTop: 4 }}>
+                Choose where the new Service Group sits in the hierarchy.
+              </div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setPendingServiceGroupCreate(null)}
+                disabled={serviceGroupBusy}
+                style={{
+                  padding: "6px 14px",
+                  background: "#fff",
+                  color: "#323130",
+                  border: "1px solid #8a8886",
+                  borderRadius: 2,
+                  fontSize: 13,
+                  cursor: serviceGroupBusy ? "default" : "pointer",
+                }}
+              >
+                Not now
+              </button>
+              <button
+                type="button"
+                onClick={confirmCreateServiceGroup}
+                disabled={serviceGroupBusy}
+                style={{
+                  padding: "6px 14px",
+                  background: "#0078d4",
+                  color: "#fff",
+                  border: "1px solid #0078d4",
+                  borderRadius: 2,
+                  fontSize: 13,
+                  cursor: serviceGroupBusy ? "default" : "pointer",
+                }}
+              >
+                {serviceGroupBusy ? "Creating…" : "Create Service Group"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingWorkloadDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "90vw",
+              background: "#fff",
+              borderRadius: 2,
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.25)",
+              padding: 24,
+              color: "#323130",
+              fontFamily: "Segoe UI, Tahoma, Geneva, Verdana, sans-serif",
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+              Delete workload
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.5, color: "#605e5c", marginBottom: 16 }}>
+              “{pendingWorkloadDelete.workloadName}” is linked to the Azure Service Group{" "}
+              “{pendingWorkloadDelete.serviceGroupDisplayName}”. Do you also want to delete that
+              Service Group from Azure? This removes the Service Group and its member links, but
+              never deletes the underlying Azure resources.
+            </div>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setPendingWorkloadDelete(null)}
+                disabled={serviceGroupDeleting}
+                style={{
+                  minHeight: 32,
+                  padding: "5px 16px",
+                  background: "#fff",
+                  color: "#323130",
+                  border: "1px solid #8a8886",
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: serviceGroupDeleting ? "default" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = pendingWorkloadDelete;
+                  setPendingWorkloadDelete(null);
+                  void performWorkloadDelete(target.workloadId, null);
+                }}
+                disabled={serviceGroupDeleting}
+                style={{
+                  minHeight: 32,
+                  padding: "5px 16px",
+                  background: "#fff",
+                  color: "#323130",
+                  border: "1px solid #8a8886",
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: serviceGroupDeleting ? "default" : "pointer",
+                }}
+              >
+                Workload only
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = pendingWorkloadDelete;
+                  setPendingWorkloadDelete(null);
+                  void performWorkloadDelete(target.workloadId, target.serviceGroupName);
+                }}
+                disabled={serviceGroupDeleting}
+                style={{
+                  minHeight: 32,
+                  padding: "5px 16px",
+                  background: "#a4262c",
+                  color: "#fff",
+                  border: "1px solid #a4262c",
+                  borderRadius: 0,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: serviceGroupDeleting ? "default" : "pointer",
+                }}
+              >
+                Delete both
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

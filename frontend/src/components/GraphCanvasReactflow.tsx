@@ -95,6 +95,7 @@ interface Props {
   onNodeHide?: (nodeId: string) => void;
   onNodeDragStart?: () => void;
 
+  onGraphViewChanged?: () => void;
   onGroupCreate?: (args: { groupId: string; label: string; memberIds: string[] }) => Promise<void> | void;
   groupCreateRequest?: GroupCreateRequest | null;
   onMoveNodeToGroup?: (args: { nodeId: string; groupId: string }) => Promise<void> | void;
@@ -113,7 +114,7 @@ const edgeTypes: EdgeTypes = { azure: AzureEdge };
 const nodeTypesWithGroups: NodeTypes = { ...nodeTypes, azureGroup: AzureGroupNode };
 
 export interface GraphCanvasHandle {
-  fitView: () => void;
+  fitView: () => Promise<void>;
   resetLayout: () => void;
   getViewState: () => {
     viewport: { x: number; y: number; zoom: number };
@@ -148,6 +149,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
     onNodeRemoveFromGroup,
     onSelectionStateChange,
     selectedEdgeId = null,
+    onGraphViewChanged,
   } = props;
   
   const { fitView, getViewport, setViewport, getNodes, setCenter } = useReactFlow();
@@ -829,8 +831,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
 
   // Expose fitView to parent via ref
   useImperativeHandle(ref, () => ({
-    fitView: () => {
-      setTimeout(() => fitView(), 500);
+    fitView: async () => {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await fitView({ padding: 0.1, duration: 0, includeHiddenNodes: true });
     },
     resetLayout: () => {
       // Simply fit all nodes in view - Dagre automatically uses fresh layout for new node sets
@@ -1016,6 +1019,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>((props, ref) => {
             }
             return next;
           });
+          onGraphViewChanged?.();
         }
 
         // Update groups if any moved nodes are members

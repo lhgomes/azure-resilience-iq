@@ -277,6 +277,7 @@ class ChatService:
                 normalized_graph,
                 llm_metrics,
                 query=query,
+                query_type=query_type,
                 flow=flow,
                 include_rag_trace=include_rag_trace,
                 target_agent_id=target_agent_id,
@@ -581,7 +582,9 @@ class ChatService:
         """Detect the type of query to route appropriately."""
         query_lower = query.lower()
 
-        if any(word in query_lower for word in ['failing', 'recommendation', 'check', 'issue', 'wrong']):
+        if self._is_capability_query(query):
+            return 'capabilities'
+        elif any(word in query_lower for word in ['failing', 'recommendation', 'check', 'issue', 'wrong']):
             return 'findings'
         elif any(word in query_lower for word in ['fix', 'remediat', 'resolv', 'how', 'steps']):
             return 'remediation'
@@ -591,6 +594,21 @@ class ChatService:
             return 'connections'
         else:
             return 'general'
+
+    @staticmethod
+    def _is_capability_query(query: str) -> bool:
+        """Return True for questions about the assistant's supported capabilities."""
+        normalized = re.sub(r"[^a-z0-9\s]", "", (query or "").strip().lower())
+        capability_queries = {
+            "what can you help with",
+            "what can you do",
+            "how can you help",
+            "how can you help me",
+            "what do you do",
+            "what are your capabilities",
+            "show me your capabilities",
+        }
+        return normalized in capability_queries
 
     def _classify_query_scope(
         self,
@@ -903,6 +921,7 @@ USER QUERY: {query}
             'remediation': "focus on concrete remediation steps",
             'terraform': "focus on Terraform output only if explicitly requested",
             'connections': "focus on topology/dependency relationships",
+            'capabilities': "describe supported capabilities directly; do not ask clarifying questions or return workload findings",
             'general': "focus on direct answer to user intent",
         }.get(query_type, "focus on direct answer to user intent")
 
@@ -932,7 +951,15 @@ USER QUERY: {query}
         include_full_context: bool,
     ) -> str:
         """Build prompt with optional full graph context for first-turn grounding only."""
-        if include_full_context:
+        if query_type == 'capabilities':
+            prompt = (
+                "CAPABILITY DISCOVERY MODE:\n"
+                "- Answer the user's question by briefly describing the supported workload graph annotation, "
+                "resilience assessment, recommendation review, remediation guidance, and Terraform capabilities.\n"
+                "- Do not analyze the current workload or return recommendations, resources, sources, or clarifying questions.\n"
+                "- Set all output arrays to empty and remediation_guide and terraform_code to null.\n"
+            )
+        elif include_full_context:
             nodes_summary = self._summarize_nodes(graph.get('nodes', []))
             edges_summary = self._summarize_edges(graph.get('edges', []), graph.get('nodes', []))
             resilience_groups_summary = self._summarize_resilience_groups(graph)
@@ -2167,6 +2194,7 @@ Do not invent resources, module names, or unsupported fields.
         llm_metrics: Optional[Dict[str, Any]] = None,
         *,
         query: str,
+        query_type: str,
         flow: str,
         include_rag_trace: bool,
         target_agent_id: str,
@@ -2286,7 +2314,9 @@ Do not invent resources, module names, or unsupported fields.
                 LOGGER.warning(f"LLM suggested criticality insight for non-existent node: {node_id}")
 
         recommendations_raw = llm_output.get('recommendations', [])
-        if flow == 'terraform':
+        if query_type == 'capabilities':
+            recommendations = []
+        elif flow == 'terraform':
             recommendations = recommendations_raw if isinstance(recommendations_raw, list) else []
         else:
             recommendations = self._normalize_recommendations(recommendations_raw, graph)
@@ -2294,6 +2324,8 @@ Do not invent resources, module names, or unsupported fields.
         clarifying_questions = self._normalize_clarifying_questions(
             llm_output.get('clarifying_questions', [])
         )
+        if query_type == 'capabilities':
+            clarifying_questions = []
         force_proceed = self._is_force_proceed_query(query)
         block_terraform_until_clarified = flow == 'terraform' and bool(clarifying_questions) and not force_proceed
 

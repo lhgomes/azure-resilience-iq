@@ -821,6 +821,30 @@ def main():
             LOGGER.error(f"Site Recovery heuristic failed: {e}", exc_info=True)
             # Don't fail the whole process if heuristic fails
 
+        # Check AKS pod zone distribution via Container Insights
+        try:
+            from app.resilience.aks_pod_zone_checker import check_aks_pod_zone_distribution, RECOMMENDATION_ID as AKS_POD_REC_ID
+            aks_clusters = [
+                r for r in resources
+                if r.get("type", "").lower() == "microsoft.containerservice/managedclusters"
+            ]
+            aks_pod_checks_added = 0
+            for cluster in aks_clusters:
+                cluster_id = cluster.get("id")
+                if not cluster_id or cluster_id not in evaluations:
+                    continue
+                pod_check = check_aks_pod_zone_distribution(cluster, args.subscription_id)
+                if pod_check is None:
+                    continue
+                existing_ids = {c.get("recommendation_id") for c in evaluations[cluster_id]["checks"]}
+                if AKS_POD_REC_ID not in existing_ids:
+                    evaluations[cluster_id]["checks"].append(pod_check)
+                    aks_pod_checks_added += 1
+            if aks_pod_checks_added:
+                LOGGER.info("Added AKS pod zone distribution checks for %d cluster(s)", aks_pod_checks_added)
+        except Exception as e:
+            LOGGER.warning("AKS pod zone check failed: %s", e)
+
         # NOW SAVE evaluations after zone recommendations have been injected
         LOGGER.debug("Saving evaluation results with zone recommendations...")
         save_resilience_evaluations(args.subscription_id, evaluations)

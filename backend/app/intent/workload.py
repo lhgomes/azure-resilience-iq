@@ -13,6 +13,21 @@ class GraphViewState(BaseModel):
     node_positions: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
 
+class ServiceGroupFilter(BaseModel):
+    """Authoritative membership of an imported Azure Service Group.
+
+    Unlike the coarse subscription/resource-group/service filters, this pins the
+    exact resource IDs that belong to the Service Group so the workload stays
+    faithful to the source even when sibling resources share a resource group.
+    """
+
+    service_group_id: Optional[str] = None
+    service_group_name: Optional[str] = None
+    display_name: Optional[str] = None
+    parent_service_group_id: Optional[str] = None
+    member_resource_ids: List[str] = Field(default_factory=list)
+
+
 class WorkloadViewState(BaseModel):
     selected_subscriptions: List[str] = Field(default_factory=list)
     view_level: str = "overview"
@@ -23,6 +38,7 @@ class WorkloadViewState(BaseModel):
     expanded_categories: List[str] = Field(default_factory=list)
     show_legend: bool = False
     graph_view: Optional[GraphViewState] = None
+    service_group_filter: Optional[ServiceGroupFilter] = None
 
 
 class Workload(BaseModel):

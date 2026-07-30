@@ -9,6 +9,8 @@ import random
 import re
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from azure.ai.projects import AIProjectClient
@@ -406,36 +408,51 @@ class FoundryAgentGateway(LLMGateway):
         return " 429" in text or "(429)" in text
 
     @staticmethod
-    def _extract_retry_after_seconds(error: Exception) -> int:
+    def _extract_retry_after_seconds(error: Exception) -> float:
         response = getattr(error, "response", None)
         headers = getattr(response, "headers", None)
         if headers:
-            for key in ("retry-after", "Retry-After", "x-ms-retry-after-ms"):
-                value = headers.get(key) if hasattr(headers, "get") else None
+            normalized_headers = {
+                str(key).lower(): value
+                for key, value in headers.items()
+            } if hasattr(headers, "items") else {}
+            for key in ("retry-after", "retry-after-ms", "x-ms-retry-after-ms"):
+                value = normalized_headers.get(key)
                 if value is None:
                     continue
+
+                raw_value = str(value).strip()
                 try:
-                    numeric = float(str(value).strip())
-                    if key.lower().endswith("-ms"):
+                    numeric = float(raw_value)
+                    if key.endswith("-ms"):
                         numeric = numeric / 1000.0
-                    return max(1, int(round(numeric)))
+                    return max(0.001, numeric)
                 except (TypeError, ValueError):
+                    if key != "retry-after":
+                        continue
+
+                try:
+                    retry_at = parsedate_to_datetime(raw_value)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
                     continue
 
         text = str(error)
         patterns = [
-            r"retry\s+after\s+(\d+)\s+seconds",
-            r"retry-after\D*(\d+)",
+            r"retry\s+after\s+(\d+(?:\.\d+)?)\s+seconds",
+            r"retry-after\D*(\d+(?:\.\d+)?)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, flags=re.IGNORECASE)
             if not match:
                 continue
             try:
-                return max(1, int(match.group(1)))
+                return max(0.001, float(match.group(1)))
             except ValueError:
                 continue
-        return 0
+        return 0.0
 
     def _create_response_with_retries(self, create_args: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
         last_error: Optional[Exception] = None
@@ -461,8 +478,13 @@ class FoundryAgentGateway(LLMGateway):
 
                 retry_after_seconds = self._extract_retry_after_seconds(error)
                 exponential_seconds = self._rate_limit_base_seconds * (2 ** (attempt - 1))
-                wait_seconds = retry_after_seconds if retry_after_seconds > 0 else exponential_seconds
-                wait_seconds = min(max(1, wait_seconds), self._rate_limit_max_seconds)
+                if retry_after_seconds > 0:
+                    wait_seconds = retry_after_seconds
+                else:
+                    wait_seconds = min(
+                        max(1, exponential_seconds),
+                        self._rate_limit_max_seconds,
+                    )
                 jitter_seconds = random.uniform(0.0, 0.5)
 
                 LOGGER.warning(
