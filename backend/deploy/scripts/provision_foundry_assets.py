@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import Dict, Any
+from urllib.parse import urlsplit
 
 from azure.ai.projects import AIProjectClient
 from azure.ai.projects.models import (
@@ -38,6 +39,31 @@ def _value(obj: Any, key: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(key)
     return getattr(obj, key, None)
+
+
+def _extract_hostname(value: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        return ""
+
+    parsed = urlsplit(candidate if "://" in candidate else f"https://{candidate}")
+    return (parsed.hostname or "").lower()
+
+
+def _is_azure_search_endpoint(value: str) -> bool:
+    host = _extract_hostname(value)
+    return bool(host) and (host == "search.windows.net" or host.endswith(".search.windows.net"))
+
+
+def _is_microsoft_learn_mcp_endpoint(value: str) -> bool:
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+
+    parsed = urlsplit(candidate if "://" in candidate else f"https://{candidate}")
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    return host == "learn.microsoft.com" and path == "/api/mcp"
 
 
 def _is_agents_read_permission_error(exc: HttpResponseError) -> bool:
@@ -97,8 +123,8 @@ def _resolve_default_search_connection_id(project_client: AIProjectClient) -> st
             if (
                 "cognitivesearch" in connection_type
                 or "azure_ai_search" in connection_type
-                or "search.windows.net" in target
-                or "search.windows.net" in endpoint
+                or _is_azure_search_endpoint(target)
+                or _is_azure_search_endpoint(endpoint)
             ):
                 print(f"No default Azure AI Search connection set; using available connection: {connection_id}")
                 return connection_id
@@ -216,7 +242,7 @@ def _resolve_microsoft_learn_connection_id(project_client: AIProjectClient) -> s
             if "microsoftlearn" in connection_name:
                 return connection_id or None
 
-            if "learn.microsoft.com/api/mcp" in target or "learn.microsoft.com/api/mcp" in endpoint:
+            if _is_microsoft_learn_mcp_endpoint(target) or _is_microsoft_learn_mcp_endpoint(endpoint):
                 return connection_id or None
     except Exception:
         pass

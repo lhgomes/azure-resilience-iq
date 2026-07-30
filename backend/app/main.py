@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import json
+import uuid
 from datetime import datetime
 from pathlib import Path
 from app.config import get_subscription_dir
@@ -630,6 +631,14 @@ _AZURE_AUTH_ERROR = {
 }
 
 
+def _normalize_subscription_id(value: str) -> str:
+    """Validate and normalize a subscription id to canonical UUID form."""
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid subscription id format")
+
+
 @app.get("/api/servicegroups")
 def list_service_groups_endpoint():
     """List Service Groups discoverable in the caller's tenant."""
@@ -748,6 +757,7 @@ def refresh_subscription(subscription_id: str):
     and writes status updates to data/{subscription_id}/llm_refresh_status.json for polling.
     """
     try:
+        subscription_id = _normalize_subscription_id(subscription_id)
         # Prepare status file
         status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
 
@@ -819,6 +829,7 @@ def refresh_subscription(subscription_id: str):
 def refresh_status(subscription_id: str):
     """Return the current LLM refresh status for polling."""
     try:
+        subscription_id = _normalize_subscription_id(subscription_id)
         status_file = get_subscription_dir(subscription_id) / "llm_refresh_status.json"
         if not path_exists(status_file):
             return JSONResponse(status_code=200, content={"status": "idle"})

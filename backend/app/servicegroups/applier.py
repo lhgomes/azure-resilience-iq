@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import httpx
 from azure.identity import DefaultAzureCredential
@@ -140,13 +141,33 @@ def _put(client: httpx.Client, token: str, path: str, api_version: str, body: di
     )
 
 
-def _wait_for_async_operation(client: httpx.Client, token: str, resp: httpx.Response) -> Optional[str]:
-    operation_url = resp.headers.get("Azure-AsyncOperation") or resp.headers.get("azure-asyncoperation")
-    if not operation_url:
+def _resolve_arm_operation_url(value: str) -> Optional[str]:
+    if not value:
         return None
 
-    if not operation_url.startswith("http"):
-        operation_url = f"{ARM_BASE}{operation_url}"
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith("/"):
+        return f"{ARM_BASE}{candidate}"
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme.lower() != "https":
+        return None
+
+    host = (parsed.hostname or "").lower()
+    if host != "management.azure.com":
+        return None
+
+    return candidate
+
+
+def _wait_for_async_operation(client: httpx.Client, token: str, resp: httpx.Response) -> Optional[str]:
+    operation_url = resp.headers.get("Azure-AsyncOperation") or resp.headers.get("azure-asyncoperation")
+    operation_url = _resolve_arm_operation_url(operation_url or "")
+    if not operation_url:
+        return None
 
     last_response: Optional[httpx.Response] = None
     for _ in range(_ASYNC_OPERATION_MAX_ATTEMPTS):

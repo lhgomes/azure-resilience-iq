@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
+from html.parser import HTMLParser
 import os
 import re
 import time
@@ -68,6 +70,37 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r"!?\[([^\]]*)\]\(([^\)]*)\)", r"\1", text)
     text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
     return _normalize_whitespace(text)
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Extract visible text from HTML while skipping script/style blocks."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"script", "style"}:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style"} and self._skip_depth > 0:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and data:
+            self._chunks.append(data)
+
+    def text(self) -> str:
+        return " ".join(self._chunks)
+
+
+def _strip_html(text: str) -> str:
+    parser = _HTMLTextExtractor()
+    parser.feed(text)
+    parser.close()
+    return html.unescape(parser.text())
 
 
 def _chunk_text(text: str, chunk_chars: int, overlap_chars: int) -> List[str]:
@@ -232,9 +265,7 @@ def _collect_url_documents(url_file: Optional[str], timeout_seconds: int) -> Lis
                     continue
 
                 text = response.text
-                text = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.IGNORECASE)
-                text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
-                text = re.sub(r"<[^>]+>", " ", text)
+                text = _strip_html(text)
                 text = _normalize_whitespace(text)
                 if not text:
                     continue

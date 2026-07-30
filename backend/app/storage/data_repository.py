@@ -61,15 +61,26 @@ class DataRepository:
         except Exception:
             return False
 
+    def _normalize_data_path(self, path: Path) -> Path:
+        candidate = path if path.is_absolute() else (self.data_root / path)
+        resolved = candidate.resolve()
+        resolved.relative_to(self.data_root.resolve())
+        return resolved
+
     def _blob_name(self, path: Path) -> str:
-        rel = path.resolve().relative_to(self.data_root.resolve()).as_posix()
+        rel = self._normalize_data_path(path).relative_to(self.data_root.resolve()).as_posix()
         rel = "" if rel == "." else rel
         if self.prefix:
             return f"{self.prefix}/{rel}" if rel else self.prefix
         return rel
 
     def _download_if_missing(self, path: Path) -> None:
-        if path.exists() or not self._is_data_path(path):
+        try:
+            path = self._normalize_data_path(path)
+        except Exception:
+            return
+
+        if path.exists():
             return
         client = self._client()
         if client is None:
@@ -89,7 +100,9 @@ class DataRepository:
         path.write_bytes(payload)
 
     def _upload_if_blob(self, path: Path) -> None:
-        if not self._is_data_path(path):
+        try:
+            path = self._normalize_data_path(path)
+        except Exception:
             return
         client = self._client()
         if client is None:
@@ -106,11 +119,13 @@ class DataRepository:
             LOGGER.warning("Blob upload failed for %s: %s", blob_name, exc)
 
     def exists(self, path: Path) -> bool:
+        try:
+            path = self._normalize_data_path(path)
+        except Exception:
+            return False
+
         if path.exists():
             return True
-
-        if not self._is_data_path(path):
-            return False
 
         client = self._client()
         if client is None:
@@ -127,20 +142,24 @@ class DataRepository:
             return False
 
     def read_text(self, path: Path, *, encoding: str = "utf-8") -> str:
+        path = self._normalize_data_path(path)
         self._download_if_missing(path)
         return path.read_text(encoding=encoding)
 
     def write_text(self, path: Path, text: str, *, encoding: str = "utf-8") -> None:
+        path = self._normalize_data_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding=encoding)
         self._upload_if_blob(path)
 
     def delete_file(self, path: Path) -> None:
+        try:
+            path = self._normalize_data_path(path)
+        except Exception:
+            return
+
         if path.exists():
             path.unlink(missing_ok=True)
-
-        if not self._is_data_path(path):
-            return
 
         client = self._client()
         if client is None:
@@ -155,11 +174,9 @@ class DataRepository:
             LOGGER.debug("Blob delete failed for %s: %s", blob_name, exc)
 
     def list_dirs(self, base_dir: Path) -> list[Path]:
+        base_dir = self._normalize_data_path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
         dirs = {p for p in base_dir.iterdir() if p.is_dir()}
-
-        if not self._is_data_path(base_dir):
-            return sorted(dirs)
 
         client = self._client()
         if client is None:
@@ -189,11 +206,9 @@ class DataRepository:
         return sorted(dirs)
 
     def list_files(self, base_dir: Path, pattern: str = "*") -> list[Path]:
+        base_dir = self._normalize_data_path(base_dir)
         base_dir.mkdir(parents=True, exist_ok=True)
         files = {p for p in base_dir.glob(pattern) if p.is_file()}
-
-        if not self._is_data_path(base_dir):
-            return sorted(files)
 
         client = self._client()
         if client is None:

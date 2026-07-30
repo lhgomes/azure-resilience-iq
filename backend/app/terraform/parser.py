@@ -94,17 +94,29 @@ class TerraformParser:
         self.resolved_locals: Dict[str, Any] = {}  # Resolved local values
         self.resolved_variables: Dict[str, Any] = {}  # Resolved variable values
     
-    def parse_file(self, file_path: Path) -> List[TerraformResource]:
+    def parse_file(self, file_path: Path, trusted_root: Optional[Path] = None) -> List[TerraformResource]:
         """
         Parse a single Terraform file and extract resources.
         
         Args:
             file_path: Path to .tf file
+            trusted_root: Optional base directory the file must reside under
             
         Returns:
             List of extracted TerraformResource objects
         """
-        content = file_path.read_text(encoding="utf-8")
+        resolved_path = file_path.resolve()
+        if trusted_root is not None:
+            root = trusted_root.resolve()
+            try:
+                resolved_path.relative_to(root)
+            except Exception:
+                raise ValueError(f"Terraform file is outside trusted root: {file_path}")
+
+        if not resolved_path.is_file():
+            raise ValueError(f"Terraform file not found: {file_path}")
+
+        content = resolved_path.read_text(encoding="utf-8")
         return self.parse_hcl(content)
     
     def parse_directory(self, dir_path: Path, user_variables: Optional[Dict[str, Any]] = None) -> List[TerraformResource]:
@@ -121,7 +133,7 @@ class TerraformParser:
         all_resources = []
         
         for tf_file in sorted(dir_path.glob("*.tf")):
-            resources = self.parse_file(tf_file)
+            resources = self.parse_file(tf_file, trusted_root=dir_path)
             all_resources.extend(resources)
         
         self.resources = all_resources
@@ -758,44 +770,72 @@ class TerraformParser:
         # OUTER FUNCTIONS (replace)
         # Apply replace() function evaluation AFTER inner functions
         expr = find_and_replace_functions(expr, 'replace', eval_replace_call)
-        
-        # Handle substr(...) - similar pattern
-        def handle_substr(match):
-            full = match.group(0)
-            if full.startswith('${'):
-                inner = full[2:-1]
-            else:
-                inner = full
-            
-            # Parse substr(string, offset, length)
-            # Extract the three arguments
-            in_quotes = False
+
+        def eval_substr_call(func_call: str) -> str:
+            """Evaluate substr(string, offset, length) expressions safely."""
+            call = func_call.strip()
+            if call.startswith('${') and call.endswith('}'):
+                call = call[2:-1]
+
+            if not call.startswith('substr(') or not call.endswith(')'):
+                return func_call
+
+            args_expr = call[len('substr('):-1]
+
             parts = []
-            current = ""
-            i = 7  # len("substr(")
-            while i < len(inner) - 1:
-                char = inner[i]
+            current = []
+            in_quotes = False
+            escape = False
+            paren_depth = 0
+
+            for char in args_expr:
+                if escape:
+                    current.append(char)
+                    escape = False
+                    continue
+
+                if char == '\\':
+                    current.append(char)
+                    escape = True
+                    continue
+
                 if char == '"':
                     in_quotes = not in_quotes
-                    current += char
-                elif char == ',' and not in_quotes:
-                    parts.append(current.strip())
-                    current = ""
-                else:
-                    current += char
-                i += 1
+                    current.append(char)
+                    continue
+
+                if not in_quotes:
+                    if char == '(':
+                        paren_depth += 1
+                    elif char == ')' and paren_depth > 0:
+                        paren_depth -= 1
+                    elif char == ',' and paren_depth == 0:
+                        parts.append(''.join(current).strip())
+                        current = []
+                        continue
+
+                current.append(char)
+
             if current:
-                parts.append(current.strip())
-            
-            if len(parts) == 3:
-                string_val = parts[0].strip('"')
-                offset = int(parts[1].strip())
-                length = int(parts[2].strip())
-                return string_val[offset:offset+length]
-            
-            return full
+                parts.append(''.join(current).strip())
+
+            if len(parts) != 3:
+                return func_call
+
+            string_val = parts[0]
+            if string_val.startswith('"') and string_val.endswith('"') and len(string_val) >= 2:
+                string_val = string_val[1:-1]
+
+            try:
+                offset = int(parts[1])
+                length = int(parts[2])
+            except (ValueError, TypeError):
+                return func_call
+
+            return string_val[offset:offset + length]
         
-        expr = re.sub(r'(\$\{)?substr\([^)]*(?:\$\{[^}]*\}[^)]*)*\)(\})?', handle_substr, expr)
+        # Handle substr(...) - similar pattern
+        expr = find_and_replace_functions(expr, 'substr', eval_substr_call)
         
         # Remove outer ${} wrapper if expression is fully resolved
         if expr.startswith('${') and expr.endswith('}'):
