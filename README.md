@@ -81,6 +81,18 @@ What it does:
 - Reinstalls backend dependencies, rebuilds the frontend, and restarts the Windows service.
 - Skips Terraform apply, Foundry agent reconciliation, RAG refresh, and index hydration.
 
+### Safe teardown
+
+Audit the resource group before destroying the stack, then run the approved teardown:
+
+```bash
+cd backend/deploy/scripts
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --audit-only
+bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
+```
+
+The wrapper blocks unexpected unmanaged resources, removes only verified generated network remnants, and retries transient Foundry project concurrency failures.
+
 ### Model capacity / quota
 
 - Embedding deployment capacity is Terraform-managed via `embedding_model_capacity`.
