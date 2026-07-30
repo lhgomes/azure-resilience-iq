@@ -218,7 +218,7 @@ for item in actual:
       and nsg_name in expected_orphan_nsg_names
       and all(nsg_tags.get(key) == value for key, value in expected_orphan_nsg_tags.items())
     ):
-      derived_managed.append(rid)
+      autodelete.append(rid)
       continue
 
     unexpected.append(rid)
@@ -240,7 +240,7 @@ PY
   AUTO_DELETE_COUNT="$(echo "$AUDIT_RESULT" | awk -F= '/^AUTO_DELETE_COUNT=/{print $2; exit}')"
   UNEXPECTED_COUNT="$(echo "$AUDIT_RESULT" | awk -F= '/^UNEXPECTED_COUNT=/{print $2; exit}')"
 
-  if [[ "${AUTO_DELETE_COUNT:-0}" -gt 0 ]]; then
+  if [[ "${AUTO_DELETE_COUNT:-0}" -gt 0 && "$AUDIT_ONLY" != "true" ]]; then
     echo "==> Removing known unmanaged ephemeral resources"
     while IFS= read -r line; do
       [[ "$line" == AUTO_DELETE=* ]] || continue
@@ -270,7 +270,32 @@ if [[ "$AUTO_APPROVE" == "true" ]]; then
   DESTROY_ARGS+=(-auto-approve)
 fi
 
-echo "==> Running terraform ${DESTROY_ARGS[*]}"
-terraform "${DESTROY_ARGS[@]}"
+DESTROY_MAX_ATTEMPTS=3
+DESTROY_SUCCEEDED=false
+for ((attempt = 1; attempt <= DESTROY_MAX_ATTEMPTS; attempt++)); do
+  DESTROY_LOG="$(mktemp)"
+  echo "==> Running terraform ${DESTROY_ARGS[*]} (attempt ${attempt}/${DESTROY_MAX_ATTEMPTS})"
+
+  if terraform "${DESTROY_ARGS[@]}" 2>&1 | tee "$DESTROY_LOG"; then
+    DESTROY_SUCCEEDED=true
+    rm -f "$DESTROY_LOG"
+    break
+  fi
+
+  DESTROY_STATUS="${PIPESTATUS[0]}"
+  if ! grep -q "IfMatchPreconditionFailed" "$DESTROY_LOG" || [[ "$attempt" -eq "$DESTROY_MAX_ATTEMPTS" ]]; then
+    rm -f "$DESTROY_LOG"
+    exit "$DESTROY_STATUS"
+  fi
+
+  rm -f "$DESTROY_LOG"
+  RETRY_DELAY_SECONDS=$((attempt * 20))
+  echo "Foundry project changed during deletion. Retrying with refreshed state in ${RETRY_DELAY_SECONDS}s."
+  sleep "$RETRY_DELAY_SECONDS"
+done
+
+if [[ "$DESTROY_SUCCEEDED" != "true" ]]; then
+  exit 1
+fi
 
 popd >/dev/null
