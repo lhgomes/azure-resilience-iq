@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Dict, List, Optional
 
 
@@ -39,6 +39,33 @@ class WorkloadViewState(BaseModel):
     show_legend: bool = False
     graph_view: Optional[GraphViewState] = None
     service_group_filter: Optional[ServiceGroupFilter] = None
+    region_az_counts: Dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("region_az_counts", mode="before")
+    @classmethod
+    def validate_region_az_counts(cls, value):
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("region_az_counts must be an object")
+
+        normalized: Dict[str, int] = {}
+        for region_raw, az_count_raw in value.items():
+            region_key = str(region_raw or "").strip().lower().replace(" ", "")
+            if not region_key:
+                continue
+
+            try:
+                az_count = int(az_count_raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid AZ count for region '{region_raw}'")
+
+            if az_count not in (1, 2, 3):
+                raise ValueError(f"AZ count for region '{region_raw}' must be 1, 2, or 3")
+
+            normalized[region_key] = az_count
+
+        return normalized
 
 
 class Workload(BaseModel):
