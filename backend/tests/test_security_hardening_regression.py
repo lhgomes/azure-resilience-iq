@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.llm import ingest_search
 from app.routes import resilience as resilience_routes
 from app.routes import terraform as terraform_routes
 from app.storage import _json_repo
@@ -83,3 +84,11 @@ def test_resilience_health_hides_internal_exception_details(monkeypatch: pytest.
     assert payload["status"] == "unhealthy"
     assert payload["error"] == "Internal server error"
     assert "sensitive backend failure" not in response.text
+
+
+def test_is_microsoft_learn_url_accepts_official_host() -> None:
+    assert ingest_search._is_microsoft_learn_url("https://learn.microsoft.com/en-us/azure")
+
+
+def test_is_microsoft_learn_url_rejects_substring_spoofing() -> None:
+    assert not ingest_search._is_microsoft_learn_url("https://evil.example/?next=learn.microsoft.com")
