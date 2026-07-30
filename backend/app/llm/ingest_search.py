@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 from azure.identity import DefaultAzureCredential
@@ -62,6 +63,17 @@ class IngestionTarget:
 
 def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_microsoft_learn_url(raw_url: str) -> bool:
+    try:
+        parsed = urlsplit(raw_url.strip())
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        return host == "learn.microsoft.com" or host.endswith(".learn.microsoft.com")
+    except Exception:
+        return False
 
 
 def _strip_markdown(text: str) -> str:
@@ -270,7 +282,7 @@ def _collect_url_documents(url_file: Optional[str], timeout_seconds: int) -> Lis
                 if not text:
                     continue
 
-                source = "MicrosoftLearn" if "learn.microsoft.com" in url.lower() else "Web"
+                source = "MicrosoftLearn" if _is_microsoft_learn_url(url) else "Web"
                 service = "azure" if source == "MicrosoftLearn" else "general"
                 title = url.rstrip("/").split("/")[-1] or "document"
 
