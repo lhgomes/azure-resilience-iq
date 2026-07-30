@@ -35,6 +35,7 @@ interface ResiliencyEvaluations {
 
 interface ZonalResiliencySummaryProps {
   data: ZonalResiliencyResponse;
+  regionAzCounts?: Record<string, 1 | 2 | 3>;
   graphData?: {
     nodes?: Array<{ id: string; name?: string; type?: string; metadata?: Record<string, unknown> }>;
     llm_annotations?: {
@@ -48,6 +49,42 @@ interface ZonalResiliencySummaryProps {
   serviceFilter?: Set<string>;
   onResourceSelect?: (resourceId: string) => void;
 }
+
+const normalizeRegionKey = (region: string): string => {
+  return String(region || "").trim().toLowerCase().replace(/\s+/g, "");
+};
+
+const getRequiredAzCountForLocation = (
+  location: string,
+  regionAzCounts?: Record<string, 1 | 2 | 3>
+): 1 | 2 | 3 => {
+  const key = normalizeRegionKey(location);
+  const configured = key ? regionAzCounts?.[key] : undefined;
+  return configured ?? 3;
+};
+
+const isCompliantWithRequiredAz = (
+  zonalData: ResourceZonalAnalysis["zonal_data"],
+  requiredAzCount: 1 | 2 | 3
+): boolean => {
+  if (zonalData.deployment_pattern === "not_applicable") {
+    return true;
+  }
+
+  if (zonalData.deployment_pattern === "zone_redundant") {
+    return true;
+  }
+
+  if (zonalData.deployment_pattern === "multi_zone") {
+    return zonalData.zone_count >= requiredAzCount;
+  }
+
+  if (zonalData.deployment_pattern === "single_zone") {
+    return requiredAzCount <= 1;
+  }
+
+  return false;
+};
 
 // Score donut visualization - matches ResiliencySummary style
 const ScoreDonut: React.FC<{
@@ -170,9 +207,12 @@ const ResourceRow: React.FC<{
   index: number;
   annotationMap?: Map<string, LLMAnnotation>;
   evaluations?: ResiliencyEvaluations;
+  requiredAzCount: 1 | 2 | 3;
+  isRecommendationAdapted: boolean;
   onResourceSelect?: (resourceId: string) => void;
-}> = ({ resource, index, annotationMap, evaluations, onResourceSelect }) => {
+}> = ({ resource, index, annotationMap, evaluations, requiredAzCount, isRecommendationAdapted, onResourceSelect }) => {
   const { zonal_data } = resource;
+  const isCompliant = isCompliantWithRequiredAz(zonal_data, requiredAzCount);
   
   // Get display name from annotations or fall back to resource_name
   const annotation = annotationMap?.get(resource.resource_id);
@@ -187,9 +227,16 @@ const ResourceRow: React.FC<{
       return "";
     }
 
-    // If compliant, no recommendation needed
-    if (zonal_data.meets_3az_requirement) {
+    // If compliant with the configured AZ target, no recommendation needed
+    if (isCompliant) {
       return "";
+    }
+
+    if (requiredAzCount < 3) {
+      if (requiredAzCount === 1) {
+        return "Region is configured with a 1-AZ limit. Cross-zone recommendations are not applicable here.";
+      }
+      return `Region is configured for ${requiredAzCount} AZs. Update this resource to span at least ${requiredAzCount} zones where supported.`;
     }
 
     // For non-compliant resources, get relevant failure reasons from evaluations
@@ -275,18 +322,23 @@ const ResourceRow: React.FC<{
       <td style={{ padding: "12px", textAlign: "center" }}>
         <div
           style={{
-            color: zonal_data.meets_3az_requirement ? "#10b981" : "#f59e0b",
+            color: isCompliant ? "#10b981" : "#f59e0b",
             fontWeight: 600,
             fontSize: "14px",
           }}
         >
-          {zonal_data.meets_3az_requirement ? "✓" : "⚠"}
+          {isCompliant ? "✓" : "⚠"}
         </div>
       </td>
       <td style={{ padding: "12px", fontSize: "12px", color: "#5a4a4a", maxWidth: "300px" }}>
         {recommendation && (
           <div style={{ wordBreak: "break-word", lineHeight: "1.4" }}>
             {recommendation}
+            {isRecommendationAdapted && (
+              <div style={{ marginTop: "4px", color: "#1d4ed8", fontSize: "11px", fontWeight: 600 }}>
+                Adapted to region AZ limit ({requiredAzCount} AZ{requiredAzCount > 1 ? "s" : ""}).
+              </div>
+            )}
           </div>
         )}
       </td>
@@ -295,7 +347,7 @@ const ResourceRow: React.FC<{
 };
 
 // Main Component
-const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, graphData, resourceGroupFilter, serviceFilter, onResourceSelect }) => {
+const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, regionAzCounts, graphData, resourceGroupFilter, serviceFilter, onResourceSelect }) => {
   const [sortBy, setSortBy] = useState<"name" | "pattern" | "compliance">("name");
   const [filterPattern, setFilterPattern] = useState<DeploymentPattern | "all">("all");
   const [evaluations, setEvaluations] = useState<ResiliencyEvaluations>({});
@@ -354,12 +406,16 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
     
     // Exclude not_applicable from compliance calculation
     const applicableResources = resources.filter((r) => r.zonal_data.deployment_pattern !== "not_applicable");
-    const compliant = applicableResources.filter((r) => r.zonal_data.meets_3az_requirement).length;
+    const compliant = applicableResources.filter((r) => {
+      const required = getRequiredAzCountForLocation(r.location, regionAzCounts);
+      return isCompliantWithRequiredAz(r.zonal_data, required);
+    }).length;
     const applicableCount = applicableResources.length;
     const compliancePercent = applicableCount > 0 ? (compliant / applicableCount) * 100 : 0;
     
-    // Zonal resilience score: weighted by resource criticality
-    // Pattern weights: zone_redundant=1.0, multi_zone=0.8, single_zone=0.3, others=0.0
+    // Zonal resilience score: weighted by resource criticality and AZ-target compliance.
+    // If a resource meets the configured regional AZ target, it receives full credit.
+    // Otherwise, apply partial credit based on deployment pattern risk.
     let totalWeight = 0;
     let weightedScore = 0;
     
@@ -371,18 +427,24 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
       
       // Get pattern score
       let patternScore = 0;
-      switch (resource.zonal_data.deployment_pattern) {
-        case "zone_redundant":
-          patternScore = 1.0;
-          break;
-        case "multi_zone":
-          patternScore = 0.8;
-          break;
-        case "single_zone":
-          patternScore = 0.3;
-          break;
-        default:
-          patternScore = 0.0;
+      const requiredAzCount = getRequiredAzCountForLocation(resource.location, regionAzCounts);
+      const isCompliant = isCompliantWithRequiredAz(resource.zonal_data, requiredAzCount);
+      if (isCompliant) {
+        patternScore = 1.0;
+      } else {
+        switch (resource.zonal_data.deployment_pattern) {
+          case "zone_redundant":
+            patternScore = 1.0;
+            break;
+          case "multi_zone":
+            patternScore = 0.8;
+            break;
+          case "single_zone":
+            patternScore = 0.3;
+            break;
+          default:
+            patternScore = 0.0;
+        }
       }
       
       // Weighted contribution: pattern_score * element_weight
@@ -475,19 +537,37 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
         case "pattern":
           return a.zonal_data.deployment_pattern.localeCompare(b.zonal_data.deployment_pattern);
         case "compliance":
-          return a.zonal_data.meets_3az_requirement === b.zonal_data.meets_3az_requirement
+          return isCompliantWithRequiredAz(a.zonal_data, getRequiredAzCountForLocation(a.location, regionAzCounts)) === isCompliantWithRequiredAz(b.zonal_data, getRequiredAzCountForLocation(b.location, regionAzCounts))
             ? 0
-            : a.zonal_data.meets_3az_requirement
+            : isCompliantWithRequiredAz(a.zonal_data, getRequiredAzCountForLocation(a.location, regionAzCounts))
               ? -1
               : 1;
         default:
           return 0;
       }
     });
-  }, [sidebarFiltered, sortBy, filterPattern]);
+  }, [sidebarFiltered, sortBy, filterPattern, regionAzCounts]);
 
-  // Use provided summary or calculate from filtered resources with weighted scoring
-  const summary = data.summary || calculateSummary(sidebarFiltered, annotationMap);
+  const adaptedRecommendationCount = useMemo(() => {
+    return sidebarFiltered.filter(resource => getRequiredAzCountForLocation(resource.location, regionAzCounts) < 3).length;
+  }, [sidebarFiltered, regionAzCounts]);
+
+  const nonCompliantSingleZoneCount = useMemo(() => {
+    return sidebarFiltered.filter(resource => (
+      resource.zonal_data.deployment_pattern === "single_zone"
+      && !isCompliantWithRequiredAz(resource.zonal_data, getRequiredAzCountForLocation(resource.location, regionAzCounts))
+    )).length;
+  }, [sidebarFiltered, regionAzCounts]);
+
+  const nonCompliantMultiZoneCount = useMemo(() => {
+    return sidebarFiltered.filter(resource => (
+      resource.zonal_data.deployment_pattern === "multi_zone"
+      && !isCompliantWithRequiredAz(resource.zonal_data, getRequiredAzCountForLocation(resource.location, regionAzCounts))
+    )).length;
+  }, [sidebarFiltered, regionAzCounts]);
+
+  // Always calculate from filtered resources so AZ-target overrides are reflected.
+  const summary = calculateSummary(sidebarFiltered, annotationMap);
 
   return (
     <div style={{ padding: "24px", paddingBottom: "64px", background: "#f9fafb", minHeight: "100vh" }}>
@@ -620,7 +700,7 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
               >
                 <option value="name">Resource Name</option>
                 <option value="pattern">Deployment Pattern</option>
-                <option value="compliance">3-AZ Compliance</option>
+                <option value="compliance">AZ Target Compliance</option>
               </select>
             </div>
           </div>
@@ -650,7 +730,7 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
                   Zones
                 </th>
                 <th style={{ padding: "12px", textAlign: "center", fontWeight: 600, color: "#6b7280" }}>
-                  3-AZ Compliant
+                  AZ Target Compliant
                 </th>
                 <th style={{ padding: "12px", textAlign: "left", fontWeight: 600, color: "#6b7280" }}>
                   Recommendation
@@ -659,7 +739,16 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
             </thead>
             <tbody>
               {filteredAndSorted.map((resource, index) => (
-                <ResourceRow key={resource.resource_id} resource={resource} index={index} annotationMap={annotationMap} evaluations={evaluations} onResourceSelect={onResourceSelect} />
+                <ResourceRow
+                  key={resource.resource_id}
+                  resource={resource}
+                  index={index}
+                  annotationMap={annotationMap}
+                  evaluations={evaluations}
+                  requiredAzCount={getRequiredAzCountForLocation(resource.location, regionAzCounts)}
+                  isRecommendationAdapted={getRequiredAzCountForLocation(resource.location, regionAzCounts) < 3}
+                  onResourceSelect={onResourceSelect}
+                />
               ))}
             </tbody>
           </table>
@@ -697,24 +786,35 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
           </h2>
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "12px" }}>
-            {summary.single_zone_resources > 0 && (
+            {nonCompliantSingleZoneCount > 0 && (
               <div style={{ padding: "12px", backgroundColor: "#fef3c7", borderLeft: "4px solid #f59e0b", borderRadius: "4px" }}>
                 <div style={{ fontWeight: 600, color: "#92400e" }}>
-                  Deploy {summary.single_zone_resources} single-zone resource{summary.single_zone_resources > 1 ? "s" : ""} across multiple availability zones
+                  Improve {nonCompliantSingleZoneCount} single-zone resource{nonCompliantSingleZoneCount > 1 ? "s" : ""} to meet regional AZ targets
                 </div>
                 <div style={{ fontSize: "12px", color: "#b45309", marginTop: "4px" }}>
-                  This will improve resilience and availability by distributing workloads across zones.
+                  Align these resources with the configured AZ availability per region for realistic resilience coverage.
                 </div>
               </div>
             )}
 
-            {summary.multi_zone_resources > 0 && summary.compliant_3az_resources < summary.total_resources && (
+            {nonCompliantMultiZoneCount > 0 && (
               <div style={{ padding: "12px", backgroundColor: "#dbeafe", borderLeft: "4px solid #3b82f6", borderRadius: "4px" }}>
                 <div style={{ fontWeight: 600, color: "#1e40af" }}>
-                  Extend {summary.multi_zone_resources} multi-zone resource{summary.multi_zone_resources > 1 ? "s" : ""} to all 3 availability zones
+                  Review {nonCompliantMultiZoneCount} multi-zone resource{nonCompliantMultiZoneCount > 1 ? "s" : ""} against configured AZ targets
                 </div>
                 <div style={{ fontSize: "12px", color: "#1e3a8a", marginTop: "4px" }}>
-                  Ensure maximum resilience by utilizing all available zones in your region.
+                  Resources are evaluated against per-region AZ availability (1, 2, or 3) instead of a fixed global target.
+                </div>
+              </div>
+            )}
+
+            {adaptedRecommendationCount > 0 && (
+              <div style={{ padding: "12px", backgroundColor: "#eff6ff", borderLeft: "4px solid #2563eb", borderRadius: "4px" }}>
+                <div style={{ fontWeight: 600, color: "#1e3a8a" }}>
+                  {adaptedRecommendationCount} recommendation{adaptedRecommendationCount > 1 ? "s were" : " was"} adapted due to regional AZ limits
+                </div>
+                <div style={{ fontSize: "12px", color: "#1d4ed8", marginTop: "4px" }}>
+                  Regions configured with fewer than 3 AZs are treated contextually to avoid impossible recommendations.
                 </div>
               </div>
             )}
@@ -732,9 +832,9 @@ const ZonalResiliencySummary: React.FC<ZonalResiliencySummaryProps> = ({ data, g
 
             {summary.overall_3az_compliant && (
               <div style={{ padding: "12px", backgroundColor: "#dcfce7", borderLeft: "4px solid #10b981", borderRadius: "4px" }}>
-                <div style={{ fontWeight: 600, color: "#166534" }}>✓ All applicable resources are 3-AZ compliant</div>
+                <div style={{ fontWeight: 600, color: "#166534" }}>✓ All applicable resources meet configured AZ targets</div>
                 <div style={{ fontSize: "12px", color: "#15803d", marginTop: "4px" }}>
-                  Your workload has excellent cross-zone resilience coverage.
+                  Your workload is aligned with regional AZ availability constraints.
                 </div>
               </div>
             )}
