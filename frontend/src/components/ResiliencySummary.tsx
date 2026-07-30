@@ -1,5 +1,4 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import * as XLSX from "xlsx";
 import { canonicalTypeForNode, normalizeTypeString, LEVEL_TO_MAX_IMPORTANCE, type ViewLevel } from "../domain/graphView";
 import { saveOverride, getOverrides, deleteOverride, saveBatchOverrides, type ResiliencyCheck, type BatchOverrideItem } from "../api/resilience";
 import { calculateResiliencyScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
@@ -1588,7 +1587,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     return "#ef4444";
   };
 
-  const exportToExcel = () => {
+  const exportToCsv = () => {
     // Prepare data for export
     const exportData = findingsWithContribution.map(finding => ({
       "Resource": annotationMap.get(
@@ -1607,32 +1606,41 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       "Benefit": finding.potential_benefits || ""
     }));
 
-    // Create workbook and worksheet
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(exportData);
+    const headers = [
+      "Resource",
+      "Recommendation",
+      "Category",
+      "Impact",
+      "Contribution %",
+      "Status",
+      "Validated By",
+      "Benefit",
+    ] as const;
 
-    // Set column widths
-    const colWidths = [
-      { wch: 20 },  // Resource
-      { wch: 40 },  // Recommendation
-      { wch: 18 },  // Category
-      { wch: 10 },  // Impact
-      { wch: 15 },  // Contribution %
-      { wch: 10 },  // Status
-      { wch: 15 },  // Validated By
-      { wch: 30 },  // Benefit
+    const escapeCsvCell = (value: unknown): string => {
+      const text = String(value ?? "");
+      const escaped = text.replace(/"/g, '""');
+      return /[",\n\r]/.test(escaped) ? `"${escaped}"` : escaped;
+    };
+
+    const rows = [
+      headers.join(","),
+      ...exportData.map((row) => headers.map((key) => escapeCsvCell(row[key])).join(",")),
     ];
-    ws["!cols"] = colWidths;
+    const csvContent = rows.join("\r\n");
 
-    // Add worksheet to workbook
-    XLSX.utils.book_append_sheet(wb, ws, "Findings");
-
-    // Generate filename with timestamp
     const timestamp = new Date().toISOString().slice(0, 10);
-    const filename = `resilience-findings-${timestamp}.xlsx`;
+    const filename = `resilience-findings-${timestamp}.csv`;
 
-    // Write file
-    XLSX.writeFile(wb, filename);
+    const blob = new Blob(["\uFEFF", csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
   const getRiskLevel = (passPercentage: number) => {
     const percentage = passPercentage * 100;  // Convert 0-1 to 0-100
@@ -2287,7 +2295,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
           </div>
           
           <button
-            onClick={exportToExcel}
+            onClick={exportToCsv}
             style={{
               padding: "8px 16px",
               borderRadius: "6px",
@@ -2303,7 +2311,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
               height: "fit-content",
             }}
           >
-            Export to Excel
+            Export to CSV
           </button>
         </div>
 
