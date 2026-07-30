@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from typing import List, Optional, Dict, Any, Tuple
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from app.config import get_resources_path, get_node_overrides_path
@@ -27,6 +28,17 @@ from app.storage.workload_store import get_workload as get_saved_workload
 from app.storage._json_repo import read_json, path_exists
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _is_allowed_source_url(value: str) -> bool:
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+
+    parsed = urlsplit(candidate)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    return bool(parsed.netloc)
 
 
 class ChatService:
@@ -2170,13 +2182,13 @@ Do not invent resources, module names, or unsupported fields.
         for src in sources_list:
             if isinstance(src, str):
                 url = src.strip()
-                if url.startswith('http'):
+                if _is_allowed_source_url(url):
                     sources.append(ChatSource(url=url))
                 continue
             if not isinstance(src, dict):
                 continue
             url = str(src.get('url', '')).strip()
-            if not url or not url.startswith('http'):
+            if not _is_allowed_source_url(url):
                 continue
             sources.append(ChatSource(
                 title=src.get('title'),

@@ -7,6 +7,7 @@ Generates resources.json and edges.json for analysis, bypassing the collector.
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -32,6 +33,7 @@ from app.storage.data_repository import get_data_repository
 router = APIRouter(prefix="/api/terraform", tags=["terraform"])
 LOGGER = logging.getLogger(__name__)
 STATUS_FILE_NAME = "subscription_mapping_status.json"
+_SAFE_UPLOAD_FILENAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class TerraformUploadResponse(BaseModel):
@@ -67,6 +69,23 @@ def _read_status(subscription_id: str) -> dict[str, Any] | None:
         return None
     payload = read_json(status_file, default=None)
     return payload if isinstance(payload, dict) else None
+
+
+def _normalize_subscription_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid subscription_id format. Must be a valid UUID.")
+
+
+def _ensure_within_dir(base_dir: Path, candidate: Path) -> Path:
+    base = base_dir.resolve()
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(base)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return resolved
 
 
 def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, bool]:
@@ -119,15 +138,8 @@ async def upload_terraform_files(
     # Generate subscription ID if not provided
     if not subscription_id:
         subscription_id = str(uuid.uuid4())
-    
-    # Validate subscription ID format
-    try:
-        uuid.UUID(subscription_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid subscription_id format. Must be a valid UUID."
-        )
+
+    subscription_id = _normalize_subscription_id(subscription_id)
     
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
@@ -189,13 +201,16 @@ async def upload_terraform_files(
         if not original_name:
             continue
 
-        target_path = uploads_dir / original_name
+        if not _SAFE_UPLOAD_FILENAME.fullmatch(original_name):
+            raise HTTPException(status_code=400, detail=f"Invalid filename: {original_name}")
+
+        target_path = _ensure_within_dir(uploads_dir, uploads_dir / original_name)
         if path_exists(target_path):
             stem = Path(original_name).stem
             suffix = Path(original_name).suffix
             counter = 1
             while path_exists(target_path):
-                target_path = uploads_dir / f"{stem}_{counter}{suffix}"
+                target_path = _ensure_within_dir(uploads_dir, uploads_dir / f"{stem}_{counter}{suffix}")
                 counter += 1
 
         content = await file.read()
@@ -214,6 +229,7 @@ async def upload_terraform_files(
         all_resources = []
 
         for file_path in saved_files:
+            file_path = _ensure_within_dir(uploads_dir, file_path)
             if file_path.suffix == ".json":
                 try:
                     json_data = json.loads(get_data_repository().read_text(file_path))
@@ -224,7 +240,7 @@ async def upload_terraform_files(
                         detail=f"Invalid JSON in {file_path.name}: {str(e)}"
                     )
             else:
-                resources = parser.parse_file(file_path)
+                resources = parser.parse_file(file_path, trusted_root=uploads_dir)
 
             all_resources.extend(resources)
 

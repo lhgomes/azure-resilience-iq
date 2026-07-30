@@ -3,6 +3,7 @@ import logging
 import subprocess
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,13 @@ def _utc_now_iso() -> str:
 
 def _status_file(subscription_id: str) -> Path:
     return get_subscription_dir(subscription_id) / STATUS_FILE_NAME
+
+
+def _normalize_subscription_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid subscription id format")
 
 
 def _write_status(subscription_id: str, payload: dict[str, Any]) -> None:
@@ -141,6 +149,7 @@ def discover_subscriptions() -> list[dict[str, Any]]:
 def discover_resource_groups(subscription_id: str) -> list[str]:
     """Discover resource groups for a subscription from Azure Resource Graph."""
     try:
+        subscription_id = _normalize_subscription_id(subscription_id)
         query = """
         Resources
         | where subscriptionId == '{subscription_id}'
@@ -187,6 +196,7 @@ def start_subscription_mapping(subscription_id: str, request: SubscriptionMappin
     collector -> resilience -> llm
     """
     try:
+        subscription_id = _normalize_subscription_id(subscription_id)
         current = _read_status(subscription_id)
         if current and current.get("status") == "running":
             return JSONResponse(
@@ -324,6 +334,7 @@ def start_subscription_mapping(subscription_id: str, request: SubscriptionMappin
 
 @router.get("/{subscription_id}/map/status")
 def get_subscription_mapping_status(subscription_id: str):
+    subscription_id = _normalize_subscription_id(subscription_id)
     status = _read_status(subscription_id)
     if not status:
         return {"subscription_id": subscription_id, "status": "idle", "progress": 0}

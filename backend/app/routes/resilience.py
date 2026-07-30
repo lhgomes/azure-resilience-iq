@@ -77,11 +77,11 @@ def resilience_health():
             "summary": summary,
         }
     except Exception as e:
-        LOGGER.error(f"Resiliency health check failed: {e}")
+        LOGGER.exception("Resiliency health check failed")
         return {
             "status": "unhealthy",
             "aprl_loaded": False,
-            "error": str(e),
+            "error": "Internal server error",
         }
 
 
@@ -121,9 +121,9 @@ def get_all_rules(
             "rules": [r.to_dict() for r in rules],
         }
     
-    except Exception as e:
-        LOGGER.error(f"Failed to get rules: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get rules")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 
@@ -172,9 +172,9 @@ def get_subscription_evaluation(subscription_id: str):
             "evaluations": evaluations,
         }
     
-    except Exception as e:
-        LOGGER.error(f"Failed to load evaluations for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to load evaluations for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/evaluate/{subscription_id}/resource/{resource_id}")
@@ -207,9 +207,9 @@ def get_resource_evaluation(subscription_id: str, resource_id: str):
     
     except HTTPException:
         raise
-    except Exception as e:
-        LOGGER.error(f"Failed to get evaluation for {resource_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get evaluation for resource %s", resource_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/evaluate/{subscription_id}/refresh")
@@ -245,9 +245,9 @@ def get_weights():
             "category_weights": category_weights,
             "impact_weights": impact_weights,
         }
-    except Exception as e:
-        LOGGER.error(f"Failed to get weights: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get weights")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/categories")
@@ -259,9 +259,9 @@ def get_categories():
         return {
             "categories": weights,
         }
-    except Exception as e:
-        LOGGER.error(f"Failed to get categories: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get categories")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/evaluate/{subscription_id}/summary")
 def get_subscription_resilience_summary(subscription_id: str):
@@ -303,9 +303,9 @@ def get_subscription_resilience_summary(subscription_id: str):
         
         return summary
     
-    except Exception as e:
-        LOGGER.error(f"Failed to get resilience summary for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get resilience summary for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{subscription_id}/overrides")
@@ -323,9 +323,9 @@ def get_overrides(subscription_id: str):
             "overrides": overrides,
             "count": len(overrides)
         }
-    except Exception as e:
-        LOGGER.error(f"Failed to load overrides for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to load overrides for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{subscription_id}/overrides")
@@ -357,9 +357,9 @@ def create_override(subscription_id: str, request: OverrideRequest):
             user_identifier=request.user_identifier
         )
         return result
-    except Exception as e:
-        LOGGER.error(f"Failed to save override for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to save override for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{subscription_id}/overrides/batch")
@@ -393,9 +393,9 @@ def create_batch_overrides(subscription_id: str, request: BatchOverrideRequest):
             )
             results.append(result)
         return {"overrides": results, "count": len(results)}
-    except Exception as e:
-        LOGGER.error(f"Failed to save batch overrides for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to save batch overrides for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.delete("/{subscription_id}/overrides")
 def remove_override(subscription_id: str, request: DeleteOverrideRequest):
@@ -418,9 +418,9 @@ def remove_override(subscription_id: str, request: DeleteOverrideRequest):
         return {"deleted": True, "resilience_check_id": request.resilience_check_id}
     except HTTPException:
         raise
-    except Exception as e:
-        LOGGER.error(f"Failed to delete override for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to delete override for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{subscription_id}/overrides/check")
@@ -454,7 +454,7 @@ def get_check_override(
             }
         else:
             return None
-    except Exception as e:
-        LOGGER.error(f"Failed to get check override for {subscription_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        LOGGER.exception("Failed to get check override for subscription %s", subscription_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
