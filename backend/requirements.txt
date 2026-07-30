@@ -8,6 +8,7 @@ openai
 azure-mgmt-network
 azure-mgmt-resourcegraph
 azure-mgmt-subscription  # required for subscription name lookup
+azure-monitor-query
 fastapi
 httpx
 pydantic

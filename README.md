@@ -16,6 +16,17 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 - Azure AI Foundry project with deployed agents
 - Appropriate Azure RBAC permissions to query resources
 
+#### Deploy principal (identity running `terraform apply`)
+
+| Permission | Scope |
+|---|---|
+| Contributor | Resource group / subscription — creates all resources |
+| `Microsoft.Authorization/roleAssignments/write` | Subscription — assigns VM MI roles |
+| `Microsoft.Authorization/roleDefinitions/write` | Subscription — creates the custom Service Group Member Writer role |
+| `Microsoft.Authorization/roleAssignments/write` | Management group — **only if** `enable_workload_management_group_rbac = true` |
+
+In practice **Owner** at the resource group + subscription covers all of the above (Contributor alone does not include `roleAssignments/write`). For management-group-scoped RBAC, Owner or User Access Administrator at that management group is also required.
+
 ## Automated Azure VM Deployment (Terraform + Foundry + Search)
 
 Production-style infrastructure deployment and application packaging are driven by `backend/deploy/scripts/deploy_vm_stack.sh`.
@@ -30,6 +41,22 @@ Production-style infrastructure deployment and application packaging are driven 
   - Embedding deployment (`text-embedding-3-small`) required for hydration.
 - **Azure AI Search** with private networking.
 - **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
+
+#### VM Managed Identity — roles granted by Terraform
+
+| Role | Scope |
+|---|---|
+| Foundry User | AI Foundry hub |
+| Cognitive Services OpenAI User | AI Foundry hub |
+| Foundry User | AI Foundry project |
+| Search Service Contributor | Azure AI Search |
+| Search Index Data Contributor | Azure AI Search |
+| Storage Blob Data Contributor | Storage account |
+| Reader | Current subscription (always) |
+| Reader | Management group — only if `enable_workload_management_group_rbac = true` |
+| Custom: Service Group Member Writer (`serviceGroupMember/write/read/delete`) | Subscription or management group |
+
+**Optional / requires Global Admin (post-deploy):** grant `Service Group Reader` at the tenant-root service group scope to allow the app to read/import Service Groups created by other principals. The `service_group_root_reader_grant_command` Terraform output provides the exact `az` command.
 
 ### End-to-end deployment command
 
