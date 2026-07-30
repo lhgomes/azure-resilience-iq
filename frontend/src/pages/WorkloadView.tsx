@@ -243,7 +243,6 @@ const WorkloadView: React.FC = () => {
   const normalizeRegionKey = useCallback((region: string): string => {
     return String(region || "").trim().toLowerCase().replace(/\s+/g, "");
   }, []);
-
   useEffect(() => {
     let cancelled = false;
     getServiceGroupAvailability()

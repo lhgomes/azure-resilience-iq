@@ -176,7 +176,6 @@ const WorkloadSidebar: React.FC<Props> = props => {
     const configured = props.regionAzCounts[key];
     return configured ?? 3;
   }, [normalizeRegionKey, props.regionAzCounts]);
-
   const openServiceGroupPicker = React.useCallback(async () => {
     if (props.serviceGroupAvailable === false) return;
     setSgPickerOpen(true);
