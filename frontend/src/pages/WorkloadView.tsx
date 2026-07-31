@@ -704,7 +704,12 @@ const WorkloadView: React.FC = () => {
     const regions = new Set<string>();
     for (const item of zonal_resilience_data?.resources || []) {
       const location = String(item.location || "").trim();
-      if (location) regions.add(location);
+      if (!location) continue;
+
+      // "global" is not an Azure region and does not have AZ availability.
+      if (location.toLowerCase() === "global") continue;
+
+      regions.add(location);
     }
     return Array.from(regions).sort((a, b) => a.localeCompare(b));
   }, [zonal_resilience_data]);
