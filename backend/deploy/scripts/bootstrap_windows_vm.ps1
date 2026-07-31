@@ -14,6 +14,8 @@ param(
     [string]$ReasoningModel,
     [Parameter(Mandatory = $true)]
     [string]$EmbeddingModel,
+    [Parameter(Mandatory = $true)]
+    [string]$EmbeddingEndpoint,
     [string]$OpenAiApiVersion = "2025-03-01-preview",
     [string]$DeploymentStatePrefix = "",
     [string]$AgentsMigrate = "false",
@@ -177,7 +179,10 @@ if (($AppOnly -ne "true") -or ($AgentsMigrate -eq "true")) {
         (Join-Path $backendRoot "deploy\scripts\provision_foundry_assets.py"),
         "--foundry-project-endpoint", $FoundryProjectEndpoint,
         "--reasoning-model", $ReasoningModel,
-        "--search-endpoint", $SearchEndpoint
+        "--search-endpoint", $SearchEndpoint,
+        "--embedding-endpoint", $EmbeddingEndpoint,
+        "--embedding-deployment", $EmbeddingModel,
+        "--embedding-model", $EmbeddingModel
     )
     if ($AgentsMigrate -eq "true") {
         $provisionArgs += "--recreate-existing"
@@ -212,7 +217,7 @@ if (($AppOnly -ne "true") -or ($AgentsMigrate -eq "true")) {
         "--aprl-local-path", (Join-Path $backendRoot "aprl\azure-resources"),
         "--terraform-local-path", $terraformDocs,
         "--aprl-index-name", "learn-aprl-index",
-        "--terraform-index-name", "learn-terraform-index",
+        "--terraform-index-name", "learn-terraform-hybrid-index",
         "--search-endpoint", $SearchEndpoint,
         "--embedding-model", $EmbeddingModel
     )
@@ -258,7 +263,7 @@ $environmentLines = @(
     "AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent",
     "AZURE_SEARCH_ENDPOINT=$SearchEndpoint",
     "AZURE_SEARCH_INDEX_NAME_APRL=learn-aprl-index",
-    "AZURE_SEARCH_INDEX_NAME_TERRAFORM=learn-terraform-index",
+    "AZURE_SEARCH_INDEX_NAME_TERRAFORM=learn-terraform-hybrid-index",
     "DATA_STORAGE_BACKEND=$dataStorageBackend",
     "DATA_STORAGE_ACCOUNT=$StorageAccountName",
     "DATA_STORAGE_CONTAINER=$ContainerName",

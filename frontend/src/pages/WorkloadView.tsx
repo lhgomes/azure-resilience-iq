@@ -76,7 +76,7 @@ import {
   type GraphSnapshot,
   type ViewLevel,
 } from "../domain/graphView";
-import { calculateResiliencyScore, getElementWeight, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
+import { calculateResiliencyScore, getElementWeight, isScoredResiliencyCheck, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 import { getZonalResiliency, type ZonalResiliencyResponse } from "../api/resilience";
 import { mergeGraphSnapshots, mergeResiliencyEvaluations, mergeZonalResiliencyData } from "../utils/multiSubscriptionMerge";
 import { ArrowCollapseAll16Regular, ArrowExpandAll16Regular, ArrowSync16Regular, Dismiss12Regular, DocumentPdf20Regular } from "@fluentui/react-icons";
@@ -1555,6 +1555,7 @@ const WorkloadView: React.FC = () => {
     Object.entries(mergedEvaluations).forEach(([resourceId, evaluation]: [string, any]) => {
       if (!resourceMatchesReportFilters(resourceId, evaluation)) return;
       const checks = (evaluation.findings || evaluation.checks || []).filter((check: any) => {
+        if (!isScoredResiliencyCheck(check)) return false;
         if (validationSourceFilter.size === 0) return true;
         return validationSourceFilter.has(check.validation_source || "");
       });
@@ -1592,12 +1593,6 @@ const WorkloadView: React.FC = () => {
           categoryStats.failed += 1;
           impactStats.failed += 1;
           serviceStats.failed += 1;
-          if (check.status !== "fail") {
-            categories.set(category, categoryStats);
-            impacts.set(impactName, impactStats);
-            services.set(serviceName, serviceStats);
-            return;
-          }
           failedChecks += 1;
           const recommendationId = check.recommendation_id || check.description;
           const recommendation = recommendations.get(recommendationId) || {

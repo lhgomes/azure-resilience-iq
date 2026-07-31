@@ -24,7 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import get_resources_path, get_subscription_dir
+from app.config import get_edges_path, get_resources_path, get_subscription_dir
 from app.llm.gateway import create_llm_gateway
 from app.logger import get_logger, setup_logging
 from app.resilience.aprl_integration import APRLEvaluator, generate_resilience_check_id, load_aprl_catalog
@@ -32,6 +32,11 @@ from app.resilience.resilience_correlator import ResourceCorrelator, ResiliencyG
 from app.resilience.zonal_analyzer import DeploymentPattern, ZonalAnalyzer, ZonalData, ZonalResiliencySummary
 from app.settings import get_settings, load_settings
 from app.storage.llm_annotations_store import load_llm_annotations
+from app.storage.agent_memory_store import (
+    append_cross_flow_handoff,
+    build_graph_context_fingerprint,
+    compact_resource_ids,
+)
 from app.storage.resilience_evaluations_store import save_resilience_evaluations
 from app.storage._json_repo import read_json, write_json, path_exists
 
@@ -664,8 +669,30 @@ def main():
             sub_resource = {
                 "id": f"/subscriptions/{args.subscription_id}",
                 "name": args.subscription_id,
-                "type": "Microsoft.Subscription/subscriptions"
+                "type": "Microsoft.Subscription/subscriptions",
             }
+            if is_virtual_subscription:
+                sub_resource["properties"] = {
+                    "service_health_alerts": [
+                        {
+                            "name": resource.get("name"),
+                            "enabled": (resource.get("properties") or {}).get("enabled"),
+                            "criteria": (resource.get("properties") or {}).get("criteria"),
+                            "action": (resource.get("properties") or {}).get("action"),
+                        }
+                        for resource in resources
+                        if str(resource.get("type", "")).lower() == "microsoft.insights/activitylogalerts"
+                        and "servicehealth" in str((resource.get("properties") or {}).get("criteria", "")).lower()
+                    ],
+                    "resource_inventory": [
+                        {
+                            "type": resource.get("type"),
+                            "name": resource.get("name"),
+                            "location": resource.get("location"),
+                        }
+                        for resource in resources
+                    ],
+                }
             
             sub_results = evaluator.evaluate_resources_batch(
                 resource_type="Microsoft.Subscription/subscriptions",
@@ -864,6 +891,45 @@ def main():
             "✓ Resiliency evaluation complete: %d resources, %d total checks (%d passed, %d failed, %d pending review)",
             len(evaluations), total_checks, total_passed, total_failed, total_pending
         )
+        try:
+            edges = read_json(get_edges_path(args.subscription_id), default=[])
+            graph_context = {
+                "nodes": resources,
+                "edges": edges if isinstance(edges, list) else edges.get("edges", []),
+                "resilience_evaluations": {"evaluations": evaluations},
+            }
+            failed_resource_ids: List[str] = []
+            failed_recommendation_ids: List[str] = []
+            for resource_id, evaluation in evaluations.items():
+                failed_checks = [
+                    check
+                    for check in evaluation.get("checks", [])
+                    if isinstance(check, dict) and check.get("status") == "fail"
+                ]
+                if failed_checks:
+                    failed_resource_ids.append(resource_id)
+                failed_recommendation_ids.extend(
+                    str(check.get("recommendation_id"))
+                    for check in failed_checks
+                    if check.get("recommendation_id")
+                )
+
+            append_cross_flow_handoff(
+                scope_type="subscription",
+                scope_id=args.subscription_id,
+                flow="resilience",
+                context_fingerprint=build_graph_context_fingerprint(graph_context),
+                user_intent="Evaluate current workload resilience",
+                answer_summary=(
+                    f"Evaluated {len(evaluations)} resources and {total_checks} checks: "
+                    f"{total_passed} passed, {total_failed} failed, {total_pending} pending."
+                ),
+                resource_ids=compact_resource_ids(resources, failed_resource_ids),
+                recommendation_ids=failed_recommendation_ids,
+                clarifying_questions=[],
+            )
+        except Exception as error:
+            LOGGER.warning("Could not persist resilience cross-flow handoff memory: %s", error)
         return 0
 
     except Exception as e:

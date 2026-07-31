@@ -75,7 +75,7 @@ def _sanitize_filters(payload: SubscriptionMappingRequest) -> tuple[list[str], d
 
 
 def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, bool]:
-    existing_conversation_id = get_subscription_conversation_id(subscription_id)
+    existing_conversation_id = get_subscription_conversation_id(subscription_id, "annotations")
     if existing_conversation_id and str(existing_conversation_id).strip():
         return str(existing_conversation_id).strip(), False
 
@@ -90,7 +90,7 @@ def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, boo
         raise RuntimeError("Conversation creation failed: empty conversation id")
 
     conversation_id = str(conversation_id).strip()
-    set_subscription_conversation_id(subscription_id, conversation_id)
+    set_subscription_conversation_id(subscription_id, "annotations", conversation_id)
     return conversation_id, True
 
 

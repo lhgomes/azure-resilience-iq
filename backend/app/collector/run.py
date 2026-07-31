@@ -9,7 +9,13 @@ from app.relationships.extract_runtime import query_flow_logs, query_application
 from app.relationships.utils import norm_id, short_id
 from app.graph.builder import edge_id
 from app.resource_filters import load_monitored_resource_types
-from app.storage._json_repo import write_json
+from app.storage._json_repo import read_json, write_json
+
+
+def merge_collector_output(existing: object, collected: dict) -> dict:
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(collected)
+    return merged
 
 def normalize_resource_groups(resource_groups):
     return [rg.lower() for rg in resource_groups]
@@ -163,15 +169,20 @@ def main():
     sub_dir = get_subscription_dir(args.subscription_id)
     sub_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save resources with subscription metadata
-    resources_output = {
+    out_file = get_resources_path(args.subscription_id)
+
+    # Save collector-owned fields while preserving app-owned metadata.
+    collected_output = {
         "subscription_id": args.subscription_id,
         "subscription_name": subscription_name,
         "resources": output,
         "role_assignments": role_assignments  # Include role assignments in output
     }
+    resources_output = merge_collector_output(
+        read_json(out_file, default={}),
+        collected_output,
+    )
 
-    out_file = get_resources_path(args.subscription_id)
     write_json(out_file, resources_output)
 
     print(f"✔ Collected {len(resources)} resources")

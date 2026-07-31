@@ -44,7 +44,7 @@ export interface ResiliencyCheck {
     llm_reasoning?: string;
   };
   criticality_weight: number;
-  status: 'pass' | 'fail' | 'pending';
+  status: 'pass' | 'fail' | 'pending' | 'not_applicable';
   validation_source: string;  // Top-level validation source: 'APRL', 'Heuristic', 'LLM', 'ZoneRecommendation', etc.
   impact_weight: number;
   contribution_percent: number;

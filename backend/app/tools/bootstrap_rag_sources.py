@@ -195,7 +195,7 @@ def main() -> int:
         "--targets terraform "
         f"--terraform-local-path {terraform_root / 'docs'} "
         f"--terraform-url-file {terraform_root / 'terraform_urls.txt'} "
-        "--terraform-index-name learn-terraform-index"
+        "--terraform-index-name learn-terraform-hybrid-index"
     )
 
     return 0

@@ -21,11 +21,17 @@ from azure.identity import DefaultAzureCredential
 from azure.core.exceptions import ClientAuthenticationError, HttpResponseError, ResourceNotFoundError
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
+    AzureOpenAIVectorizer,
+    AzureOpenAIVectorizerParameters,
     HnswAlgorithmConfiguration,
     SearchField,
     SearchFieldDataType,
     SearchIndex,
     SearchableField,
+    SemanticConfiguration,
+    SemanticField,
+    SemanticPrioritizedFields,
+    SemanticSearch,
     SimpleField,
     VectorSearch,
     VectorSearchProfile,
@@ -142,9 +148,17 @@ def _resolve_default_search_connection_id(project_client: AIProjectClient) -> st
     return None
 
 
-def _build_index_definition(index_name: str, embedding_dimensions: int) -> SearchIndex:
+def _build_index_definition(
+    index_name: str,
+    embedding_dimensions: int,
+    embedding_endpoint: str,
+    embedding_deployment: str,
+    embedding_model: str,
+) -> SearchIndex:
     vector_profile_name = "vector-profile"
     vector_algo_name = "hnsw-default"
+    vectorizer_name = "foundry-embedding-vectorizer"
+    semantic_config_name = "rag-semantic-config"
 
     return SearchIndex(
         name=index_name,
@@ -172,6 +186,29 @@ def _build_index_definition(index_name: str, embedding_dimensions: int) -> Searc
                 VectorSearchProfile(
                     name=vector_profile_name,
                     algorithm_configuration_name=vector_algo_name,
+                    vectorizer_name=vectorizer_name,
+                )
+            ],
+            vectorizers=[
+                AzureOpenAIVectorizer(
+                    vectorizer_name=vectorizer_name,
+                    parameters=AzureOpenAIVectorizerParameters(
+                        resource_url=embedding_endpoint,
+                        deployment_name=embedding_deployment,
+                        model_name=embedding_model,
+                    ),
+                )
+            ],
+        ),
+        semantic_search=SemanticSearch(
+            default_configuration_name=semantic_config_name,
+            configurations=[
+                SemanticConfiguration(
+                    name=semantic_config_name,
+                    prioritized_fields=SemanticPrioritizedFields(
+                        title_field=SemanticField(field_name="title"),
+                        content_fields=[SemanticField(field_name="content")],
+                    ),
                 )
             ],
         ),
@@ -184,11 +221,20 @@ def ensure_search_indexes(
     aprl_index_name: str,
     terraform_index_name: str,
     embedding_dimensions: int,
+    embedding_endpoint: str,
+    embedding_deployment: str,
+    embedding_model: str,
 ) -> None:
     client = SearchIndexClient(search_endpoint, DefaultAzureCredential())
 
     for index_name in [aprl_index_name, terraform_index_name]:
-        definition = _build_index_definition(index_name, embedding_dimensions)
+        definition = _build_index_definition(
+            index_name,
+            embedding_dimensions,
+            embedding_endpoint,
+            embedding_deployment,
+            embedding_model,
+        )
         try:
             client.create_or_update_index(definition)
             print(f"Search index ensured: {index_name}")
@@ -281,7 +327,7 @@ def _build_agent_tools(
                             AISearchIndexResource(
                                 project_connection_id=search_connection_id,
                                 index_name=index_name,
-                                query_type=AzureAISearchQueryType.SIMPLE,
+                                query_type=AzureAISearchQueryType.VECTOR_SEMANTIC_HYBRID,
                                 top_k=5,
                             )
                         ]
@@ -420,8 +466,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reasoning-model", default="gpt-5.4-mini")
     parser.add_argument("--search-endpoint", required=True)
     parser.add_argument("--aprl-index-name", default="learn-aprl-index")
-    parser.add_argument("--terraform-index-name", default="learn-terraform-index")
+    parser.add_argument("--terraform-index-name", default="learn-terraform-hybrid-index")
     parser.add_argument("--embedding-dimensions", type=int, default=1536)
+    parser.add_argument("--embedding-endpoint", required=True)
+    parser.add_argument("--embedding-deployment", default="text-embedding-3-small")
+    parser.add_argument("--embedding-model", default="text-embedding-3-small")
     parser.add_argument(
         "--agent-dir",
         default=str(Path(__file__).resolve().parents[2] / "agent"),
@@ -440,6 +489,9 @@ def main() -> int:
     print(f"APRL index name: {args.aprl_index_name}")
     print(f"Terraform index name: {args.terraform_index_name}")
     print(f"Embedding dimensions: {args.embedding_dimensions}")
+    print(f"Embedding endpoint: {args.embedding_endpoint}")
+    print(f"Embedding deployment: {args.embedding_deployment}")
+    print(f"Embedding model: {args.embedding_model}")
     print(f"Agent directory: {args.agent_dir}")
     print(f"Recreate existing agents: {args.recreate_existing}")
 
@@ -448,6 +500,9 @@ def main() -> int:
         aprl_index_name=args.aprl_index_name,
         terraform_index_name=args.terraform_index_name,
         embedding_dimensions=args.embedding_dimensions,
+        embedding_endpoint=args.embedding_endpoint,
+        embedding_deployment=args.embedding_deployment,
+        embedding_model=args.embedding_model,
     )
 
     created_agents = ensure_foundry_agents(

@@ -84,6 +84,12 @@ class TerraformParser:
         "azurerm_application_gateway": "Microsoft.Network/applicationGateways",
         "azurerm_public_ip": "Microsoft.Network/publicIPAddresses",
         "azurerm_network_security_group": "Microsoft.Network/networkSecurityGroups",
+        "azurerm_search_service": "Microsoft.Search/searchServices",
+        "azurerm_traffic_manager_profile": "Microsoft.Network/trafficManagerProfiles",
+        "azurerm_traffic_manager_endpoint": "Microsoft.Network/trafficManagerProfiles/endpoints",
+        "azurerm_cognitive_account": "Microsoft.CognitiveServices/accounts",
+        "azurerm_cognitive_deployment": "Microsoft.CognitiveServices/accounts/deployments",
+        "azurerm_monitor_activity_log_alert": "Microsoft.Insights/activityLogAlerts",
     }
     
     def __init__(self):
@@ -219,8 +225,10 @@ class TerraformParser:
                     for resource_item in hcl_dict["resource"]:
                         # Each item is a dict with one key (resource type)
                         for resource_type, resources_dict in resource_item.items():
+                            resource_type = str(resource_type).strip().strip('"')
                             # resources_dict is a dict: {"name": {...}, "name2": {...}}
                             for resource_name, resource_config in resources_dict.items():
+                                resource_name = str(resource_name).strip().strip('"')
                                 # Normalize nested list blocks into single item
                                 # hcl2 returns blocks like "default_node_pool" as lists
                                 normalized_config = self._normalize_hcl2_config(resource_config)
@@ -243,14 +251,15 @@ class TerraformParser:
                 if "variable" in hcl_dict:
                     for var_item in hcl_dict["variable"]:
                         for var_name, var_config in var_item.items():
+                            var_name = str(var_name).strip().strip('"')
                             # var_config might be a list with one dict
                             if isinstance(var_config, list) and var_config:
                                 var_config = var_config[0]
                             self.variables[var_name] = Variable(
                                 name=var_name,
-                                type=var_config.get("type") if isinstance(var_config, dict) else None,
-                                default=var_config.get("default") if isinstance(var_config, dict) else None,
-                                description=var_config.get("description") if isinstance(var_config, dict) else None,
+                                type=self._normalize_hcl2_value(var_config.get("type")) if isinstance(var_config, dict) else None,
+                                default=self._normalize_hcl2_value(var_config.get("default")) if isinstance(var_config, dict) else None,
+                                description=self._normalize_hcl2_value(var_config.get("description")) if isinstance(var_config, dict) else None,
                             )
                 
                 self.resources = resources
@@ -279,6 +288,8 @@ class TerraformParser:
         normalized = {}
         
         for key, value in config.items():
+            if key == "__is_block__":
+                continue
             # Common nested blocks that appear as lists
             single_block_types = {
                 'default_node_pool', 'identity', 'network_profile',
@@ -296,10 +307,23 @@ class TerraformParser:
             elif isinstance(value, dict):
                 # Recursively normalize nested dicts
                 normalized[key] = self._normalize_hcl2_config(value)
+            elif isinstance(value, list):
+                normalized[key] = [
+                    self._normalize_hcl2_config(item) if isinstance(item, dict) else self._normalize_hcl2_value(item)
+                    for item in value
+                ]
             else:
-                # Keep as-is (strings, numbers, booleans, lists of primitives)
-                normalized[key] = value
+                normalized[key] = self._normalize_hcl2_value(value)
         
+        return normalized
+
+    @staticmethod
+    def _normalize_hcl2_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if len(normalized) >= 2 and normalized[0] == normalized[-1] == '"':
+            return normalized[1:-1]
         return normalized
     
     def _build_resource_id(

@@ -7,7 +7,7 @@ Usage examples:
         --aprl-local-path ./aprl \
         --terraform-local-path ./docs/terraform \
         --aprl-index-name learn-aprl-index \
-        --terraform-index-name learn-terraform-index
+        --terraform-index-name learn-terraform-hybrid-index
 
 Required configuration (env or args):
 - AZURE_SEARCH_ENDPOINT

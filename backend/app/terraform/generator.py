@@ -71,6 +71,12 @@ class TerraformResourceGenerator:
         "azurerm_data_factory": "Microsoft.DataFactory/factories",
         "azurerm_synapse_workspace": "Microsoft.Synapse/workspaces",
         "azurerm_key_vault": "Microsoft.KeyVault/vaults",
+        "azurerm_search_service": "Microsoft.Search/searchServices",
+        "azurerm_traffic_manager_profile": "Microsoft.Network/trafficManagerProfiles",
+        "azurerm_traffic_manager_endpoint": "Microsoft.Network/trafficManagerProfiles/endpoints",
+        "azurerm_cognitive_account": "Microsoft.CognitiveServices/accounts",
+        "azurerm_cognitive_deployment": "Microsoft.CognitiveServices/accounts/deployments",
+        "azurerm_monitor_activity_log_alert": "Microsoft.Insights/activityLogAlerts",
     }
     
     def __init__(self, subscription_id: str, subscription_name: str = "Terraform"):
@@ -129,6 +135,10 @@ class TerraformResourceGenerator:
 
         # Generate relationships/edges
         self._generate_edges()
+
+        # Add child summaries after edge discovery so embedded references do not
+        # create duplicate or self-referential relationships.
+        self._embed_referenced_children()
         
         # Build output dictionaries
         # Filter out synthetic Terraform resources and resource groups to match Collector output
@@ -163,6 +173,29 @@ class TerraformResourceGenerator:
         }
         
         return resources_output, edges_output
+
+    def _embed_referenced_children(self) -> None:
+        parent_collections = {
+            "microsoft.network/trafficmanagerprofiles/endpoints": ("profile_id", "endpoints"),
+            "microsoft.cognitiveservices/accounts/deployments": ("cognitive_account_id", "deployments"),
+        }
+
+        for child in self.generated_resources.values():
+            mapping = parent_collections.get(child.type.lower())
+            if not mapping:
+                continue
+
+            reference_property, collection_property = mapping
+            parent_id = (child.properties or {}).get(reference_property)
+            parent = self.generated_resources.get(parent_id)
+            if not parent:
+                continue
+
+            parent.properties.setdefault(collection_property, []).append({
+                "id": child.id,
+                "name": child.name,
+                **(child.properties or {}),
+            })
 
     def _enrich_aks_kubernetes_workloads(self) -> None:
         """Scan kubernetes_deployment/stateful_set resources and annotate AKS cluster properties.
@@ -761,6 +794,11 @@ class TerraformResourceGenerator:
                 # Storage associations
                 'storage_account_name': ('uses', 'storage_account'),
                 'storage_account_id': ('uses', 'storage_account'),
+
+                # Traffic Manager and Azure OpenAI relationships
+                'profile_id': ('contained_in', 'any'),
+                'target_resource_id': ('routes_to', 'any'),
+                'cognitive_account_id': ('contained_in', 'any'),
                 
                 # ACR associations
                 'container_registry_id': ('uses', 'acr'),

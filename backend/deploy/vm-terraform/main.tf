@@ -284,6 +284,18 @@ resource "azurerm_search_service" "this" {
   local_authentication_enabled  = false
   public_network_access_enabled = false
   tags                          = local.common_tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+resource "azurerm_search_shared_private_link_service" "foundry_embedding" {
+  name               = "spl-foundry-embedding-${local.prefix}"
+  search_service_id  = azurerm_search_service.this.id
+  target_resource_id = azurerm_cognitive_account.this.id
+  subresource_name   = "openai_account"
+  request_message    = "Azure AI Search query vectorization"
 }
 
 resource "azurerm_storage_account" "this" {
@@ -486,6 +498,24 @@ resource "azurerm_role_assignment" "vm_foundry_project_user" {
 resource "azurerm_role_assignment" "foundry_project_identity_hub_user" {
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Foundry User"
+  principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "search_foundry_openai_user" {
+  scope                = azurerm_cognitive_account.this.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_search_service.this.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "foundry_project_search_service_contributor" {
+  scope                = azurerm_search_service.this.id
+  role_definition_name = "Search Service Contributor"
+  principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "foundry_project_search_index_data_contributor" {
+  scope                = azurerm_search_service.this.id
+  role_definition_name = "Search Index Data Contributor"
   principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
 }
 
