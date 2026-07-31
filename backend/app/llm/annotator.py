@@ -140,7 +140,7 @@ def annotate_graph(snapshot: Dict[str, Any], subscription_id: str | None = None)
 
     LOGGER.info("Starting LLM annotation request")
 
-    conversation_id = get_subscription_conversation_id(subscription_id) if subscription_id else None
+    conversation_id = get_subscription_conversation_id(subscription_id, "annotations") if subscription_id else None
     LOGGER.debug("Annotator conversation_id=%s", conversation_id)
 
     # Decide: batch or single call based on graph size
@@ -222,7 +222,7 @@ def _annotate_batched(
         }
 
         try:
-            conversation_id = get_subscription_conversation_id(subscription_id) if subscription_id else None
+            conversation_id = get_subscription_conversation_id(subscription_id, "annotations") if subscription_id else None
             raw = _call_llm(
                 batch_summary,
                 subscription_id=subscription_id,
@@ -259,20 +259,14 @@ def _use_real_llm() -> bool:
 def _calculate_criticality_weights(annotations: LLMAnnotations) -> LLMAnnotations:
     """
     Calculate criticality_weight for each node based on criticality_score.
-    Excludes nodes with hide_by_default=true.
     Normalizes weights to sum to exactly 100.
     """
-    # Collect nodes with scores that should contribute to weight
     weighted_nodes = []
     for node_ann in annotations.nodes:
         ann = node_ann.annotations
-        if ann.hide_by_default:
-            # Hidden nodes get 0 weight
-            ann.criticality_weight = 0.0
-        elif ann.criticality_score is not None:
+        if ann.criticality_score is not None:
             weighted_nodes.append(node_ann)
         else:
-            # No score means no weight
             ann.criticality_weight = None
 
     # Calculate total score for normalization
@@ -455,6 +449,7 @@ def _call_llm(
                 if generated_conversation_id and str(generated_conversation_id).strip():
                     set_subscription_conversation_id(
                         subscription_id,
+                        "annotations",
                         str(generated_conversation_id).strip(),
                     )
 

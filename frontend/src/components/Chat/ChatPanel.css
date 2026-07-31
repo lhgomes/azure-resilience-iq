@@ -421,6 +421,33 @@
   gap: 6px;
 }
 
+.question-details-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 72px;
+  margin-top: 8px;
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+  font-size: 12px;
+}
+
+.question-details-input:focus {
+  border-color: #5b5fc7;
+  outline: 2px solid #e0e7ff;
+}
+
+.question-submitted {
+  margin: 8px 0 0;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .question-option-btn {
   border: 1px solid #d1d5db;
   background: #ffffff;

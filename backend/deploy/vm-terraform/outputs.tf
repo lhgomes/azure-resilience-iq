@@ -48,6 +48,11 @@ output "foundry_hub_name" {
   description = "Azure Foundry account name."
 }
 
+output "foundry_hub_id" {
+  value       = azurerm_cognitive_account.this.id
+  description = "Azure Foundry account resource ID."
+}
+
 output "foundry_project_name" {
   value       = azurerm_cognitive_account_project.this.name
   description = "Azure AI Foundry project name."
@@ -61,6 +66,11 @@ output "reasoning_model_deployment_name" {
 output "embedding_model_deployment_name" {
   value       = azurerm_cognitive_deployment.embedding.name
   description = "Embedding model/deployment name used for hydration and runtime."
+}
+
+output "embedding_model_endpoint" {
+  value       = "https://${azurerm_cognitive_account.this.custom_subdomain_name}.openai.azure.com"
+  description = "Azure OpenAI-compatible endpoint used by the Search query vectorizer."
 }
 
 output "storage_account_name" {

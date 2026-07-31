@@ -128,7 +128,7 @@ class HeuristicValidator:
         settings = load_settings()
         self.llm_gateway = llm_gateway
         self.subscription_id = subscription_id
-        self.conversation_id = get_subscription_conversation_id(subscription_id) if subscription_id else None
+        self.conversation_id = get_subscription_conversation_id(subscription_id, "resilience") if subscription_id else None
         LOGGER.debug("Resilience conversation_id=%s", self.conversation_id)
 
         self.strategies_cache: Dict[str, ValidationStrategy] = {}
@@ -178,7 +178,7 @@ class HeuristicValidator:
         if generated_conversation_id and str(generated_conversation_id).strip():
             self.conversation_id = str(generated_conversation_id).strip()
             if self.subscription_id:
-                set_subscription_conversation_id(self.subscription_id, self.conversation_id)
+                set_subscription_conversation_id(self.subscription_id, "resilience", self.conversation_id)
         return response
 
     @staticmethod
@@ -794,11 +794,17 @@ When including Azure CLI queries, ensure JSON-safe quoting."""
         Returns:
             (status, reasoning) tuple if obvious failure detected, None otherwise
         """
+        properties = resource.get("properties", {}) if isinstance(resource, dict) else {}
+        resource_config = {
+            **resource,
+            **(properties if isinstance(properties, dict) else {}),
+        }
+
         # SQL logical server geo-replication / failover group checks
         if "sql/servers" in resource_type.lower():
             desc_lower = description.lower()
             if "geo replication" in desc_lower or "failover" in desc_lower or "secondary" in desc_lower:
-                props = resource.get("properties", {}) if isinstance(resource, dict) else {}
+                props = resource_config
                 has_geo = any(
                     props.get(key)
                     for key in [
@@ -847,12 +853,27 @@ When including Azure CLI queries, ensure JSON-safe quoting."""
         
         # Storage account redundancy checks
         if "storage/storageaccounts" in resource_type.lower():
-            if "geo" in description.lower() or "redundancy" in description.lower() or "replication" in description.lower():
-                replication_type = resource.get("replication_type") or resource.get("account_replication_type")
-                if replication_type and "LRS" in str(replication_type).upper():
+            if any(term in description.lower() for term in ("geo", "redundancy", "redundant", "replication")):
+                replication_type = resource_config.get("replication_type") or resource_config.get("account_replication_type")
+                normalized_replication = str(replication_type or "").upper()
+                if normalized_replication in {"ZRS", "GZRS", "RA-GZRS", "GRS", "RA-GRS"}:
+                    return ("pass", f"Replication type {replication_type} provides zone or region redundancy")
+                if normalized_replication == "LRS":
                     return ("fail", f"Replication type is {replication_type} - not geo-redundant")
-                elif replication_type and "GRS" not in str(replication_type).upper() and "GZRS" not in str(replication_type).upper():
+                elif replication_type:
                     return ("fail", f"Replication type {replication_type} is not geo-redundant")
+
+        if "search/searchservices" in resource_type.lower():
+            description_lower = description.lower()
+            if "az support" in description_lower or "multiple replicas" in description_lower:
+                replica_count = resource_config.get("replica_count") or resource_config.get("replicaCount") or 0
+                try:
+                    replica_count = int(replica_count)
+                except (TypeError, ValueError):
+                    replica_count = 0
+                if replica_count >= 2:
+                    return ("pass", f"Search service has {replica_count} replicas configured for zone distribution")
+                return ("fail", f"Search service has only {replica_count} replicas; at least 2 are required")
         
         # Cosmos DB multi-region checks
         if "documentdb/databaseaccounts" in resource_type.lower():
@@ -980,18 +1001,19 @@ Resource Configuration:
 
 Decision rules:
 - pass: required resilience properties are present and enabled
-- fail: required properties are missing, null/empty, or explicitly disabled
-- pending: only when evidence is truly ambiguous (rare)
+- fail: the recommendation unconditionally applies and the configuration is definitively non-compliant
+- pending: available static configuration is insufficient to decide
+- not_applicable: the recommendation is conditional on a workload mode or requirement not evidenced here (for example batch processing, geographic routing, PAYG overflow, Citrix VDA, or data-residency requirements)
 
 Use only the provided resource JSON and recommendation text.
-If a required property is absent, treat it as not configured (fail).
+Do not assume every catalog recommendation applies. Never mark a conditional recommendation failed solely because its optional workload prerequisite is absent.
 
 Return valid JSON with this exact shape:
 {{
     "evaluations": [
         {{
             "id": "uuid",
-            "status": "pass|fail|pending",
+            "status": "pass|fail|pending|not_applicable",
             "reasoning": "1-2 specific sentences",
             "quick_header": "short status",
             "practical_guide": "actionable fix steps (Terraform property names and/or Azure Portal path)",
@@ -1083,8 +1105,11 @@ RESOURCES AND RECOMMENDATIONS:{evaluations_text}"""
                 item_uuid = str(item_id_raw)
                 # Map UUID back to full resource ID
                 full_id = uuid_to_full_id.get(item_uuid, item_uuid)
+                status = str(eval_item.get('status', 'pending')).lower()
+                if status not in {'pass', 'fail', 'pending', 'not_applicable'}:
+                    status = 'pending'
                 result[full_id] = {
-                    'status': eval_item.get('status', 'pending'),
+                    'status': status,
                     'reasoning': eval_item.get('reasoning', ''),
                     'quick_header': eval_item.get('quick_header', 'Review required'),
                     'practical_guide': eval_item.get('practical_guide', 'See APRL documentation'),

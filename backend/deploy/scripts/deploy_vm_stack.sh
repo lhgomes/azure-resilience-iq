@@ -142,6 +142,8 @@ FOUNDRY_ACCOUNT_NAME="$(jq -r '.foundry_hub_name.value' <<<"$TF_OUT")"
 FOUNDRY_PROJECT_NAME="$(jq -r '.foundry_project_name.value' <<<"$TF_OUT")"
 REASONING_MODEL="$(jq -r '.reasoning_model_deployment_name.value' <<<"$TF_OUT")"
 EMBEDDING_MODEL="$(jq -r '.embedding_model_deployment_name.value' <<<"$TF_OUT")"
+EMBEDDING_ENDPOINT="$(jq -r '.embedding_model_endpoint.value' <<<"$TF_OUT")"
+FOUNDRY_ACCOUNT_ID="$(jq -r '.foundry_hub_id.value' <<<"$TF_OUT")"
 STORAGE_ACCOUNT_NAME="$(jq -r '.storage_account_name.value' <<<"$TF_OUT")"
 CONTAINER_NAME="$(jq -r '.deployment_state_container_name.value' <<<"$TF_OUT")"
 DEPLOYMENT_STATE_PREFIX="$(jq -r '.deployment_state_prefix.value' <<<"$TF_OUT")"
@@ -163,6 +165,21 @@ FOUNDRY_PROJECT_ENDPOINT="${AI_FOUNDRY_PROJECT_ENDPOINT_OVERRIDE:-$FOUNDRY_PROJE
 EMBEDDING_MODEL="${AI_FOUNDRY_EMBEDDING_MODEL:-$EMBEDDING_MODEL}"
 OPENAI_API_VERSION="${AI_FOUNDRY_OPENAI_API_VERSION:-2025-03-01-preview}"
 SEARCH_CONNECTION_NAME="${AI_FOUNDRY_SEARCH_CONNECTION_NAME:-azure-ai-search-default}"
+
+if [[ "$APP_ONLY" != "true" ]]; then
+  echo "==> Approving Azure AI Search private connection to the embedding endpoint"
+  while IFS= read -r connection_id; do
+    [[ -z "$connection_id" ]] && continue
+    az network private-endpoint-connection approve \
+      --id "$connection_id" \
+      --description "Approved for Azure AI Search query vectorization" \
+      --only-show-errors >/dev/null
+  done < <(az network private-endpoint-connection list \
+    --id "$FOUNDRY_ACCOUNT_ID" \
+    --query "[?properties.privateLinkServiceConnectionState.status=='Pending' && contains(properties.groupIds, 'openai_account')].id" \
+    --output tsv \
+    --only-show-errors)
+fi
 
 if [[ "$APP_ONLY" != "true" ]]; then
   echo "==> Ensuring Foundry project Search connection"
@@ -253,6 +270,7 @@ if (-not \$isAdministrator) {
   SearchEndpoint = '$SEARCH_ENDPOINT'
   ReasoningModel = '$REASONING_MODEL'
   EmbeddingModel = '$EMBEDDING_MODEL'
+  EmbeddingEndpoint = '$EMBEDDING_ENDPOINT'
   OpenAiApiVersion = '$OPENAI_API_VERSION'
   DeploymentStatePrefix = '$DEPLOYMENT_STATE_PREFIX'
   AgentsMigrate = '$AGENTS_MIGRATE'
@@ -360,6 +378,7 @@ BOOTSTRAP_RESULT="$(az vm run-command invoke \
     "SearchEndpoint=$SEARCH_ENDPOINT" \
     "ReasoningModel=$REASONING_MODEL" \
     "EmbeddingModel=$EMBEDDING_MODEL" \
+    "EmbeddingEndpoint=$EMBEDDING_ENDPOINT" \
     "OpenAiApiVersion=$OPENAI_API_VERSION" \
     "DeploymentStatePrefix=$DEPLOYMENT_STATE_PREFIX" \
     "AgentsMigrate=$AGENTS_MIGRATE" \

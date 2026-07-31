@@ -89,7 +89,7 @@ def _ensure_within_dir(base_dir: Path, candidate: Path) -> Path:
 
 
 def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, bool]:
-    existing_conversation_id = get_subscription_conversation_id(subscription_id)
+    existing_conversation_id = get_subscription_conversation_id(subscription_id, "annotations")
     if existing_conversation_id and str(existing_conversation_id).strip():
         return str(existing_conversation_id).strip(), False
 
@@ -104,7 +104,7 @@ def _ensure_subscription_conversation_id(subscription_id: str) -> tuple[str, boo
         raise RuntimeError("Conversation creation failed: empty conversation id")
 
     conversation_id = str(conversation_id).strip()
-    set_subscription_conversation_id(subscription_id, conversation_id)
+    set_subscription_conversation_id(subscription_id, "annotations", conversation_id)
     return conversation_id, True
 
 
@@ -243,6 +243,10 @@ async def upload_terraform_files(
                 resources = parser.parse_file(file_path, trusted_root=uploads_dir)
 
             all_resources.extend(resources)
+
+        parser.resources = all_resources
+        parser.resolve_variables_and_locals()
+        parser.apply_resolutions_to_resources()
 
         if not all_resources:
             raise HTTPException(

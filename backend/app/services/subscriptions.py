@@ -48,7 +48,8 @@ def list_subscriptions() -> list[SubscriptionInfo]:
                 data = {}
             subscription_name = data.get("subscription_name") or subscription_id
             resource_count = len(data.get("resources", [])) if isinstance(data.get("resources"), list) else 0
-            conversation_id = data.get("conversation_id")
+            conversation_ids = data.get("conversation_ids")
+            conversation_id = conversation_ids.get("chat") if isinstance(conversation_ids, dict) else None
         except Exception as e:
             LOGGER.warning(f"Failed to read resources.json for {subscription_id}: {e}")
             subscription_name = subscription_id

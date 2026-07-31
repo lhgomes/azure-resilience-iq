@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { canonicalTypeForNode, normalizeTypeString, LEVEL_TO_MAX_IMPORTANCE, type ViewLevel } from "../domain/graphView";
 import { saveOverride, getOverrides, deleteOverride, saveBatchOverrides, type ResiliencyCheck, type BatchOverrideItem } from "../api/resilience";
-import { calculateResiliencyScore, getElementWeight as getElementWeightUtil, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
+import { calculateResiliencyScore, getElementWeight as getElementWeightUtil, isScoredResiliencyCheck, DEFAULT_WEIGHTS, type ResiliencyWeights } from "../utils/resilienceScore";
 
 interface ResiliencyEvaluation {
   resource_id: string;
@@ -665,7 +665,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     let totalWeight = 0;
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      const checksOrFindings = (evaluation.findings || evaluation.checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -679,7 +679,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     let passedWeight = 0;
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      const checksOrFindings = (evaluation.findings || evaluation.checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -716,7 +716,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = evaluation.findings || evaluation.checks || [];
+      const checksOrFindings = (evaluation.findings || evaluation.checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -789,7 +789,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     let totalWeight = 0;
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -802,7 +802,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     // Second pass: build breakdown with normalized weights
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const impact = finding.impact || "Unknown";
         const category = finding.category || "Other";
@@ -844,7 +844,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const subId = extractSubscriptionId(resourceId) ?? "Unknown";
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
 
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
@@ -936,7 +936,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     let totalWeight = 0;
     Object.entries(evaluationsWithOverrides).forEach(([resourceId, evaluation]: [string, any]) => {
       const elementWeight = getElementWeight(resourceId);
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -952,7 +952,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       const annotation = annotationMap.get(resourceId);
       const serviceCategory = annotation?.azure_service_category || "Other";
       
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         const category = finding.category || "Other";
         const impactWeight = impactWeights[finding.impact] || 0.1;
@@ -986,7 +986,7 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
   const validationSources = useMemo(() => {
     const sources = new Set<string>();
     Object.entries(evaluationsWithOverrides).forEach(([, evaluation]) => {
-      const checksOrFindings = (evaluation as any).findings || (evaluation as any).checks || [];
+      const checksOrFindings = ((evaluation as any).findings || (evaluation as any).checks || []).filter(isScoredResiliencyCheck);
       checksOrFindings.forEach((finding: any) => {
         if (finding.validation_source) {
           // Handle both string (legacy) and array (new format)
@@ -1581,12 +1581,6 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
     }
   };
 
-  const getStatusColor = (status: string) => {
-    if (status === "pass") return "#10b981";
-    if (status === "pending") return "#6b7280";
-    return "#ef4444";
-  };
-
   const exportToCsv = () => {
     // Prepare data for export
     const exportData = findingsWithContribution.map(finding => ({
@@ -1601,7 +1595,13 @@ const ResiliencySummary: React.FC<ResiliencySummaryProps> = ({
       "Category": finding.category,
       "Impact": finding.impact,
       "Contribution %": finding.contribution_percent?.toFixed(2) || "0.00",
-      "Status": finding.status === "pass" ? "Passed" : "Failed",
+      "Status": finding.status === "pass"
+        ? "Passed"
+        : finding.status === "fail"
+          ? "Failed"
+          : finding.status === "not_applicable"
+            ? "Not Applicable"
+            : "Pending Review",
       "Validated By": finding.validation_source || "APRL",
       "Benefit": finding.potential_benefits || ""
     }));

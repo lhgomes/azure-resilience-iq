@@ -11,10 +11,14 @@ export interface ResiliencyWeights {
 }
 
 export interface ResiliencyCheck {
-  status: "pass" | "fail";
+  status: "pass" | "fail" | "pending" | "not_applicable";
   category: string;
   impact: "High" | "Medium" | "Low";
   [key: string]: any;
+}
+
+export function isScoredResiliencyCheck(check: Pick<ResiliencyCheck, "status">): boolean {
+  return check.status === "pass" || check.status === "fail";
 }
 
 /**
@@ -37,7 +41,7 @@ export function calculateResiliencyScore(
   let totalWeight = 0;
   let passedWeight = 0;
 
-  checks.forEach((check) => {
+  checks.filter(isScoredResiliencyCheck).forEach((check) => {
     const categoryWeight = weights.categoryWeights[check.category] ?? 0.05;
     const impactWeight = weights.impactWeights[check.impact] ?? 0.1;
     const checkWeight = elementWeight * categoryWeight * impactWeight;

@@ -55,6 +55,11 @@ def get_resilience_evaluations_path(subscription_id: str) -> Path:
     return get_subscription_dir(subscription_id) / "resilience_evaluations.json"
 
 
+def get_agent_memory_path(subscription_id: str) -> Path:
+    """Get the bounded cross-flow agent memory path for a subscription."""
+    return get_subscription_dir(subscription_id) / "agent_memory.json"
+
+
 def get_workloads_dir() -> Path:
     """Get the base directory for saved workload views."""
     return DATA_DIR / "workload"
@@ -63,6 +68,11 @@ def get_workloads_dir() -> Path:
 def get_workload_path(workload_id: str) -> Path:
     """Get the workload json path for a saved workload view."""
     return get_workloads_dir() / f"{workload_id}.json"
+
+
+def get_workload_agent_memory_path(workload_id: str) -> Path:
+    """Get the bounded cross-flow agent memory path for a workload."""
+    return get_workloads_dir() / f"{workload_id}.agent_memory.json"
 
 
 # Legacy: for backward compatibility during migration

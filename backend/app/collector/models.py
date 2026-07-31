@@ -7,6 +7,7 @@ class AzureResource(BaseModel):
     short_id: Optional[str] = None
     name: str
     type: str
+    kind: Optional[str] = None
     location: Optional[str]
     resource_group: str
     subscription_id: str

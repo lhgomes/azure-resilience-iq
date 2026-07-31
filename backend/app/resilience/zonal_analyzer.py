@@ -172,6 +172,23 @@ class ZonalAnalyzer:
         location = str(location_raw).lower()
         sku = resource.get("sku", {})
         sku_name = sku.get("name", "") if isinstance(sku, dict) else ""
+
+        non_zonal_control_plane_types = {
+            "microsoft.network/trafficmanagerprofiles",
+            "microsoft.network/trafficmanagerprofiles/endpoints",
+            "microsoft.cognitiveservices/accounts",
+            "microsoft.cognitiveservices/accounts/deployments",
+            "microsoft.insights/activitylogalerts",
+        }
+        if resource_type in non_zonal_control_plane_types:
+            return ZonalData(
+                zones_used=[],
+                is_zone_redundant=False,
+                zone_count=0,
+                meets_3az_requirement=True,
+                deployment_pattern=DeploymentPattern.NOT_APPLICABLE,
+                recommendation="N/A - This global, control-plane, or child resource has no independent availability-zone placement.",
+            )
         
         # FIRST CHECK: Does the region support availability zones?
         if location and not ZonalAnalyzer.is_region_zone_capable(location):
@@ -230,6 +247,15 @@ class ZonalAnalyzer:
         if isinstance(zones, str):
             zones = [zones]
         zones = [str(z) for z in zones] if zones else []
+
+        if resource_type == "microsoft.search/searchservices" and not zones:
+            replica_count = properties.get("replica_count") or properties.get("replicaCount") or 0
+            try:
+                replica_count = int(replica_count)
+            except (TypeError, ValueError):
+                replica_count = 0
+            if replica_count >= 2:
+                zones = [str(zone) for zone in range(1, min(replica_count, 3) + 1)]
         
         # Special handling for AKS: Check node pool availability zones
         if resource_type == "microsoft.containerservice/managedclusters" and not zones:

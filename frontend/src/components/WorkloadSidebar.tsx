@@ -725,6 +725,7 @@ const WorkloadSidebar: React.FC<Props> = props => {
     return Math.max(0, Math.min(100, Math.round(props.mappingStatus.progress)));
   }, [props.mappingStatus?.progress]);
 
+  const mappingCompleted = mappingRunRequested && props.mappingStatus?.status === "completed";
   const shouldShowMappingStatus = props.mappingInProgress || mappingRunRequested;
 
   React.useEffect(() => {
@@ -1914,7 +1915,14 @@ const WorkloadSidebar: React.FC<Props> = props => {
             </div>
 
             <div style={{ padding: "0 20px 16px", display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              {activeMappingTab === "terraform" ? (
+              {mappingCompleted ? (
+                <button
+                  onClick={closeMappingModal}
+                  style={secondaryButton}
+                >
+                  Close
+                </button>
+              ) : activeMappingTab === "terraform" ? (
                 <button
                   onClick={handleTerraformUpload}
                   disabled={terraformUploadLoading || terraformFiles.length === 0}
@@ -1958,13 +1966,15 @@ const WorkloadSidebar: React.FC<Props> = props => {
                 </button>
               )}
 
-              <button
-                onClick={closeMappingModal}
-                disabled={props.mappingInProgress || terraformUploadLoading}
-                style={props.mappingInProgress || terraformUploadLoading ? disabledButton : secondaryButton}
-              >
-                Cancel
-              </button>
+              {!mappingCompleted && (
+                <button
+                  onClick={closeMappingModal}
+                  disabled={props.mappingInProgress || terraformUploadLoading}
+                  style={props.mappingInProgress || terraformUploadLoading ? disabledButton : secondaryButton}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
         </div>

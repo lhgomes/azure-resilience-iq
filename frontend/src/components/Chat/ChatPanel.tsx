@@ -73,6 +73,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [mentionTokenMap, setMentionTokenMap] = useState<Record<string, string>>({});
   const [clarifyingSelections, setClarifyingSelections] = useState<Record<string, Record<number, string>>>({});
+  const [clarifyingDetails, setClarifyingDetails] = useState<Record<string, string>>({});
+  const [submittedClarifications, setSubmittedClarifications] = useState<Set<string>>(new Set());
 
   const buildWelcomeMessage = (baselineSummary?: string): ChatMessageType => {
     const cleaned = (baselineSummary || '').trim();
@@ -214,13 +216,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       .filter((item: ClarifyingQuestion) => item.question.length > 0);
   };
 
-  const buildClarificationReply = (questions: ClarifyingQuestion[], answersByIndex: Record<number, string>): string => {
+  const buildClarificationReply = (
+    questions: ClarifyingQuestion[],
+    answersByIndex: Record<number, string>,
+    details: string,
+  ): string => {
     const lines: string[] = ['Clarification answers:'];
     questions.forEach((question: ClarifyingQuestion, index: number) => {
       const answer = String(answersByIndex[index] || '').trim();
       if (!answer) return;
       lines.push(`${index + 1}. ${question.question}: ${answer}`);
     });
+    if (details.trim()) {
+      lines.push(`Additional details:\n${details.trim()}`);
+    }
     lines.push('Please proceed with generation using these selections.');
     return lines.join('\n');
   };
@@ -620,7 +629,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     if (requiredCount > 0 && selectedCount < requiredCount) return;
 
-    const answerMessage = buildClarificationReply(questions, selectedAnswers);
+    const details = clarifyingDetails[messageId] || '';
+    const hasFreeTextQuestion = questions.some((question: ClarifyingQuestion) =>
+      (question.possible_answers || []).length === 0
+    );
+    if (hasFreeTextQuestion && !details.trim()) return;
+
+    const answerMessage = buildClarificationReply(questions, selectedAnswers, details);
     const flow = resolveResponseFlow(response);
     const contextOverride = flow ? { preferred_agent_flow: flow } : undefined;
     setClarifyingSelections((prev: Record<string, Record<number, string>>) => {
@@ -628,6 +643,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       delete next[messageId];
       return next;
     });
+    setClarifyingDetails((prev: Record<string, string>) => {
+      const next = { ...prev };
+      delete next[messageId];
+      return next;
+    });
+    setSubmittedClarifications((prev: Set<string>) => new Set(prev).add(messageId));
     void handleSendMessage(answerMessage, contextOverride);
   };
 
@@ -1070,7 +1091,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                                     key={`${i}-${answerIndex}`}
                                     type="button"
                                     className={`question-option-btn ${clarifyingSelections[msg.id]?.[i] === answer ? 'selected' : ''}`}
-                                    disabled={isLoading}
+                                    disabled={isLoading || submittedClarifications.has(msg.id)}
                                     onClick={() => handleClarifyingAnswerSelect(msg.id, i, answer)}
                                   >
                                     {answer}
@@ -1082,13 +1103,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         </div>
                         );
                       })}
-                      <div className="question-actions">
+                      {!submittedClarifications.has(msg.id) && (
+                        <textarea
+                          className="question-details-input"
+                          value={clarifyingDetails[msg.id] || ''}
+                          disabled={isLoading}
+                          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setClarifyingDetails((prev: Record<string, string>) => ({
+                            ...prev,
+                            [msg.id]: event.target.value,
+                          }))}
+                          placeholder="Add resource names, regions, SKU, topology, or existing Terraform HCL"
+                          rows={3}
+                        />
+                      )}
+                      {submittedClarifications.has(msg.id) ? (
+                        <p className="question-submitted">Answers submitted</p>
+                      ) : <div className="question-actions">
                         <button
                           type="button"
                           className="question-submit-btn"
                           disabled={isLoading || (() => {
                             const progress = getClarifyingProgress(msg.id, msg.response);
-                            return progress.required === 0 || progress.answered < progress.required;
+                            const questions = normalizeClarifyingQuestions(msg.response?.clarifying_questions || []);
+                            const needsDetails = questions.some((question: ClarifyingQuestion) =>
+                              (question.possible_answers || []).length === 0
+                            );
+                            return progress.answered < progress.required || (needsDetails && !(clarifyingDetails[msg.id] || '').trim());
                           })()}
                           onClick={() => handleSubmitClarifyingAnswers(msg.id, msg.response)}
                         >
@@ -1102,7 +1142,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         >
                           Proceed anyway
                         </button>
-                      </div>
+                      </div>}
                     </div>
                   )}
 
@@ -1144,13 +1184,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     </div>
                   )}
 
+                {msg.response.terraform_validation && (
+                  <div className="chat-validation-warning">
+                    {renderMessageContent(msg.response.terraform_validation)}
+                  </div>
+                )}
+
                 {msg.response.terraform_code && (
                   <>
-                    {msg.response.terraform_validation && (
-                      <div className="chat-validation-warning">
-                        {renderMessageContent(msg.response.terraform_validation)}
-                      </div>
-                    )}
                     <div className="chat-code-block">
                       <div className="chat-code-header">
                         <span>Terraform</span>

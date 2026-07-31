@@ -1,0 +1,21 @@
+defaultEnvironment: dev
+environments:
+  dev:
+    evaluationSuites:
+      - id: terraform-compiler-agent-smoke
+        tags:
+          tier: smoke
+          purpose: baseline
+          stage: generated
+        suiteName: terraform-compiler-agent-smoke
+        suiteVersion: "1"
+        generationJobId: suitegen-terraform-compiler-agent-smoke-v1-d87488eb
+        generationSource: synthetic
+        dataset: sys-evalartifacts-terraform-compiler-agent-smoke-evaluator
+        datasetVersion: v1-90d27095
+        datasetFile: datasets/sys-evalartifacts-terraform-compiler-agent-smoke-evaluator-v1-90d27095.ref.json
+        evaluators:
+          - name: terraform-compiler-agent-smoke-evaluator
+            version: "1"
+            threshold: 0.5
+            definitionFile: evaluators/terraform-compiler-agent-smoke-evaluator-v1.json
