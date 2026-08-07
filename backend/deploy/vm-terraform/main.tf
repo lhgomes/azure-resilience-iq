@@ -33,6 +33,7 @@ locals {
   storage_account_name            = substr(replace("st${var.project_name}${var.environment}${random_string.suffix.result}", "-", ""), 0, 24)
   deployment_state_prefix         = "${var.project_name}/${var.environment}"
   entra_admin_object_id           = var.entra_admin_object_id != "" ? var.entra_admin_object_id : data.azurerm_client_config.current.object_id
+  entra_login_principal_ids       = toset(concat([local.entra_admin_object_id], var.entra_login_object_ids))
   workload_management_group_id    = var.workload_management_group_id != "" ? var.workload_management_group_id : data.azurerm_client_config.current.tenant_id
   workload_management_group_scope = "/providers/Microsoft.Management/managementGroups/${local.workload_management_group_id}"
   service_group_member_rbac_scope = var.enable_workload_management_group_rbac ? local.workload_management_group_scope : "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
@@ -472,9 +473,10 @@ resource "azurerm_virtual_machine_extension" "aad_login" {
 }
 
 resource "azurerm_role_assignment" "entra_vm_admin_login" {
+  for_each             = local.entra_login_principal_ids
   scope                = azurerm_windows_virtual_machine.this.id
   role_definition_name = "Virtual Machine Administrator Login"
-  principal_id         = local.entra_admin_object_id
+  principal_id         = each.value
 }
 
 resource "azurerm_role_assignment" "vm_foundry_hub_user" {

@@ -52,6 +52,12 @@ variable "entra_admin_object_id" {
   description = "Optional Entra object id to grant VM Administrator Login. Defaults to current az login principal."
 }
 
+variable "entra_login_object_ids" {
+  type        = list(string)
+  default     = []
+  description = "Additional Entra object ids (users or groups) to grant VM Administrator Login so they can sign in with AD Integrated credentials. Required when the deploy principal differs from the interactive sign-in user (for example CI/service-principal deployments)."
+}
+
 variable "search_sku" {
   type        = string
   default     = "basic"

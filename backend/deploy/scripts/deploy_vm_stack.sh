@@ -7,6 +7,12 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 BOOTSTRAP_SCRIPT="${SCRIPT_DIR}/bootstrap_windows_vm.ps1"
 TRANSFER_SCRIPT="${SCRIPT_DIR}/prepare_windows_transfer.ps1"
 
+# Git Bash (MSYS2) rewrites arguments beginning with '/' into Windows paths,
+# corrupting Azure resource IDs such as /subscriptions/.... Disable that
+# conversion for CLI calls that pass resource IDs. The variable is ignored on
+# Linux/macOS shells, so behavior there is unchanged.
+az_id() { MSYS_NO_PATHCONV=1 az "$@"; }
+
 usage() {
   echo "Usage: $0 <terraform.tfvars> [--enable-bastion|--disable-bastion] [--agents-migrate] [--app-only] [--dry-run]"
 }
@@ -170,11 +176,11 @@ if [[ "$APP_ONLY" != "true" ]]; then
   echo "==> Approving Azure AI Search private connection to the embedding endpoint"
   while IFS= read -r connection_id; do
     [[ -z "$connection_id" ]] && continue
-    az network private-endpoint-connection approve \
+    az_id network private-endpoint-connection approve \
       --id "$connection_id" \
       --description "Approved for Azure AI Search query vectorization" \
       --only-show-errors >/dev/null
-  done < <(az network private-endpoint-connection list \
+  done < <(az_id network private-endpoint-connection list \
     --id "$FOUNDRY_ACCOUNT_ID" \
     --query "[?properties.privateLinkServiceConnectionState.status=='Pending' && contains(properties.groupIds, 'openai_account')].id" \
     --output tsv \
@@ -315,7 +321,7 @@ VM_RESOURCE_ID="$(az vm show \
   --query id \
   --output tsv \
   --only-show-errors)"
-az network bastion tunnel \
+az_id network bastion tunnel \
   --resource-group "$RESOURCE_GROUP" \
   --name "$BASTION_NAME" \
   --target-resource-id "$VM_RESOURCE_ID" \
