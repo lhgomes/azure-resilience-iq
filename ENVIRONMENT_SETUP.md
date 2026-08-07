@@ -50,6 +50,18 @@ Azure Bastion is enabled by default. The standard deployment command:
 
 Use `--disable-bastion` only when an approved private connection to the VM already exists. On a full deployment or refresh, this opt-out removes any Terraform-managed Bastion host, Bastion public IP, Bastion subnet, and Bastion-specific NSG rules. It also disables automated package transfer, RDP through Bastion, and the Bastion connection helper.
 
+### Entra ID (AD Integrated) RDP sign-in
+
+`rdp_connect.sh` connects with `az network bastion rdp --enable-mfa`, so you can sign in with either the local administrator account or your Microsoft Entra (AD Integrated) credentials. The Terraform stack already installs the `AADLoginForWindows` extension, enables the VM system-assigned identity, and deploys Bastion Standard, which are the prerequisites for native-client Entra ID RDP.
+
+If AD Integrated sign-in fails while the local administrator account still works, check the following:
+
+- **Login role coverage.** Only the deploy principal receives `Virtual Machine Administrator Login` by default. When the person connecting is not whoever ran `az login` (for example CI or service-principal deployments), add their Entra user or group object id to `entra_login_object_ids` and re-apply. Without a login role, Entra sign-in is rejected even though the local admin password works.
+- **Legacy per-user MFA.** With `--enable-mfa`, a legacy per-user MFA state of *Enabled/Enforced* produces "Your credentials didn't work." Move the account to Conditional Access-based MFA, or clear the legacy per-user MFA state.
+- **Client device trust.** RDP to an Entra-joined VM is allowed only from a Windows 10/11 client that is Microsoft Entra registered, joined, or hybrid joined to the *same* tenant as the VM.
+
+The local administrator account remains an emergency fallback only; day-to-day access should use AD Integrated sign-in.
+
 ### Full deployment command
 
 The default command deploys Bastion and completes application installation automatically:
@@ -80,6 +92,10 @@ Force agent recreation/tool reattachment when needed:
 ```bash
 bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
 ```
+
+#### Running under Git Bash (Windows)
+
+`deploy_vm_stack.sh` and `rdp_connect.sh` pass Azure resource IDs (for example `/subscriptions/...`) to `az`. Under Git Bash, MSYS2 would otherwise rewrite those `/`-prefixed arguments into Windows paths and the Azure CLI reports `Resource ID is invalid`. Both scripts route the affected calls through an `az_id` wrapper that sets `MSYS_NO_PATHCONV=1`, so private endpoint connection approve/list and Bastion tunnel/RDP work from Git Bash. The variable is ignored on Linux/macOS, so those shells are unaffected.
 
 ### Permissions and credentials
 

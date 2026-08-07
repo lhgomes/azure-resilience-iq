@@ -16,6 +16,13 @@ vm_size   = "Standard_D4s_v5"
 # an existing private network path to the VNet. Storage remains private in both
 # modes. Bastion and its public IP incur charges while deployed.
 
+# Entra ID (AD Integrated) RDP sign-in is granted to the deploy principal by
+# default. When the person connecting differs from whoever ran `az login`
+# (for example CI or service-principal deployments), list their Entra user or
+# group object ids here so they can sign in; the local admin account is only an
+# emergency fallback.
+# entra_login_object_ids = ["00000000-0000-0000-0000-000000000000"]
+
 # Optional: override Foundry model deployments used by backend and ingestion
 # reasoning_model_deployment_name = "gpt-5.4-mini"
 # reasoning_model_name            = "gpt-5.4-mini"
