@@ -18,14 +18,16 @@ A full-stack application for visualizing and analyzing Azure workloads using Azu
 
 #### Deploy principal (identity running `terraform apply`)
 
-| Permission | Scope |
-|---|---|
-| Contributor | Resource group / subscription — creates all resources |
-| `Microsoft.Authorization/roleAssignments/write` | Subscription — assigns VM MI roles |
-| `Microsoft.Authorization/roleDefinitions/write` | Subscription — creates the custom Service Group Member Writer role |
-| `Microsoft.Authorization/roleAssignments/write` | Management group — **only if** `enable_workload_management_group_rbac = true` |
+By default (`assign_rbac_roles = false`, `assign_entra_login_roles = false`) the deployment performs **no RBAC writes**, so **Contributor** at the resource group / subscription is sufficient to provision everything.
 
-In practice **Owner** at the resource group + subscription covers all of the above (Contributor alone does not include `roleAssignments/write`). For management-group-scoped RBAC, Owner or User Access Administrator at that management group is also required.
+| Permission | Scope | When required |
+|---|---|---|
+| Contributor | Resource group / subscription | Always — creates all resources |
+| `Microsoft.Authorization/roleAssignments/write` | Subscription | Only if `assign_rbac_roles = true` |
+| `Microsoft.Authorization/roleDefinitions/write` | Subscription | Only if `assign_rbac_roles = true` (custom Service Group Member Writer role) |
+| `Microsoft.Authorization/roleAssignments/write` | Management group | Only if `assign_rbac_roles = true` **and** `enable_workload_management_group_rbac = true` |
+
+With the toggles off, a privileged operator (**Owner** or **User Access Administrator**) grants the managed-identity roles **after** deployment by running the emitted `terraform output rbac_grant_commands` (and `terraform output entra_login_grant_commands` for Entra VM sign-in). Set the toggles to `true` to have Terraform assign the roles during apply, which then requires Owner or Contributor + User Access Administrator at deploy time.
 
 ## Automated Azure VM Deployment (Terraform + Foundry + Search)
 
@@ -42,7 +44,9 @@ Production-style infrastructure deployment and application packaging are driven 
 - **Azure AI Search** with private networking.
 - **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
 
-#### VM Managed Identity — roles granted by Terraform
+#### VM Managed Identity — roles required at runtime
+
+By default these are **not** assigned by Terraform (Contributor-only deployment). A privileged operator assigns them after deployment via `terraform output rbac_grant_commands`, or you set `assign_rbac_roles = true` to have Terraform assign them during apply.
 
 | Role | Scope |
 |---|---|
@@ -52,9 +56,10 @@ Production-style infrastructure deployment and application packaging are driven 
 | Search Service Contributor | Azure AI Search |
 | Search Index Data Contributor | Azure AI Search |
 | Storage Blob Data Contributor | Storage account |
-| Reader | Current subscription (always) |
+| Reader | Current subscription |
 | Reader | Management group — only if `enable_workload_management_group_rbac = true` |
 | Custom: Service Group Member Writer (`serviceGroupMember/write/read/delete`) | Subscription or management group |
+
 
 **Optional / requires Global Admin (post-deploy):** grant `Service Group Reader` at the tenant-root service group scope to allow the app to read/import Service Groups created by other principals. The `service_group_root_reader_grant_command` Terraform output provides the exact `az` command.
 

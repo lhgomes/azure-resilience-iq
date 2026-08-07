@@ -23,6 +23,15 @@ vm_size   = "Standard_D4s_v5"
 # emergency fallback.
 # entra_login_object_ids = ["00000000-0000-0000-0000-000000000000"]
 
+# RBAC toggles. Both default to false so the deployment runs with Contributor
+# only (no Microsoft.Authorization/roleAssignments/write required). After a
+# Contributor-only apply, a privileged operator (Owner or User Access
+# Administrator) runs the emitted `terraform output rbac_grant_commands` and
+# `terraform output entra_login_grant_commands`. Set these to true to have
+# Terraform assign the roles during apply (requires Owner/UAA at deploy time).
+# assign_rbac_roles        = true
+# assign_entra_login_roles = true
+
 # Optional: override Foundry model deployments used by backend and ingestion
 # reasoning_model_deployment_name = "gpt-5.4-mini"
 # reasoning_model_name            = "gpt-5.4-mini"
