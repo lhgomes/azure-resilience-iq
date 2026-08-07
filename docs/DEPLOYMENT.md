@@ -131,87 +131,9 @@ az account set --subscription <your-subscription-id>
 
 ## Usage
 
-### Step 1: Collect Azure Resources
+Data collection, resiliency evaluation, and annotations are all triggered from the web UI — you do not run the collector or analysis modules manually. Start the backend and frontend, then drive everything from the app.
 
-#### Option A: Azure Resource Graph (Live Resources)
-
-Run the collector to fetch resources from your Azure subscription:
-
-```bash
-cd backend
-source .venv/bin/activate  # Activate virtual environment if not already active
-python -m app.collector.run --subscription-id <your-subscription-id>
-```
-
-**Optional Parameters**:
-- Filter by resource group: `--resource-group <rg-name>` (can be repeated)
-- Filter by tags: `--tag key=value` (can be repeated)
-
-**Example**:
-```bash
-python -m app.collector.run \
-  --subscription-id 12345678-1234-1234-1234-123456789abc \
-  --resource-group my-rg \
-  --tag environment=production
-```
-
-#### Option B: Terraform Configuration (Pre-deployment Analysis)
-
-Import resources directly from Terraform files without Azure access:
-
-```bash
-cd backend
-source .venv/bin/activate
-python -m app.terraform.run --terraform-dir <path-to-terraform-files>
-```
-
-**Or via Web UI**:
-1. Start the backend server (see Step 4)
-2. Open the frontend (see Step 5)
-3. Click "Import Terraform Configuration"
-4. Upload your `.tf` or `.json` files
-
-Both options create:
-- `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
-- `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
-
-Data is organized by subscription ID. To use a different base directory, set `data.dir` in `backend/config/app_config.yaml`.
-
-### Step 2: Run Resiliency Evaluations
-
-Evaluate resources against Azure Proactive Resiliency Library (APRL) recommendations:
-
-```bash
-python -m app.resilience.run --subscription-id <your-subscription-id>
-```
-
-This analyzes resources and generates:
-- Resiliency recommendations per resource
-- Category-based evaluations (Availability, Data, Disaster Recovery, etc.)
-- Pass/fail status for each recommendation
-- Resiliency scores and weighted metrics
-- **Availability zone analysis** (deployment patterns, 3-AZ compliance)
-- **Resiliency correlation groups** (Availability Sets, VMSS, Load Balancers, etc.)
-
-Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
-
-### Step 3: Run LLM Annotations (Optional)
-
-If Foundry is configured and `llm.enabled: true`, run the LLM annotator:
-
-```bash
-python -m app.llm.run --subscription-id <your-subscription-id>
-```
-
-This analyzes the collected resources and generates:
-- Display name suggestions
-- Layer classifications (L1: core , L2: network/platform, L3: implementation details)
-- Criticality scores (1-10) and criticality weights (% distribution)
-- Architecture improvement suggestions
-
-Results are saved to `data/{subscription-id}/llm_annotations.json`.
-
-### Step 4: Start the Backend Server
+### Step 1: Start the Backend Server
 
 Run the FastAPI backend:
 
@@ -232,7 +154,7 @@ The backend API will be available at `http://localhost:8000`.
 curl http://localhost:8000/health
 ```
 
-### Step 5: Start the Frontend
+### Step 2: Start the Frontend
 
 In a new terminal:
 
@@ -243,14 +165,19 @@ npm run dev
 
 The frontend will be available at `http://localhost:5173`.
 
-**First Time**: When you first open the app, you'll see a subscription selector in the sidebar. You can:
+### Step 3: Collect and Analyze from the UI
+
+When you first open the app, you'll see a subscription selector in the sidebar. You can:
 - Select a **single subscription** to view its workload graph
 - Select **multiple subscriptions** to view a merged cross-subscription graph
+- **Import a Terraform configuration** for pre-deployment analysis (no Azure access required)
 - Create and save **workload views** with specific filter configurations
+
+Selecting a subscription (or importing Terraform) triggers resource collection, dependency detection, resiliency evaluation, and — when Foundry/LLM is configured — annotations. Results are organized by subscription ID under `data/`; set a different base directory via `data.dir` in `backend/config/app_config.yaml`.
 
 ## Development Workflow
 
-### Full Development Flow
+Run the backend and frontend in separate terminals; collect, evaluate, and refresh data from the UI.
 
 1. **Terminal 1 - Backend**:
    ```bash
@@ -265,25 +192,9 @@ The frontend will be available at `http://localhost:5173`.
    npm run dev
    ```
 
-3. **Terminal 3 - Data Collection/Analysis** (as needed):
-   ```bash
-   cd backend
-   source .venv/bin/activate
-   # Collect resources
-   python -m app.collector.run --subscription-id <your-subscription-id>
-   # Run resilience evaluations
-   python -m app.resilience.run --subscription-id <your-subscription-id>
-   # Run LLM annotations (optional)
-   python -m app.llm.run --subscription-id <your-subscription-id>
-   ```
-
 ### Refresh Data
 
-To update the graph with new Azure resources:
-
-1. Re-run the collector: `python -m app.collector.run --subscription-id <id>`
-2. Re-run LLM annotations (optional): `python -m app.llm.run --subscription-id <id>`
-3. Click "Reload" in the frontend UI or refresh the browser
+To update the graph with new Azure resources, re-select the subscription (or click "Reload") in the UI — collection, evaluation, and annotations re-run automatically.
 
 ## Automated Azure VM Deployment (Terraform + Foundry + Search)
 

@@ -39,17 +39,8 @@ The application supports analyzing **multiple Azure subscriptions simultaneously
 - Subscription-aware node and edge metadata
 
 **How It Works**:
-1. Collect data from each subscription separately:
-   ```bash
-   python -m app.collector.run --subscription-id <subscription-1>
-   python -m app.resilience.run --subscription-id <subscription-1>
-   
-   python -m app.collector.run --subscription-id <subscription-2>
-   python -m app.resilience.run --subscription-id <subscription-2>
-   ```
-
-2. In the UI, select multiple subscriptions from the sidebar
-3. The graph automatically merges:
+1. In the UI, select one or more subscriptions from the sidebar; the app collects and evaluates each on demand.
+2. The graph automatically merges:
    - Nodes (deduplicated by resource ID)
    - Edges (preserved from all subscriptions)
    - LLM annotations (first occurrence wins)
@@ -390,10 +381,7 @@ resilience:
     "Low": 0.1
 ```
 
-After modifying:
-1. Restart the API server: `uvicorn app.main:app --reload`
-2. Re-run resilience evaluations: `python -m app.resilience.run --subscription-id <id>`
-3. Scores will recalculate automatically in the frontend
+After modifying, restart the API server (`uvicorn app.main:app --reload`) and re-select the subscription in the UI to re-run the evaluation; scores recalculate automatically in the frontend.
 
 ## Zonal Resiliency Analysis
 
@@ -417,10 +405,8 @@ The application includes a dedicated **Zonal Resiliency** tab that analyzes Azur
 
 ### Access
 
-1. Run resilience evaluation: `python -m app.resilience.run --subscription-id <id>`
-2. Start the frontend application
-3. Select your subscription
-4. Click the **"Zonal Resiliency"** tab (🌍 icon)
+1. Select your subscription in the UI (this collects and evaluates it)
+2. Click the **"Zonal Resiliency"** tab (🌍 icon)
 
 ## Terraform Configuration Analysis
 
@@ -434,17 +420,11 @@ Analyze infrastructure **before deployment** by importing Terraform configuratio
 
 ### Quick Start
 
-```bash
-# Import from directory
-python -m app.terraform.run --terraform-dir ./my-terraform
+Import a Terraform configuration directly in the UI:
 
-# Or single file
-python -m app.terraform.run --terraform-file ./main.tf
-
-# Then analyze
-python -m app.resilience.run --subscription-id <generated-id>
-python -m app.llm.run --subscription-id <generated-id>  # Optional
-```
+1. Start the app (see [Getting started](#getting-started)).
+2. Click **"Import Terraform Configuration"** in the sidebar.
+3. Upload your `.tf` or `.json` files. The app parses, evaluates, and (optionally) annotates the imported resources.
 
 ### Supported Resources
 
@@ -535,7 +515,7 @@ All LLM outputs are validated before being returned:
 
 ## Getting started
 
-For local development, collect data and run the app:
+For local development, run the app, then collect and analyze from the UI:
 
 ```bash
 # 1. Clone and initialize the APRL submodule
@@ -547,19 +527,17 @@ cd backend
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Collect and evaluate a subscription
+# 3. Authenticate and start the backend (http://localhost:8000)
 az login
-python -m app.collector.run --subscription-id <your-subscription-id>
-python -m app.resilience.run --subscription-id <your-subscription-id>
-
-# 4. Start the backend (http://localhost:8000)
 uvicorn app.main:app --reload --port 8000
 
-# 5. In another terminal, start the frontend (http://localhost:5173)
+# 4. In another terminal, start the frontend (http://localhost:5173)
 cd frontend && npm install && npm run dev
 ```
 
 > The local backend has **no authentication** and uses your Azure CLI credentials — run it locally only.
+
+Once the app is running, select a subscription in the UI to collect resources, run resiliency evaluations, and generate annotations — no manual scripts required.
 
 For full setup (prerequisites, environment configuration, optional LLM/chat), Azure VM deployment (Terraform + Foundry + Search), and operations, see **[Deployment & Operations](docs/DEPLOYMENT.md)**.
 
