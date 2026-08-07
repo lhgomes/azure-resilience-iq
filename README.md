@@ -2,353 +2,28 @@
 
 A full-stack application for visualizing and analyzing Azure workloads using Azure Resource Graph and LLM-powered annotations.
 
-## Prerequisites
-
-### Required Software
-
-- **Python 3.12+** - Required for the backend
-- **Node.js 18+** and **npm** - Required for the frontend
-- **Azure CLI** - Required for Azure authentication
-
-### Azure Requirements
-
-- Azure subscription with resources to analyze
-- Azure AI Foundry project with deployed agents
-- Appropriate Azure RBAC permissions to query resources
-
-#### Deploy principal (identity running `terraform apply`)
-
-By default (`assign_rbac_roles = false`, `assign_entra_login_roles = false`) the deployment performs **no RBAC writes**, so **Contributor** at the resource group / subscription is sufficient to provision everything.
-
-| Permission | Scope | When required |
-|---|---|---|
-| Contributor | Resource group / subscription | Always — creates all resources |
-| `Microsoft.Authorization/roleAssignments/write` | Subscription | Only if `assign_rbac_roles = true` |
-| `Microsoft.Authorization/roleDefinitions/write` | Subscription | Only if `assign_rbac_roles = true` (custom Service Group Member Writer role) |
-| `Microsoft.Authorization/roleAssignments/write` | Management group | Only if `assign_rbac_roles = true` **and** `enable_workload_management_group_rbac = true` |
-
-With the toggles off, a privileged operator (**Owner** or **User Access Administrator**) grants the managed-identity roles **after** deployment by running the emitted `terraform output rbac_grant_commands` (and `terraform output entra_login_grant_commands` for Entra VM sign-in). Set the toggles to `true` to have Terraform assign the roles during apply, which then requires Owner or Contributor + User Access Administrator at deploy time.
-
-## Automated Azure VM Deployment (Terraform + Foundry + Search)
-
-Production-style infrastructure deployment and application packaging are driven by `backend/deploy/scripts/deploy_vm_stack.sh`.
-
-### What the stack provisions
-
-- **Compute/Network**: Private Windows Server 2022 VM, VNet/subnets, NSG, Azure Bastion Standard enabled by default with an explicit opt-out, and private endpoints.
-- **Azure AI Foundry (new model)**:
-  - `azurerm_cognitive_account` (`AIServices`)
-  - `azurerm_cognitive_account_project`
-  - Reasoning deployment (`gpt-5.4-mini` by default)
-  - Embedding deployment (`text-embedding-3-small`) required for hydration.
-- **Azure AI Search** with private networking.
-- **RBAC** for VM managed identity (Foundry, OpenAI inference, Search service/index operations).
-
-#### VM Managed Identity — roles required at runtime
-
-By default these are **not** assigned by Terraform (Contributor-only deployment). A privileged operator assigns them after deployment via `terraform output rbac_grant_commands`, or you set `assign_rbac_roles = true` to have Terraform assign them during apply.
-
-| Role | Scope |
-|---|---|
-| Foundry User | AI Foundry hub |
-| Cognitive Services OpenAI User | AI Foundry hub |
-| Foundry User | AI Foundry project |
-| Search Service Contributor | Azure AI Search |
-| Search Index Data Contributor | Azure AI Search |
-| Storage Blob Data Contributor | Storage account |
-| Reader | Current subscription |
-| Reader | Management group — only if `enable_workload_management_group_rbac = true` |
-| Custom: Service Group Member Writer (`serviceGroupMember/write/read/delete`) | Subscription or management group |
-
-
-**Optional / requires Global Admin (post-deploy):** grant `Service Group Reader` at the tenant-root service group scope to allow the app to read/import Service Groups created by other principals. The `service_group_root_reader_grant_command` Terraform output provides the exact `az` command.
-
-### End-to-end deployment command
-
-```bash
-cd backend/deploy/scripts
-bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars
-```
-
-Use `--agents-migrate` when you need to force agent/tool reconciliation:
-
-```bash
-bash deploy_vm_stack.sh ../vm-terraform/terraform.tfvars --agents-migrate
-```
-
-### Provisioning flow (automated)
-
-1. Terraform apply for infra + Foundry + model deployments.
-2. Create/verify Foundry project Azure AI Search connection (`azure-ai-search-default`).
-3. Build an application ZIP.
-4. Transfer and bootstrap automatically through Bastion, or create a local handoff bundle for operator-managed private transfer.
-5. Ensure Search indexes:
-  - `learn-aprl-index`
-  - `learn-terraform-index`
-6. Ensure Foundry agents and attach tools:
-  - `chat-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
-  - `resilience-agent` → Search (`learn-aprl-index`) + Microsoft Learn MCP
-  - `terraform-compiler-agent` → Search (`learn-terraform-index`)
-  - `annotations-agent` → no tools
-7. Refresh RAG data into `backend/agent/rag` (staged swap on success).
-8. Hydrate indexes (embeddings + upload):
-  - APRL corpus from `backend/aprl/docs` and `backend/aprl/azure-resources` (`.md/.txt/.rst/.yaml/.yml/.kql`).
-  - Terraform corpus from `backend/agent/rag` only.
-9. Build the frontend and install FastAPI as a Windows service bound to `127.0.0.1:80`.
-
-Azure Bastion Standard is enabled by default for automatic private package transfer and RDP access. Bastion receives a public IP and incurs ongoing charges, but the VM has no public IP and its RDP/SSH rules accept traffic only from `AzureBastionSubnet`. Use `--disable-bastion` when an approved private connection already exists; the script then creates `/tmp/azure-resilience-iq-handoff-<vm-name>` for manual transfer and finalization. Blob Storage stays private in both modes.
-
-### Incremental updates (no Terraform re-provision)
-
-Use app-only deployment for backend/frontend code changes:
-
-```bash
-cd backend/deploy/scripts
-./deploy_app_only.sh ../vm-terraform/terraform.tfvars
-```
-
-What it does:
-- Packages the current backend/frontend source.
-- Transfers automatically through the existing Bastion by default, or creates a manual handoff bundle with `--disable-bastion`.
-- Reinstalls backend dependencies, rebuilds the frontend, and restarts the Windows service.
-- Skips Terraform apply, Foundry agent reconciliation, RAG refresh, and index hydration.
-
-### Safe teardown
-
-Audit the resource group before destroying the stack, then run the approved teardown:
-
-```bash
-cd backend/deploy/scripts
-bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --audit-only
-bash safe_destroy_vm_stack.sh ../vm-terraform/terraform.tfvars --auto-approve
-```
-
-The wrapper blocks unexpected unmanaged resources, removes only verified generated network remnants, and retries transient Foundry project concurrency failures.
-
-### Model capacity / quota
-
-- Embedding deployment capacity is Terraform-managed via `embedding_model_capacity`.
-- For this environment, `350` was validated as the usable max and should be set in `backend/deploy/vm-terraform/terraform.tfvars`.
-- Dynamic "use all available quota" is not always deterministically available from current account usage APIs.
-
-## Installation
-
-### 1. Clone the Repository
-
-```bash
-git clone <repository-url>
-cd azure-resilience-iq
-git submodule update --init --recursive
-```
-
-The submodule command initializes the Azure Proactive Resiliency Library (APRL) at `backend/aprl`, which provides the resiliency rules used for evaluation.
-
-### 2. Backend Setup
-
-#### Install Python Dependencies
-
-```bash
-cd backend
-python3.12 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Notes:
-- `pip install -e .` is supported (the backend packages only the `app/` module).
-- `data/` contains runtime artifacts (collector output, overrides, annotations) and is intentionally not packaged.
-
-#### Configure Application Settings
-
-Edit `backend/config/app_config.yaml` to set LLM settings:
-
-```yaml
-llm:
-  enabled: true
-  batch_threshold: 50
-  max_nodes_per_batch: 30
-
-ai_agent: {}
-```
-
-Set `llm.enabled` to `false` to skip LLM calls and omit annotations from responses.
-
-#### Configure Chat Feature (Optional)
-
-The application includes an **AI-powered chat assistant** that helps analyze infrastructure, suggest remediation, and answer questions about your workload through direct Foundry Agents.
-
-**Create Environment File**:
-
-Create a `backend/.env` file (copy from `backend/.env.sample` if available) and add:
-
-For deployed VM runtime, these values are auto-generated into `/etc/azure-resilience-iq.env` by `backend/deploy/scripts/deploy_vm_stack.sh`; local `backend/.env` is for local/dev execution.
-
-```env
-# Required Foundry endpoint
-AI_FOUNDRY_PROJECT_ENDPOINT=https://<your-foundry-resource>.services.ai.azure.com/api/projects/<project-name>
-
-# Required/expected Foundry + agent settings
-AI_FOUNDRY_OPENAI_API_VERSION=2024-10-21
-AI_FOUNDRY_REASONING_MODEL=gpt-5.4-mini
-AI_FOUNDRY_EMBEDDING_MODEL=text-embedding-3-small
-AI_FOUNDRY_CHAT_AGENT_REFERENCE=chat-agent
-AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE=resilience-agent
-AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE=annotations-agent
-AI_FOUNDRY_TERRAFORM_AGENT_REFERENCE=terraform-compiler-agent
-
-# Optional data storage mode (default local)
-DATA_STORAGE_BACKEND=local
-# DATA_STORAGE_ACCOUNT=<storage-account-name>
-# DATA_STORAGE_CONTAINER=deployment-state
-# DATA_STORAGE_PREFIX=<project/environment-prefix>
-# DATA_DIR=./data
-```
-
-**Features**:
-- Natural language infrastructure analysis
-- Resource-specific recommendations
-- Remediation guidance with step-by-step instructions
-- Cost and performance impact analysis  
-- Terraform code generation
-- Dependency relationship suggestions
-- Query-type-specific responses (findings, remediation, terraform, connections)
-
-**Note**: The `.env` file is gitignored and should never be committed to the repository. Each developer needs their own local configuration.
-
-### 3. Frontend Setup
-
-```bash
-cd frontend
-npm install
-```
-
-### 4. Azure CLI Authentication
-
-Before running the collector, authenticate with Azure CLI:
-
-```bash
-az login
-az account set --subscription <your-subscription-id>
-```
-
-## Usage
-
-### Step 1: Collect Azure Resources
-
-#### Option A: Azure Resource Graph (Live Resources)
-
-Run the collector to fetch resources from your Azure subscription:
-
-```bash
-cd backend
-source .venv/bin/activate  # Activate virtual environment if not already active
-python -m app.collector.run --subscription-id <your-subscription-id>
-```
-
-**Optional Parameters**:
-- Filter by resource group: `--resource-group <rg-name>` (can be repeated)
-- Filter by tags: `--tag key=value` (can be repeated)
-
-**Example**:
-```bash
-python -m app.collector.run \
-  --subscription-id 12345678-1234-1234-1234-123456789abc \
-  --resource-group my-rg \
-  --tag environment=production
-```
-
-#### Option B: Terraform Configuration (Pre-deployment Analysis)
-
-Import resources directly from Terraform files without Azure access:
-
-```bash
-cd backend
-source .venv/bin/activate
-python -m app.terraform.run --terraform-dir <path-to-terraform-files>
-```
-
-**Or via Web UI**:
-1. Start the backend server (see Step 4)
-2. Open the frontend (see Step 5)
-3. Click "Import Terraform Configuration"
-4. Upload your `.tf` or `.json` files
-
-Both options create:
-- `data/{subscription-id}/resources.json` - Collected Azure resources with subscription metadata
-- `data/{subscription-id}/edges.json` - Multi-source dependency edges with signal details
-
-Data is organized by subscription ID. To use a different base directory, set `data.dir` in `backend/config/app_config.yaml`.
-
-### Step 2: Run Resiliency Evaluations
-
-Evaluate resources against Azure Proactive Resiliency Library (APRL) recommendations:
-
-```bash
-python -m app.resilience.run --subscription-id <your-subscription-id>
-```
-
-This analyzes resources and generates:
-- Resiliency recommendations per resource
-- Category-based evaluations (Availability, Data, Disaster Recovery, etc.)
-- Pass/fail status for each recommendation
-- Resiliency scores and weighted metrics
-- **Availability zone analysis** (deployment patterns, 3-AZ compliance)
-- **Resiliency correlation groups** (Availability Sets, VMSS, Load Balancers, etc.)
-
-Results are saved to `data/{subscription-id}/resilience_evaluations.json`.
-
-### Step 3: Run LLM Annotations (Optional)
-
-If Foundry is configured and `llm.enabled: true`, run the LLM annotator:
-
-```bash
-python -m app.llm.run --subscription-id <your-subscription-id>
-```
-
-This analyzes the collected resources and generates:
-- Display name suggestions
-- Layer classifications (L1: core , L2: network/platform, L3: implementation details)
-- Criticality scores (1-10) and criticality weights (% distribution)
-- Architecture improvement suggestions
-
-Results are saved to `data/{subscription-id}/llm_annotations.json`.
-
-### Step 4: Start the Backend Server
-
-Run the FastAPI backend:
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-The backend API will be available at `http://localhost:8000`.
-
-> ⚠️ **Security note:** This backend has **no authentication** and queries Azure
-> using your local credentials. Run it locally only. Do **not** bind it to all
-> interfaces (`--host 0.0.0.0`) or expose it to untrusted networks. Browser
-> origins are restricted via the `CORS_ALLOWED_ORIGINS` environment variable
-> (defaults to `http://localhost:5173`); see `backend/.env.sample`.
-
-**API Health Check**:
-```bash
-curl http://localhost:8000/health
-```
-
-### Step 5: Start the Frontend
-
-In a new terminal:
-
-```bash
-cd frontend
-npm run dev
-```
-
-The frontend will be available at `http://localhost:5173`.
-
-**First Time**: When you first open the app, you'll see a subscription selector in the sidebar. You can:
-- Select a **single subscription** to view its workload graph
-- Select **multiple subscriptions** to view a merged cross-subscription graph
-- Create and save **workload views** with specific filter configurations
+## Key capabilities
+
+- **Multi-source dependency detection** — discovers Azure resource relationships from 13 independent signals (ARM properties, private endpoints, backend pools, flow logs, DNS, and more) with Bayesian confidence aggregation.
+- **Resiliency evaluation** — scores workloads against the Azure Proactive Resiliency Library (APRL), heuristics, LLM analysis, and availability-zone checks.
+- **Weighted scoring model** — hierarchical resource × category × impact weighting that recalculates in real time as you filter.
+- **Zonal resiliency analysis** — availability-zone deployment patterns and 3-AZ compliance.
+- **Resilience correlation groups** — automatic discovery of Availability Sets, VMSS, load-balancer pools, geo-redundant storage, and failover groups.
+- **Multi-subscription workload views** — merge and analyze resources across subscriptions with saveable, filtered views.
+- **Terraform pre-deployment analysis** — evaluate infrastructure from `.tf`/JSON before provisioning, no Azure access required.
+- **AI-powered chat assistant** — natural-language analysis, remediation guidance, and Terraform generation via Azure AI Foundry agents.
+
+## How it works
+
+Azure Resiliency IQ runs a pipeline over your Azure environment:
+
+1. **Collect** resources and role assignments from Azure Resource Graph (or import a Terraform configuration).
+2. **Detect** dependencies between resources using multiple independent signals, aggregating them into confidence-scored edges.
+3. **Evaluate** each resource against APRL recommendations, heuristics, and availability-zone rules.
+4. **Annotate** (optional) with an LLM for display names, layer classification, criticality, and improvement suggestions.
+5. **Visualize** the workload graph, resiliency scores, zonal posture, and correlation groups in the React frontend, with an AI chat assistant for analysis and remediation.
+
+The sections below describe each capability in detail. To install, configure, and deploy the application, see **[Deployment & Operations](docs/DEPLOYMENT.md)**.
 
 ## Multi-Subscription View & Workload Management
 
@@ -720,74 +395,6 @@ After modifying:
 2. Re-run resilience evaluations: `python -m app.resilience.run --subscription-id <id>`
 3. Scores will recalculate automatically in the frontend
 
-
-## Development Workflow
-
-### Full Development Flow
-
-1. **Terminal 1 - Backend**:
-   ```bash
-   cd backend
-   source .venv/bin/activate
-   uvicorn app.main:app --reload --port 8000
-   ```
-
-2. **Terminal 2 - Frontend**:
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-
-3. **Terminal 3 - Data Collection/Analysis** (as needed):
-   ```bash
-   cd backend
-   source .venv/bin/activate
-   # Collect resources
-   python -m app.collector.run --subscription-id <your-subscription-id>
-   # Run resilience evaluations
-   python -m app.resilience.run --subscription-id <your-subscription-id>
-   # Run LLM annotations (optional)
-   python -m app.llm.run --subscription-id <your-subscription-id>
-   ```
-
-### Refresh Data
-
-To update the graph with new Azure resources:
-
-1. Re-run the collector: `python -m app.collector.run --subscription-id <id>`
-2. Re-run LLM annotations (optional): `python -m app.llm.run --subscription-id <id>`
-3. Click "Reload" in the frontend UI or refresh the browser
-
-## Configuration Reference
-
-### Backend Configuration (app_config.yaml)
-
-Set these in `backend/config/app_config.yaml`.
-
-| Section/Key | Required | Default | Description |
-|-------------|----------|---------|-------------|
-| `llm.enabled` | No | `false` | Toggle LLM end-to-end (compute and serve annotations) |
-| `llm.batch_threshold` | No | `50` | Node count threshold for batching annotations |
-| `llm.max_nodes_per_batch` | No | `30` | Max nodes per batch when batching |
-| `llm.model` / `LLM_MODEL` | Yes (if LLM enabled) | - | Model/deployment name used by the agent |
-| `llm.max_attempts` / `LLM_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
-| `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
-| `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
-| `ai_agent.foundry_project_endpoint` / `AI_FOUNDRY_PROJECT_ENDPOINT` | Yes (if LLM enabled) | - | Foundry project endpoint for agent threads/runs/messages |
-| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-5.4-mini` | Reasoning model used by Foundry agent execution |
-| `ai_agent.embedding_model` / `AI_FOUNDRY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
-| `ai_agent.chat_agent_reference` / `AI_FOUNDRY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
-| `ai_agent.resilience_agent_reference` / `AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
-| `ai_agent.annotations_agent_reference` / `AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
-| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for agent runs |
-| `ai_agent.poll_interval_seconds` | No | `1.5` | Poll interval while waiting for run completion |
-| `data.dir` | No | `./data` | Base directory for collected artifacts |
-| `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
-
-### Frontend Configuration
-
-The frontend proxies API requests to the backend at `http://127.0.0.1:8000` (configured in `vite.config.ts`).
-
 ## Zonal Resiliency Analysis
 
 The application includes a dedicated **Zonal Resiliency** tab that analyzes Azure Availability Zone configuration across all resources:
@@ -925,6 +532,66 @@ All LLM outputs are validated before being returned:
 - **Resource references**: Verified against the graph
 - **Terraform code**: Self-validated using built-in validation prompts
 - **Query-type filtering**: Edges and terraform only generated when explicitly requested
+
+## Getting started
+
+For local development, collect data and run the app:
+
+```bash
+# 1. Clone and initialize the APRL submodule
+git clone <repository-url> && cd azure-resilience-iq
+git submodule update --init --recursive
+
+# 2. Backend (Python 3.12+)
+cd backend
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Collect and evaluate a subscription
+az login
+python -m app.collector.run --subscription-id <your-subscription-id>
+python -m app.resilience.run --subscription-id <your-subscription-id>
+
+# 4. Start the backend (http://localhost:8000)
+uvicorn app.main:app --reload --port 8000
+
+# 5. In another terminal, start the frontend (http://localhost:5173)
+cd frontend && npm install && npm run dev
+```
+
+> The local backend has **no authentication** and uses your Azure CLI credentials — run it locally only.
+
+For full setup (prerequisites, environment configuration, optional LLM/chat), Azure VM deployment (Terraform + Foundry + Search), and operations, see **[Deployment & Operations](docs/DEPLOYMENT.md)**.
+
+## Configuration Reference
+
+### Backend Configuration (app_config.yaml)
+
+Set these in `backend/config/app_config.yaml`.
+
+| Section/Key | Required | Default | Description |
+|-------------|----------|---------|-------------|
+| `llm.enabled` | No | `false` | Toggle LLM end-to-end (compute and serve annotations) |
+| `llm.batch_threshold` | No | `50` | Node count threshold for batching annotations |
+| `llm.max_nodes_per_batch` | No | `30` | Max nodes per batch when batching |
+| `llm.model` / `LLM_MODEL` | Yes (if LLM enabled) | - | Model/deployment name used by the agent |
+| `llm.max_attempts` / `LLM_MAX_ATTEMPTS` | No | `2` | Maximum retry attempts |
+| `llm.max_tokens` / `LLM_MAX_TOKENS` | No | `6000` | Maximum tokens for LLM response |
+| `llm.timeout_seconds` / `LLM_TIMEOUT_SECONDS` | No | `60` | Request timeout in seconds |
+| `ai_agent.foundry_project_endpoint` / `AI_FOUNDRY_PROJECT_ENDPOINT` | Yes (if LLM enabled) | - | Foundry project endpoint for agent threads/runs/messages |
+| `ai_agent.reasoning_model` / `AI_FOUNDRY_REASONING_MODEL` | No | `gpt-5.4-mini` | Reasoning model used by Foundry agent execution |
+| `ai_agent.embedding_model` / `AI_FOUNDRY_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used by ingestion/search tooling |
+| `ai_agent.chat_agent_reference` / `AI_FOUNDRY_CHAT_AGENT_REFERENCE` | Yes (if chat enabled) | - | Agent reference/id for chat flow |
+| `ai_agent.resilience_agent_reference` / `AI_FOUNDRY_RESILIENCE_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for resilience flow |
+| `ai_agent.annotations_agent_reference` / `AI_FOUNDRY_ANNOTATIONS_AGENT_REFERENCE` | Yes (if LLM enabled) | - | Agent reference/id for annotations flow |
+| `ai_agent.run_timeout_seconds` | No | `120` | Max wait time for agent runs |
+| `ai_agent.poll_interval_seconds` | No | `1.5` | Poll interval while waiting for run completion |
+| `data.dir` | No | `./data` | Base directory for collected artifacts |
+| `data.monitored_resource_types_path` | No | `./config/monitored_resource_types.yaml` | Allowlist used to tag HA/DR-monitored resource types (collection keeps all resources) |
+
+### Frontend Configuration
+
+The frontend proxies API requests to the backend at `http://127.0.0.1:8000` (configured in `vite.config.ts`).
 
 ## Troubleshooting
 
