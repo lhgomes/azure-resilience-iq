@@ -106,14 +106,13 @@ The signed-in Azure CLI principal (`az login`) is used for Terraform apply and d
 Minimum required permissions on the target subscription/resource group:
 
 - Create/update/delete Azure resources managed by this stack (VM, network, Foundry, Search, Storage, private endpoints/DNS).
-- Create role assignments (RBAC) for managed identities.
-  - In practice this requires permissions equivalent to **Owner** or **Contributor + User Access Administrator** at the deployment scope.
-
-If role assignment permission is missing, Terraform may create resources but fail when assigning runtime access roles.
+- **RBAC is deferred by default** (`assign_rbac_roles = false`): the deployment performs no role assignments, so **Contributor** at the deployment scope is sufficient to provision everything.
+- To have Terraform assign managed-identity roles during apply, set `assign_rbac_roles = true` (and `assign_entra_login_roles = true` for Entra VM sign-in). This then requires permissions equivalent to **Owner** or **Contributor + User Access Administrator** at the deployment scope.
 
 #### VM managed identity permissions (runtime)
 
-Terraform grants the VM system-assigned managed identity these roles:
+The VM system-assigned managed identity requires these roles at runtime. By default they are **not** assigned by Terraform — after a Contributor-only apply, a privileged operator (Owner or User Access Administrator) runs the emitted `terraform output rbac_grant_commands` to assign them. Alternatively, set `assign_rbac_roles = true` to have Terraform assign them during apply.
+
 
 - Foundry account scope:
   - **Azure AI User**

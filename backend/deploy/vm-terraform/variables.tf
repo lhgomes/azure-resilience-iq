@@ -58,6 +58,12 @@ variable "entra_login_object_ids" {
   description = "Additional Entra object ids (users or groups) to grant VM Administrator Login so they can sign in with AD Integrated credentials. Required when the deploy principal differs from the interactive sign-in user (for example CI/service-principal deployments)."
 }
 
+variable "assign_entra_login_roles" {
+  type        = bool
+  default     = false
+  description = "Whether Terraform assigns 'Virtual Machine Administrator Login' to the principals in entra_admin_object_id/entra_login_object_ids. This grants sign-in rights to OTHER accounts and requires the deploy principal to hold Microsoft.Authorization/roleAssignments/write on the VM scope (beyond Contributor). When false (default), the local admin password still provides access and the emitted entra_login_grant_commands can be run manually by a privileged operator."
+}
+
 variable "search_sku" {
   type        = string
   default     = "basic"
@@ -151,5 +157,11 @@ variable "workload_management_group_id" {
 variable "enable_workload_management_group_rbac" {
   type        = bool
   default     = true
-  description = "Whether to additionally grant management-group Reader and place the Service Group member-writer role at that scope. The VM identity always receives Reader and member-writer access at the current subscription when this is disabled."
+  description = "Whether to additionally grant management-group Reader and place the Service Group member-writer role at that scope. The VM identity always receives Reader and member-writer access at the current subscription when this is disabled. Only takes effect when assign_rbac_roles = true."
+}
+
+variable "assign_rbac_roles" {
+  type        = bool
+  default     = false
+  description = "Whether Terraform assigns the VM (and service-to-service) managed-identity data-plane roles plus subscription/management-group Reader and the Service Group member-writer custom role. These require the deploy principal to hold Microsoft.Authorization/roleAssignments/write (Owner or User Access Administrator), which exceeds Contributor. When false (default), the deployment runs with Contributor only and Terraform emits ready-to-run rbac_grant_commands for a privileged operator to apply after deployment."
 }

@@ -473,67 +473,77 @@ resource "azurerm_virtual_machine_extension" "aad_login" {
 }
 
 resource "azurerm_role_assignment" "entra_vm_admin_login" {
-  for_each             = local.entra_login_principal_ids
+  for_each             = var.assign_entra_login_roles ? local.entra_login_principal_ids : toset([])
   scope                = azurerm_windows_virtual_machine.this.id
   role_definition_name = "Virtual Machine Administrator Login"
   principal_id         = each.value
 }
 
 resource "azurerm_role_assignment" "vm_foundry_hub_user" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Foundry User"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_foundry_openai_user" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_foundry_project_user" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_cognitive_account_project.this.id
   role_definition_name = "Foundry User"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "foundry_project_identity_hub_user" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Foundry User"
   principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "search_foundry_openai_user" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_cognitive_account.this.id
   role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = azurerm_search_service.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "foundry_project_search_service_contributor" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Service Contributor"
   principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "foundry_project_search_index_data_contributor" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = azurerm_cognitive_account_project.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_search_service_contributor" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Service Contributor"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_search_index_data_contributor" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_search_service.this.id
   role_definition_name = "Search Index Data Contributor"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_storage_blob_data_contributor" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = azurerm_storage_account.this.id
   role_definition_name = "Storage Blob Data Contributor"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
@@ -554,19 +564,21 @@ resource "azurerm_role_assignment" "vm_storage_blob_data_contributor" {
 # way to get that -- see the service_group_root_reader_grant_command output.
 
 resource "azurerm_role_assignment" "vm_subscription_reader" {
+  count                = var.assign_rbac_roles ? 1 : 0
   scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
   role_definition_name = "Reader"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "vm_workload_reader" {
-  count                = var.enable_workload_management_group_rbac ? 1 : 0
+  count                = var.assign_rbac_roles && var.enable_workload_management_group_rbac ? 1 : 0
   scope                = local.workload_management_group_scope
   role_definition_name = "Reader"
   principal_id         = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
 
 resource "azurerm_role_definition" "service_group_member_writer" {
+  count       = var.assign_rbac_roles ? 1 : 0
   name        = "Service Group Member Writer (${local.prefix})"
   scope       = local.service_group_member_rbac_scope
   description = "Least-privilege role allowing write/read/delete of serviceGroupMember relationships so the workload app can attach resources to Azure Service Groups."
@@ -584,7 +596,8 @@ resource "azurerm_role_definition" "service_group_member_writer" {
 }
 
 resource "azurerm_role_assignment" "vm_service_group_member_writer" {
+  count              = var.assign_rbac_roles ? 1 : 0
   scope              = local.service_group_member_rbac_scope
-  role_definition_id = azurerm_role_definition.service_group_member_writer.role_definition_resource_id
+  role_definition_id = azurerm_role_definition.service_group_member_writer[0].role_definition_resource_id
   principal_id       = azurerm_windows_virtual_machine.this.identity[0].principal_id
 }
